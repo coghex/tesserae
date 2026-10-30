@@ -42,7 +42,7 @@ closed.
   This is the foundation for the future streaming CLI and player-facing browser.
 - **Arc label:** Existing `enhancement`; no new label proposed.
 
-## Current state and evidence
+## Starting state and evidence
 
 - `tesserae/cli.py` registers only the standalone `roll` command.
 - `tesserae/dice.py` contains the reusable arithmetic/validation implementation.
