@@ -1,6 +1,6 @@
 # Foreground server delivery design
 
-Design state: `ready for issue processing`
+Design state: `complete` (tracker #1 closed 2026-10-30)
 
 Owner: `coghex/tesserae`; default branch: `master`.
 
@@ -25,9 +25,10 @@ reviewed without a separate issue · `[deferred]` blocked on a concrete precondi
 Issue processing is complete for this tracker. HOST-1 (#2) is complete through
 merged PR #6, HOST-2 (#3) through merged PR #8 (contract:
 [docs/protocol.md](../protocol.md)), and HOST-3 (#4) through merged PR #9
-(service: [docs/game_store.md](../game_store.md)). HOST-4 (#5), the foreground
-WebSocket development host, is in review. Tracker #1 closes once its combined
-acceptance is verified after HOST-4 merges.
+(service: [docs/game_store.md](../game_store.md)), and HOST-4 (#5), the
+foreground WebSocket development host, through merged PR #10. Tracker #1's
+combined acceptance was verified on `master` at 93a58a5, and the tracker is
+closed.
 
 ## Epic contract
 
@@ -41,7 +42,7 @@ acceptance is verified after HOST-4 merges.
   This is the foundation for the future streaming CLI and player-facing browser.
 - **Arc label:** Existing `enhancement`; no new label proposed.
 
-## Current state and evidence
+## Starting state and evidence
 
 - `tesserae/cli.py` registers only the standalone `roll` command.
 - `tesserae/dice.py` contains the reusable arithmetic/validation implementation.
