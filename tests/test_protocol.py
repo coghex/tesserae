@@ -68,6 +68,9 @@ REJECTIONS = [
     ("command before expression", request(command="Roll"), "unsupported_command", "r1"),
     ("invalid expression", request(args={"expression": "2d6*3"}), "invalid_expression", "r1"),
     ("dice limit", request(args={"expression": "1001d6"}), "invalid_expression", "r1"),
+    ("lone surrogate request_id", request(request_id="r\ud800"), "invalid_request", None),
+    ("lone surrogate in args key", request(args={"\udfff": "1"}), "invalid_request", None),
+    ("lone surrogate expression", request(args={"expression": "1d6\ud800"}), "invalid_request", None),
 ]  # fmt: skip
 
 

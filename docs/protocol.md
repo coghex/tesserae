@@ -62,8 +62,9 @@ Welcome, host to client on connection in [development mode](#host-modes):
   string validated with the existing dice rules and limits (at most 4096
   characters, 1000 dice, and 1,000,000 sides). Validation never rolls dice.
 - Malformed JSON, duplicate object keys at any depth, non-finite numbers
-  (`NaN`, `Infinity`, `-Infinity`, or overflowing literals such as `1e999`), and
-  nesting too deep to parse are all rejected.
+  (`NaN`, `Infinity`, `-Infinity`, or overflowing literals such as `1e999`),
+  nesting too deep to parse, and strings that are not valid Unicode (unpaired
+  surrogate escapes such as `"\ud800"`, in any key or value) are all rejected.
 
 ## Errors
 

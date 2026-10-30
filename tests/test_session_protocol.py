@@ -42,6 +42,7 @@ JOIN_REJECTIONS = [
     ("empty token", join(token=""), "authentication_failed"),
     ("token with space", join(token=TOKEN + " x"), "authentication_failed"),
     ("token too long", join(token="t" * (MAX_TOKEN_LENGTH + 1)), "authentication_failed"),
+    ("lone surrogate token", join(token=TOKEN + "\ud800"), "invalid_request"),
 ]  # fmt: skip
 
 

@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import sqlite3
 import stat
@@ -69,7 +70,7 @@ class ParticipantTests(StoreCase):
         self.assertEqual(alice_context.participant_id, alice)
         self.assertEqual(store.authenticate(bob_token).participant_id, bob)
         self.assertTrue(store.credential_active(alice_context))
-        for wrong in (new_token(), "", None, alice_token + "x"):
+        for wrong in (new_token(), "", None, 12345, alice_token + "x", "tess_\ud800"):
             self.assertIsNone(store.authenticate(wrong))
         self.assertFalse(store.credential_active(DEVELOPMENT_PARTICIPANT))
 
@@ -258,3 +259,25 @@ class TokenFileTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_token_file(path, new_token())
             self.assertEqual(read_token_file(path), token)
+
+    def test_short_writes_complete_and_failures_leave_no_file(self):
+        real_write = os.write
+
+        def trickle(descriptor, data):  # the OS may write fewer bytes than asked
+            return real_write(descriptor, bytes(data[:3]))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "token"
+            token = new_token()
+            with patch("tesserae.credentials.os.write", side_effect=trickle):
+                write_token_file(path, token)
+            self.assertEqual(read_token_file(path), token)
+
+            retry = Path(directory) / "retry"
+            failure = OSError("fsync failed")
+            with patch("tesserae.credentials.os.fsync", side_effect=failure):
+                with self.assertRaises(OSError):
+                    write_token_file(retry, new_token())
+            self.assertFalse(retry.exists())
+            write_token_file(retry, token)
+            self.assertEqual(read_token_file(retry), token)

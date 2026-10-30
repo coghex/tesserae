@@ -270,10 +270,14 @@ class GameStore:
         """The trusted context for an active token, or None. Never raises on input."""
         if not isinstance(token, str):
             return None
+        try:
+            digest = token_digest(token)
+        except UnicodeEncodeError:  # lone surrogates can never match a token
+            return None
         row = self._connection.execute(
             "SELECT id, participant_id FROM credentials "
             "WHERE digest = ? AND revoked_at IS NULL",
-            (token_digest(token),),
+            (digest,),
         ).fetchone()
         return None if row is None else ParticipantContext(row[1], credential_id=row[0])
 
