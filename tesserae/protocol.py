@@ -1,19 +1,23 @@
-"""Version 1 host/client command protocol: validation and message formatting.
+"""Version 1 host/client protocol: validation and message formatting.
 
-This module neither executes commands, stores state, nor opens connections.
-See docs/protocol.md for the contract.
+Covers commands and the authenticated-session messages layered around them.
+This module neither executes commands, stores state, verifies credentials, nor
+opens connections. See docs/protocol.md for the contract.
 """
 
 import copy
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .dice import DiceExpressionError, RollResult, parse_expression
 
 PROTOCOL_VERSION = 1
 MAX_REVISION = 2**63 - 1
 MAX_REQUEST_ID_LENGTH = 128
+MAX_IDENTIFIER_LENGTH = 128
+MAX_TOKEN_LENGTH = 512
+JOIN_TIMEOUT_SECONDS = 10
 ERROR_CODES = frozenset(
     {
         "invalid_request",
@@ -23,11 +27,28 @@ ERROR_CODES = frozenset(
         "stale_revision",
         "request_conflict",
         "internal_error",
+        # Authenticated sessions.
+        "authentication_failed",
+        "join_required",
+        "join_timeout",
+        "already_joined",
+        "session_revoked",
     }
 )
+# One fixed message per session error, so failures never vary with the
+# credential that was presented.
+SESSION_ERROR_MESSAGES = {
+    "authentication_failed": "Authentication failed.",
+    "join_required": "Send a join message before anything else.",
+    "join_timeout": f"No join message within {JOIN_TIMEOUT_SECONDS} seconds.",
+    "already_joined": "This connection has already joined.",
+    "session_revoked": "This session's credential is no longer valid.",
+}
 _REQUEST_FIELDS = frozenset(
     {"version", "type", "request_id", "expected_revision", "command", "args"}
 )
+_JOIN_FIELDS = frozenset({"version", "type", "token"})
+_SYNC_FIELDS = frozenset({"version", "type"})
 
 
 class ProtocolError(ValueError):
@@ -63,6 +84,18 @@ class CommandRequest:
         }
 
 
+@dataclass(frozen=True)
+class JoinRequest:
+    """A well-formed join; the token is unverified and never shown in repr."""
+
+    token: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class SyncRequest:
+    """A read-only request for a fresh metadata snapshot."""
+
+
 def is_valid_request_id(value) -> bool:
     return (
         isinstance(value, str)
@@ -75,8 +108,37 @@ def is_valid_revision(value) -> bool:
     return _is_int(value) and 0 <= value <= MAX_REVISION
 
 
+def is_valid_identifier(value) -> bool:
+    """game_id and participant_id: 1 to 128 characters, no whitespace."""
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= MAX_IDENTIFIER_LENGTH
+        and not any(character.isspace() for character in value)
+    )
+
+
 def parse_request(text: str | bytes) -> CommandRequest:
-    """Validate one JSON request without consuming randomness."""
+    """Validate one JSON command request without consuming randomness."""
+    return _parse_command(_decode(text))
+
+
+def parse_client_message(
+    text: str | bytes,
+) -> CommandRequest | JoinRequest | SyncRequest:
+    """Validate any client message in an authenticated session.
+
+    Commands are validated exactly as by parse_request. Error messages never
+    include a presented token.
+    """
+    data = _decode(text)
+    if data.get("type") == "join":
+        return _parse_join(data)
+    if data.get("type") == "sync":
+        return _parse_sync(data)
+    return _parse_command(data)
+
+
+def _decode(text: str | bytes) -> dict:
     try:
         data = json.loads(
             text,
@@ -88,7 +150,49 @@ def parse_request(text: str | bytes) -> CommandRequest:
         raise ProtocolError("invalid_request", f"Request is not valid JSON: {error}")
     if not isinstance(data, dict):
         raise ProtocolError("invalid_request", "Request must be a JSON object.")
+    return data
 
+
+def _parse_join(data: dict) -> JoinRequest:
+    _check_session_fields(data, _JOIN_FIELDS, "Join")
+    if not isinstance(data["token"], str):
+        raise ProtocolError("invalid_request", "'token' must be a string.")
+    _check_session_version(data)
+    token = data["token"]
+    if not (
+        1 <= len(token) <= MAX_TOKEN_LENGTH
+        and not any(character.isspace() for character in token)
+    ):
+        # Indistinguishable from an unknown or revoked token.
+        raise ProtocolError(
+            "authentication_failed", SESSION_ERROR_MESSAGES["authentication_failed"]
+        )
+    return JoinRequest(token)
+
+
+def _parse_sync(data: dict) -> SyncRequest:
+    _check_session_fields(data, _SYNC_FIELDS, "Sync")
+    _check_session_version(data)
+    return SyncRequest()
+
+
+def _check_session_fields(data: dict, fields: frozenset, subject: str):
+    missing = sorted(fields - data.keys())
+    extra = sorted(data.keys() - fields)
+    if missing or extra:
+        raise ProtocolError("invalid_request", _field_problem(missing, extra, subject))
+    if not _is_int(data["version"]):
+        raise ProtocolError("invalid_request", "'version' must be an integer.")
+
+
+def _check_session_version(data: dict):
+    if data["version"] != PROTOCOL_VERSION:
+        raise ProtocolError(
+            "unsupported_version", f"Protocol version {PROTOCOL_VERSION} only."
+        )
+
+
+def _parse_command(data: dict) -> CommandRequest:
     request_id = data.get("request_id")
     if not is_valid_request_id(request_id):
         request_id = None
@@ -189,8 +293,40 @@ def error_message(
 
 
 def welcome_message(revision: int) -> dict:
+    """Development mode's greeting."""
     _check_revision(revision)
     return {"version": PROTOCOL_VERSION, "type": "welcome", "revision": revision}
+
+
+def snapshot_message(game_id: str, participant_id: str, revision: int) -> dict:
+    """The recipient's metadata view: the reply to a join or a sync."""
+    _check_identifier(game_id, "game_id")
+    _check_identifier(participant_id, "participant_id")
+    _check_revision(revision)
+    return {
+        "version": PROTOCOL_VERSION,
+        "type": "snapshot",
+        "game_id": game_id,
+        "participant_id": participant_id,
+        "revision": revision,
+    }
+
+
+def revision_message(game_id: str, revision: int) -> dict:
+    """Unsolicited shared notification that the game's revision changed."""
+    _check_identifier(game_id, "game_id")
+    _check_revision(revision)
+    return {
+        "version": PROTOCOL_VERSION,
+        "type": "revision",
+        "game_id": game_id,
+        "revision": revision,
+    }
+
+
+def session_error(code: str) -> dict:
+    """A session error with its fixed message; no request_id or revision."""
+    return error_message(code, SESSION_ERROR_MESSAGES[code])
 
 
 def encode_message(message: dict) -> str:
@@ -206,17 +342,24 @@ def _check_request_id(value):
         raise ValueError(f"Invalid request_id {value!r}.")
 
 
+def _check_identifier(value, name: str):
+    if not is_valid_identifier(value):
+        raise ValueError(f"Invalid {name} {value!r}.")
+
+
 def _check_revision(value):
     if not is_valid_revision(value):
         raise ValueError(f"Invalid revision {value!r}.")
 
 
 def _field_problem(missing: list[str], extra: list[str], subject: str) -> str:
+    # Missing names come from the protocol; extra names are client input (a
+    # token pasted as a key, for example), so they are counted, never echoed.
     parts = []
     if missing:
         parts.append("missing " + ", ".join(missing))
     if extra:
-        parts.append("unexpected " + ", ".join(extra))
+        parts.append(f"{len(extra)} unexpected field{'s' if len(extra) > 1 else ''}")
     return f"{subject} has {'; '.join(parts)}."
 
 
@@ -224,7 +367,7 @@ def _reject_duplicate_keys(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError(f"duplicate key {key!r}")
+            raise ValueError("duplicate object key")  # never echo client keys
         result[key] = value
     return result
 
