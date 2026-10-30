@@ -1,8 +1,8 @@
 import json
-from pathlib import Path
 import subprocess
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 
 from tesserae.dice import DiceExpressionError, parse_expression, roll_expression
@@ -22,7 +22,9 @@ class DiceTests(unittest.TestCase):
         result = roll_expression("2d10", randint=draw)
         self.assertEqual(result.total, 11)
         self.assertEqual(draw.call_count, 2)
-        self.assertEqual(set(result.as_dict()), {"schema_version", "expression", "terms", "total"})
+        self.assertEqual(
+            set(result.as_dict()), {"schema_version", "expression", "terms", "total"}
+        )
 
     def test_constants_and_one_sided_dice(self):
         draw = Mock(return_value=1)
@@ -31,9 +33,25 @@ class DiceTests(unittest.TestCase):
         self.assertEqual(roll_expression("+D1", randint=draw).total, 1)
 
     def test_entire_expression_is_validated_before_randomness(self):
-        invalid = ["", " ", "1d6 + nope", "1d6+", "2d6*3", "(1d6)", "1 2",
-                   "0d6", "1d0", "2d-6", "--2d6", "1d6/0", "1d6; print(1)",
-                   "1001d6", "600d6+401d6", "1d1000001", "1" * 4097]
+        invalid = [
+            "",
+            " ",
+            "1d6 + nope",
+            "1d6+",
+            "2d6*3",
+            "(1d6)",
+            "1 2",
+            "0d6",
+            "1d0",
+            "2d-6",
+            "--2d6",
+            "1d6/0",
+            "1d6; print(1)",
+            "1001d6",
+            "600d6+401d6",
+            "1d1000001",
+            "1" * 4097,
+        ]
         for expression in invalid:
             with self.subTest(expression=expression):
                 draw = Mock()
@@ -53,9 +71,13 @@ class DiceTests(unittest.TestCase):
 
 class CommandLineTests(unittest.TestCase):
     def run_cli(self, *args):
-        return subprocess.run([sys.executable, "-m", "tesserae", *args],
-                              cwd=Path(__file__).resolve().parents[1],
-                              capture_output=True, text=True, check=False)
+        return subprocess.run(
+            [sys.executable, "-m", "tesserae", *args],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
     def test_json_result_matches_individual_rolls(self):
         process = self.run_cli("roll", "2d6+3", "--json")
@@ -76,7 +98,9 @@ class CommandLineTests(unittest.TestCase):
         process = self.run_cli("roll", "1d6+bad", "--json")
         self.assertEqual(process.returncode, 2)
         self.assertEqual(process.stdout, "")
-        self.assertEqual(json.loads(process.stderr)["error"]["code"], "invalid_expression")
+        self.assertEqual(
+            json.loads(process.stderr)["error"]["code"], "invalid_expression"
+        )
 
     def test_help(self):
         process = self.run_cli("--help")

@@ -115,8 +115,17 @@ tracker #1 remain authoritative; the child split does not alter their behavior.
 The owner approved this four-part split and said to draft and file all four. The
 owner also explicitly waived global issue-approval pauses for this hobby project
 and authorized agents to file issues they see fit. The project-specific exception
-is persisted in root `AGENTS.md`. It covers issue work, not a waiver of code
-review, CI, or private-content boundaries.
+is persisted in root `AGENTS.md`. Issue-filing autonomy remains in effect. The
+owner's subsequent manual-workflow direction is recorded below and supersedes
+the earlier review/delivery machinery; private-content boundaries still apply.
+
+### D-4. Manual review and owner merge approval
+
+The owner explicitly excluded custom Kanban plugins, their automated approval/
+review requirements, and `docs-push` from this hobby project. Use ordinary Git and
+keep documentation with related code. Reviews are discussed with the owner; the
+owner gives final merge approval, followed by the agreed checks. Root `AGENTS.md`
+and root design D-17 supersede earlier delivery clauses in the tracker/children.
 
 ## Resolved planning questions
 
@@ -143,7 +152,8 @@ personally selected each field name. HOST-3 and HOST-4 must consume the same con
 - HOST-4 adds a small number of real connection/process checks for command flow,
   malformed-message isolation, disconnects, occupied ports, and Ctrl-C recovery.
 - Use library transport behavior rather than duplicating WebSocket conformance tests.
-- Documentation lands through `docs-push`; child PRs link the associated doc commits.
+- Documentation accompanies the relevant changes through ordinary Git/PR review.
+  Do not use `docs-push` or custom Kanban review/approval tooling.
 
 ## Delivery plan
 

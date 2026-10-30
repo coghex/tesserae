@@ -1,10 +1,9 @@
 """Dice arithmetic, without game-specific success or critical rules."""
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from random import SystemRandom
 from typing import Callable
-
 
 MAX_EXPRESSION_LENGTH = 4096
 MAX_DICE = 1000
@@ -31,13 +30,20 @@ class TermResult:
 
     @property
     def subtotal(self) -> int:
-        return self.term.sign * (sum(self.rolls) if self.term.count else self.term.constant)
+        return self.term.sign * (
+            sum(self.rolls) if self.term.count else self.term.constant
+        )
 
     def as_dict(self) -> dict:
         common = {"sign": self.term.sign, "subtotal": self.subtotal}
         if self.term.count:
-            return {"kind": "dice", "count": self.term.count, "sides": self.term.sides,
-                    "rolls": list(self.rolls), **common}
+            return {
+                "kind": "dice",
+                "count": self.term.count,
+                "sides": self.term.sides,
+                "rolls": list(self.rolls),
+                **common,
+            }
         return {"kind": "constant", "value": self.term.constant, **common}
 
 
@@ -51,8 +57,12 @@ class RollResult:
         return sum(term.subtotal for term in self.terms)
 
     def as_dict(self) -> dict:
-        return {"schema_version": 1, "expression": self.expression,
-                "terms": [term.as_dict() for term in self.terms], "total": self.total}
+        return {
+            "schema_version": 1,
+            "expression": self.expression,
+            "terms": [term.as_dict() for term in self.terms],
+            "total": self.total,
+        }
 
 
 def parse_expression(expression: str) -> tuple[Term, ...]:
@@ -60,7 +70,9 @@ def parse_expression(expression: str) -> tuple[Term, ...]:
     if not isinstance(expression, str) or not expression.strip():
         raise DiceExpressionError("Provide a dice expression, for example '2d6+3'.")
     if len(expression) > MAX_EXPRESSION_LENGTH:
-        raise DiceExpressionError(f"Expression exceeds {MAX_EXPRESSION_LENGTH} characters.")
+        raise DiceExpressionError(
+            f"Expression exceeds {MAX_EXPRESSION_LENGTH} characters."
+        )
     text = expression.strip()
     position = 0
     terms = []
@@ -78,12 +90,16 @@ def parse_expression(expression: str) -> tuple[Term, ...]:
             position += 1
         match = _TERM.match(text, position)
         if match is None:
-            raise DiceExpressionError("Expected NdS dice or an integer; only '+' and '-' are supported.")
+            raise DiceExpressionError(
+                "Expected NdS dice or an integer; only '+' and '-' are supported."
+            )
         if match.group("sides") is not None:
             count = int(match.group("count") or "1")
             sides = int(match.group("sides"))
             if count < 1 or not 1 <= sides <= MAX_SIDES:
-                raise DiceExpressionError(f"Dice need a positive count and 1 to {MAX_SIDES} sides.")
+                raise DiceExpressionError(
+                    f"Dice need a positive count and 1 to {MAX_SIDES} sides."
+                )
             dice_count += count
             if dice_count > MAX_DICE:
                 raise DiceExpressionError(f"Expression exceeds {MAX_DICE} dice.")
@@ -103,8 +119,14 @@ def roll_expression(
     results = []
     for term in parsed:
         rolls = tuple(draw(1, term.sides) for _ in range(term.count))
-        if any(not isinstance(value, int) or isinstance(value, bool)
-               or not 1 <= value <= term.sides for value in rolls):
-            raise ValueError("Random source returned a value outside the die's integer range.")
+        if any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 1 <= value <= term.sides
+            for value in rolls
+        ):
+            raise ValueError(
+                "Random source returned a value outside the die's integer range."
+            )
         results.append(TermResult(term=term, rolls=rolls))
     return RollResult(expression=expression.strip(), terms=tuple(results))
