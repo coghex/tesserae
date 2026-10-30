@@ -215,6 +215,17 @@ branch were renamed to `master` after PR #7 merged. Preserve the existing commit
 history; no rebase or force-push is needed. CI push filters, instructions, and
 current repository links must use `master`.
 
+### D-19. Encrypted LAN follows localhost acceptance
+
+After tracker #12 closed, the owner selected encrypted connections for the first
+LAN version. Tracker [#25](https://github.com/coghex/tesserae/issues/25) and the
+[LAN delivery design](designs/encrypted_lan_design.md) describe the proposed
+implementation: explicit authenticated listener, certificate-verified `wss`,
+personal tokens, retained localhost defaults and an actual second-computer check.
+Children #26–#29 are planned. No LAN runtime behavior is implemented by this
+planning work. Public hosting, router automation, browser and game modules remain
+outside this tracker.
+
 ## Proposed implementation boundaries
 
 These are proposals to refine as implementation proceeds, not additional signed-off
@@ -382,8 +393,8 @@ proof that every rule implementation is correct.
     rewritten `expected_revision`.
 
   Still open beyond localhost: LAN binding/transport for a friend on another
-  computer, which follows tracker #12. Participants and credentials (#14) are
-  merged, as are the authenticated host (#15), snapshots and notifications
+  computer, now planned under tracker #25 and D-19. Participants and credentials
+  (#14) are merged, as are the authenticated host (#15), snapshots and notifications
   (#16), and the `tesserae connect` CLI (#17). Tracker #12's localhost scope
   passed combined acceptance; the linked record above preserves the evidence.
 
