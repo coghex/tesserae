@@ -1,5 +1,8 @@
 name: tests
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -8,10 +11,18 @@ on:
 jobs:
   unittest:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python3 -m pip install -e .
+      - run: python3 -m pip install -e '.[dev]'
+      - run: python3 -m ruff check .
+      - run: python3 -m ruff format --check .
       - run: python3 -m unittest discover -s tests -v
+      - name: Check installed CLI outside the checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          python3 -m tesserae --help
+          python3 -m tesserae roll '2d1+3' --json

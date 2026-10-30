@@ -51,23 +51,48 @@ There are no built-in critical, fumble, success, or damage rules.
 No web UI, model integration, or complete game module has been implemented yet.
 The dice utility is not yet a network client. The agreed next step is command
 handling on a minimal authoritative server, SQLite persistence, and a streaming
-CLI client. Transport libraries are proposed in the design; none are installed yet.
+CLI client. `websockets` is selected for transport but is not installed yet.
 
-## Documentation delivery
+## Working together
 
-The repository now tracks `coghex/tesserae` on GitHub. Publish documentation with
-the owner's `docs-push` workflow; the local-only documentation exception has ended.
-New implementation work follows issue → isolated worktree/branch → pull request.
-Keep the primary checkout clean.
+This is a casual hobby project with manual review and final merge approval by the
+owner. Use ordinary Git branches and PRs, keeping related documentation with the
+code. Do not use the owner's custom Kanban plugins, review coordinators, automatic
+approval/merge gates, or `docs-push` workflow here.
 
-For this hobby project, the owner has authorized agents to draft and file issues
-without individual approval pauses, including batches. Verification and clear
-scope still apply; code review and CI requirements remain in force. See
-[AGENTS.md](AGENTS.md) for the project-specific working agreements.
+Agents can draft and file issues without individual approval pauses, including
+batches. They review changes in conversation; the owner decides whether to merge.
+Passing tests alone do not authorize a merge. See [AGENTS.md](AGENTS.md).
 
 The first server scope is [tracker #1](https://github.com/coghex/tesserae/issues/1).
 Its four children and implementation order are recorded in the
 [server delivery design](docs/designs/foreground_server_design.md).
+
+## Development checks
+
+Install development tools in the same virtual environment:
+
+```sh
+python3 -m pip install -e '.[dev]'
+```
+
+Run the same small set of checks locally and in GitHub Actions:
+
+```sh
+python3 -m ruff check .
+python3 -m ruff format --check .
+python3 -m unittest discover -s tests -v
+```
+
+[Ruff linting](https://docs.astral.sh/ruff/linter/) checks basic Python errors and
+import ordering. Its [formatter](https://docs.astral.sh/ruff/formatter/) handles
+layout consistently; apply formatting with `python3 -m ruff format .`. Tests check
+behavior. CI repeats these checks on GitHub and checks the installed CLI from
+outside the checkout.
+
+Ruff is a pinned development dependency, not a game/runtime dependency. Start with
+this setup; additional testing frameworks, type-checking gates, and tooling can be
+added when a concrete need appears.
 
 ## Server process plan
 

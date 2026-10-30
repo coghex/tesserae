@@ -108,6 +108,8 @@ multiplayer features remain deferred.
 
 ### D-9. One-time local bootstrap delivery
 
+Historical bootstrap record; current workflow is D-17.
+
 The owner explicitly approved committing the README and these two design documents
 locally and fast-forwarding `main` to the completed bootstrap work. This is a
 one-time exception because `docs-push` requires an origin and the repository has
@@ -149,6 +151,8 @@ failure behavior rather than reimplementing a library's conformance suite.
 
 ### D-14. Local documentation delivery until an origin exists
 
+Historical policy, superseded by D-17. Do not apply its publication instruction.
+
 The owner explicitly authorized local documentation commits and fast-forwarding
 `main` while this repository has no origin. This replaces the need for another
 one-time documentation exception on each edit. Keep edits isolated and the primary
@@ -176,6 +180,22 @@ the initial host/client connection; begin manual probes with its included
 interactive client. A custom CLI remains thin application-specific glue.
 `prompt_toolkit` remains an optional later choice for interactive editing; pipe
 mode does not require a terminal editing library.
+
+### D-17. Casual manual development and owner-controlled merging
+
+The owner explicitly directed that Tesserae not use the custom Kanban plugins,
+their approval/review coordinators or gates, or `docs-push`. Those workflows belong
+to the owner's professional projects, not this hobby project.
+
+Use ordinary Git branches/PRs, with related code and documentation together.
+Agents can draft and file issues autonomously. PR reviews are manual assessments
+reported in conversation, not automatic review labels or posted verdicts. The owner
+gives final merge approval; after that approval, run the agreed checks and merge
+only if they pass. No automatic merging is authorized by passing checks alone.
+
+Root `AGENTS.md` records this project-specific exception and overrides older
+workflow instructions in this repository and issue descriptions. Earlier decisions
+about product architecture, privacy, and issue scope are preserved.
 
 ## Proposed implementation boundaries
 
@@ -305,8 +325,8 @@ proof that every rule implementation is correct.
   private-game mechanics used to validate it. Do not promise full game coverage.
 - **Q-4. Module contract:** discover the first provider contracts from the demo and
   private module, then make required operations and compatibility checks explicit.
-- **Q-5. Documentation delivery:** resolved by D-9 and D-14 during local bootstrap.
-  Origin is now set; the conditional exception has ended and `docs-push` applies.
+- **Q-5. Documentation delivery:** resolved by D-17. Use ordinary Git with related
+  code/docs in the same branch/PR; do not use `docs-push` or a separate docs lane.
 - **Q-6. Public release:** select a license and review the public tree and tracked
   history before publication. No publishing is authorized by this design alone.
 - **Q-7. Referee pacing:** when do several players' messages become committed

@@ -8,7 +8,8 @@ The owner approved the first server scope and requested that it become a tracker
 with easily accomplishable children. The approved contract is preserved in
 [tracker #1](https://github.com/coghex/tesserae/issues/1). The owner approved the
 four-child split and explicitly authorized drafting and filing all four without
-further approval pauses. All child issues are now filed; HOST-1 (#2) is in review.
+further approval pauses. All child issues are now filed; HOST-1 (#2) was completed
+by merged PR #6 with the owner's approval.
 
 Status legend: `[ ]` unprocessed · `[#N]` linked to issue N · `[no-issue]`
 reviewed without a separate issue · `[deferred]` blocked on a concrete precondition.
@@ -21,9 +22,9 @@ reviewed without a separate issue · `[deferred]` blocked on a concrete precondi
 - [#4] HOST-3. Execute and record commands atomically in SQLite.
 - [#5] HOST-4. Expose commands through a foreground WebSocket server.
 
-Issue processing is complete for this tracker. Filed is not implemented or
-independently reviewed. HOST-1 (#2) has an open PR awaiting review and CI;
-#3 is blocked by #2, #4 by #3, and #5 by #4.
+Issue processing is complete for this tracker. HOST-1 (#2) is complete through
+merged PR #6; HOST-2 (#3) is next. HOST-3 (#4) depends on #3, and HOST-4 (#5)
+depends on #4. No server or durable command implementation has landed yet.
 
 ## Epic contract
 
@@ -39,10 +40,10 @@ independently reviewed. HOST-1 (#2) has an open PR awaiting review and CI;
 
 ## Current state and evidence
 
-- `tesserae/cli.py:22–39` registers only the standalone `roll` command.
+- `tesserae/cli.py` registers only the standalone `roll` command.
 - `tesserae/dice.py` contains the reusable arithmetic/validation implementation.
-- `tests/test_dice.py` supplies ten passing tests. No server, live database,
-  dependency configuration, or GitHub Actions workflow exists yet.
+- `tests/test_dice.py` supplies ten passing tests. PR #6 added installable packaging
+  and a GitHub Actions unittest check. No server or live database exists yet.
 - Root documentation records host-owned SQLite, WebSocket transport, foreground
   lifecycle, and server → CLI → browser order as accepted decisions.
 - Deduplication before filing found only the existing parent tracker. All four
@@ -116,8 +117,17 @@ tracker #1 remain authoritative; the child split does not alter their behavior.
 The owner approved this four-part split and said to draft and file all four. The
 owner also explicitly waived global issue-approval pauses for this hobby project
 and authorized agents to file issues they see fit. The project-specific exception
-is persisted in root `AGENTS.md`. It covers issue work, not a waiver of code
-review, CI, or private-content boundaries.
+is persisted in root `AGENTS.md`. Issue-filing autonomy remains in effect. The
+owner's subsequent manual-workflow direction is recorded below and supersedes
+the earlier review/delivery machinery; private-content boundaries still apply.
+
+### D-4. Manual review and owner merge approval
+
+The owner explicitly excluded custom Kanban plugins, their automated approval/
+review requirements, and `docs-push` from this hobby project. Use ordinary Git and
+keep documentation with related code. Reviews are discussed with the owner; the
+owner gives final merge approval, followed by the agreed checks. Root `AGENTS.md`
+and root design D-17 supersede earlier delivery clauses in the tracker/children.
 
 ## Resolved planning questions
 
@@ -144,7 +154,8 @@ personally selected each field name. HOST-3 and HOST-4 must consume the same con
 - HOST-4 adds a small number of real connection/process checks for command flow,
   malformed-message isolation, disconnects, occupied ports, and Ctrl-C recovery.
 - Use library transport behavior rather than duplicating WebSocket conformance tests.
-- Documentation lands through `docs-push`; child PRs link the associated doc commits.
+- Documentation accompanies the relevant changes through ordinary Git/PR review.
+  Do not use `docs-push` or custom Kanban review/approval tooling.
 
 ## Delivery plan
 
