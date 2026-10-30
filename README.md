@@ -39,7 +39,19 @@ CLI client. Transport libraries are proposed in the design; none are installed y
 
 ## Documentation delivery
 
-While this repository has no origin, the owner has authorized local documentation
-commits and fast-forward updates to `main`. Keep the primary checkout clean. Once
-an origin exists, return to the owner's `docs-push` workflow. This exception does
-not authorize publication or change the code review/delivery policy.
+The repository now tracks `coghex/tesserae` on GitHub. Publish documentation with
+the owner's `docs-push` workflow; the local-only documentation exception has ended.
+New implementation work follows issue → isolated worktree/branch → pull request.
+Keep the primary checkout clean.
+
+## Server process plan
+
+The first server will run in the foreground in its own terminal, with visible
+startup/error logs and Ctrl-C shutdown. Clients connect to that running process;
+they do not start or daemonize a server implicitly. The first server slice is
+loopback-only; the player join/identity flow precedes LAN access for friends.
+
+## License
+
+The public project uses the [MIT license](LICENSE). Private content is maintained
+separately and is not included in this repository.

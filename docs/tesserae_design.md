@@ -3,8 +3,9 @@
 Design state: `exploring`
 
 This document records the owner's agreed direction and distinguishes it from
-implementation proposals. The public repository is being bootstrapped locally;
-there is no remote or tracker yet. No issues have been created.
+implementation proposals. The public repository is now `coghex/tesserae` on
+GitHub. The local bootstrap and GitHub's original MIT-license commit have been
+reconciled without rewriting either history. No server implementation exists yet.
 
 ## Purpose and experience
 
@@ -21,8 +22,8 @@ combat, inventory, or turn model.
 
 ## Verified starting point
 
-- A new local Git repository with `main` and an initial `.gitignore` commit.
-- No pre-existing application, dependency configuration, remote, or tracker.
+- The repository began as a local Git bootstrap. It now tracks GitHub's public
+  `coghex/tesserae`, default branch `main`, with the original MIT license preserved.
 - A separate private pilot has demonstrated conversational play backed by Python
   dice tools, structured character/campaign records, and a browser map.
 - That pilot has not been imported into this repository. Its original records
@@ -155,6 +156,27 @@ checkout clean. Once an origin exists, use the standing `docs-push` workflow aga
 This exception applies only to documentation; it does not authorize publication,
 remote creation, or a bypass of code delivery/review requirements.
 
+### D-15. Foreground server lifecycle
+
+The owner's preferred foreground model is adopted for the first server. Start it
+explicitly in a dedicated terminal; show startup, bound address, and useful errors.
+Keep it running until the operator stops it. Ctrl-C stops accepting work, closes
+connections, and leaves SQLite with either complete committed actions or no partial
+change. Expected shutdown should not produce an unhandled-exception traceback.
+
+Connecting a client does not implicitly start, daemonize, or install the server.
+Closing a client does not stop the host. No service manager, launch agent, PID-file
+daemon, or automatic reloader is required for this slice. Foreground execution
+still permits concurrent client I/O and AI work inside the process.
+
+### D-16. WebSocket transport library
+
+The owner accepted the transport recommendation. Use Python `websockets` for
+the initial host/client connection; begin manual probes with its included
+interactive client. A custom CLI remains thin application-specific glue.
+`prompt_toolkit` remains an optional later choice for interactive editing; pipe
+mode does not require a terminal editing library.
+
 ## Proposed implementation boundaries
 
 These are proposals to refine as implementation proceeds, not additional signed-off
@@ -212,11 +234,11 @@ An external module can contain executable Python and should initially be treated
 as trusted local code, not a sandboxed third-party package. Remote installation
 and an untrusted extension security model are outside the first milestone.
 
-### Transport and CLI proposal
+### Transport and CLI implementation direction
 
 Use WebSocket messages for the duplex connection and the Python `websockets`
-library for server/client transport. This is a proposal pending owner selection,
-not an installed dependency. The same application message contract can later be
+library for server/client transport. This direction is accepted under D-16, but
+the dependency is not installed yet. The same message contract can later be
 used through a browser's WebSocket connection.
 
 The library handles WebSocket handshakes, framing, ping/pong and closing. Tesserae
@@ -283,20 +305,21 @@ proof that every rule implementation is correct.
   private-game mechanics used to validate it. Do not promise full game coverage.
 - **Q-4. Module contract:** discover the first provider contracts from the demo and
   private module, then make required operations and compatibility checks explicit.
-- **Q-5. Local documentation delivery:** resolved by D-9 for bootstrap and D-14
-  for subsequent documentation edits until an origin exists. No remote is set.
+- **Q-5. Documentation delivery:** resolved by D-9 and D-14 during local bootstrap.
+  Origin is now set; the conditional exception has ended and `docs-push` applies.
 - **Q-6. Public release:** select a license and review the public tree and tracked
   history before publication. No publishing is authorized by this design alone.
 - **Q-7. Referee pacing:** when do several players' messages become committed
   actions, and when should the AI referee respond? Do not equate every incoming
   text message with advancing time or assume all games have combat-style turns.
-- **Q-8. Transport selection:** `websockets` and optional later `prompt_toolkit`
-  are the researched recommendation. Confirm before adding runtime dependencies;
-  the server-first order itself is already settled by D-12.
+- **Q-8. Transport selection:** resolved by D-16 for `websockets`.
+  `prompt_toolkit` remains optional; the server-first order is settled by D-12.
 - **Q-9. Joining and recovery:** choose the initial host-issued player credentials,
   session join flow, and snapshot/event recovery contract in the server slice.
   Caller-supplied names alone are not authentication. No cloud account system is
   required for local friends, but permission and disclosure checks are required.
+  The first server slice is a clearly documented loopback-only development
+  session. Multi-player credentials and LAN exposure remain gated on this flow.
 
 ## Technical references for the transport proposal
 

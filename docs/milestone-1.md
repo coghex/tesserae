@@ -58,7 +58,8 @@ integer terms, and addition/subtraction. No implicit criticals or fumbles.
 ### M1-2. Implement one durable command on a minimal server
 
 Depends on M1-1. Storage is settled: host-owned SQLite, JSON import/export.
-Confirm the proposed transport dependency before adding it.
+Transport is settled: `websockets`. Run the server explicitly in the foreground;
+show startup/error logs and shut down cleanly with Ctrl-C.
 
 - Establish one authoritative state representation and versioned records.
 - Implement a command envelope and a state repository independently of the CLI.
@@ -70,6 +71,9 @@ Confirm the proposed transport dependency before adding it.
   handlers and persistence independent of socket code.
 - Define identity/join and per-player projections before enabling LAN access.
 - Probe with an existing interactive client before writing terminal machinery.
+- Start with a documented loopback-only development session. The first registered
+  command can reuse the existing dice evaluator and persist its result/history.
+- Do not implicitly launch the server from a client or install a background service.
 
 ### M1-3. Connect a thin CLI and prove several clients
 
@@ -155,5 +159,8 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
 - Agreed architecture captured in `tesserae_design.md`; remaining proposals marked.
 - M1-1 implemented and verified with ten passing tests.
 - SQLite live persistence and server → CLI → browser order accepted.
-- Next decisions for M1-2: transport dependency and initial join/recovery contract.
+- Origin configured and local bootstrap published with GitHub's MIT license intact.
+- Foreground lifecycle and `websockets` transport accepted for M1-2.
+- Specify the first durable command contract in its issue; finish the multi-player
+  join/recovery contract before M1-3 enables friend access over LAN.
 - No server, network CLI, or transport dependencies have been implemented yet.
