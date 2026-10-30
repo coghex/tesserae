@@ -109,6 +109,7 @@ class GameStoreTests(unittest.TestCase):
 
         cases = [
             ("{", "invalid_request", None),
+            (request("r\ud800", 1), "invalid_request", None),
             (request("r2", 1, "2d6*3"), "invalid_expression", "r2"),
             (request("r1", 1, "1d20"), "request_conflict", "r1"),
             (request("r2", 0), "stale_revision", "r2"),

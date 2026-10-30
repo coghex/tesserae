@@ -79,9 +79,11 @@ show startup/error logs and shut down cleanly with Ctrl-C.
 
 Depends on M1-2. The localhost portion is tracker
 [#12](https://github.com/coghex/tesserae/issues/12). Its session contract (#13)
-is in [protocol.md](protocol.md#authenticated-sessions). Credentials (#14), the
-authenticated host (#15), snapshots and notifications (#16), and the CLI (#17)
-are planned, not implemented. LAN access for a friend on another computer
+is in [protocol.md](protocol.md#authenticated-sessions). Participants and
+credentials (#14) are in review, documented in
+[game_store.md](game_store.md#participants-and-credentials). The authenticated
+host (#15), snapshots and notifications (#16), and the CLI (#17) are planned,
+not implemented. LAN access for a friend on another computer
 follows #12.
 
 - Maintain a duplex connection: send stdin while displaying incoming messages.
@@ -174,5 +176,6 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   completes M1-2's first server scope (tracker #1, closed). It uses one fixed
   development participant.
 - M1-3's localhost tracker #12 has begun: the authenticated session and recovery
-  contract (#13) is defined. Credentials, authenticated hosting, notifications,
-  and the CLI (#14–#17) are planned. LAN access follows.
+  contract (#13) is merged, and persisted participants with personal tokens
+  (#14) are in review. Authenticated hosting, notifications, and the CLI
+  (#15–#17) are planned. LAN access follows.

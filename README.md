@@ -142,6 +142,36 @@ with `stale_revision`, and reusing an ID for a different roll is rejected with
 Press Ctrl-C in the host's terminal to stop it. The database keeps every
 committed roll.
 
+## Participants and join tokens
+
+Players will join an authenticated host with a personal token (the host side is
+[#15](https://github.com/coghex/tesserae/issues/15)). Manage participants on
+the host machine with local operator commands, against the game's database:
+
+```sh
+python3 -m tesserae participant add --database ~/tesserae-dev.sqlite3 \
+    --name Alice --token-file ~/alice.token
+python3 -m tesserae participant list --database ~/tesserae-dev.sqlite3
+```
+
+`add` prints Alice's participant ID, such as `p_7bd3a7ab7d45f27b`, and writes
+her token to `~/alice.token` with user-only permissions. It refuses to replace
+an existing file. Give the file only to Alice, and keep token files out of this
+repository. The token is never printed. `list` shows each participant's ID,
+status, creation time, and name, but never a token.
+
+```sh
+python3 -m tesserae participant rotate --database ~/tesserae-dev.sqlite3 \
+    p_7bd3a7ab7d45f27b --token-file ~/alice-new.token
+python3 -m tesserae participant revoke --database ~/tesserae-dev.sqlite3 \
+    p_7bd3a7ab7d45f27b
+```
+
+`rotate` issues a new token and stops the old one working. Use it if a token is
+lost, because tokens cannot be recovered. `revoke` stops the token without a
+replacement. Either way the participant keeps their ID and history. Names are
+labels, not identities. These commands never change the game's revision.
+
 ## License
 
 The public project uses the [MIT license](LICENSE). Private content is maintained

@@ -150,7 +150,33 @@ def _decode(text: str | bytes) -> dict:
         raise ProtocolError("invalid_request", f"Request is not valid JSON: {error}")
     if not isinstance(data, dict):
         raise ProtocolError("invalid_request", "Request must be a JSON object.")
+    if _has_lone_surrogate(data):
+        raise ProtocolError(
+            "invalid_request", "Request contains a string that is not valid Unicode."
+        )
     return data
+
+
+def _has_lone_surrogate(data) -> bool:
+    """Whether any key or string value holds an unpaired surrogate like \\ud800.
+
+    JSON escapes can produce these, but they cannot be encoded as UTF-8, so the
+    store could never record such a request. Iterative, so depth is no issue.
+    """
+    pending = [data]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                return True
+        elif isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return False
 
 
 def _parse_join(data: dict) -> JoinRequest:
