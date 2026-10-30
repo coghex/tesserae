@@ -1,8 +1,10 @@
 # Encrypted LAN delivery design
 
-Status: planned; tracker [#25](https://github.com/coghex/tesserae/issues/25)
-and its four children are filed. No LAN runtime changes are implemented by
-this design document.
+Status: in progress; tracker [#25](https://github.com/coghex/tesserae/issues/25).
+LAN-1 (#26) is in review: the transport policy and TLS context helpers
+(`tesserae/transport.py`) and the operator reference with the certificate
+recipe ([docs/tls.md](../tls.md)). No LAN listener or client flag is exposed
+yet; #27 and #28 wire the helpers into `serve` and `connect`.
 
 The owner selected encrypted LAN connections after tracker #12 completed the
 localhost flow. This finishes the remaining network portion of M1-3: a friend
@@ -118,7 +120,12 @@ proxy bypass remain. `--game-id`, streaming, EOF and uncertainty behavior remain
 
 - #26 supplies small shared validation/context helpers and setup documentation.
   It does not expose an application LAN listener. Avoid a general configuration
-  framework or changes to the rules/command modules.
+  framework or changes to the rules/command modules. The helpers are
+  `check_server` / `listen_address` / `server_context` for #27 and
+  `check_client` / `is_loopback_host` / `client_context` for #28, all raising
+  `TransportConfigError` with secret-free messages. The recipe adds
+  `-pkeyopt ec_param_enc:named_curve`, because LibreSSL 3.3.6 otherwise
+  encodes the P-256 key with explicit curve parameters.
 - #27 threads the chosen address/context through `GameHost`, `run_foreground`
   and `serve`. Joining, database work and notifications keep their existing paths.
 - #28 threads client trust configuration through `connect` and its entry point,
