@@ -125,13 +125,15 @@ is persisted in root `AGENTS.md`. Issue-filing autonomy remains in effect. The
 owner's subsequent manual-workflow direction is recorded below and supersedes
 the earlier review/delivery machinery; private-content boundaries still apply.
 
-### D-4. Manual review and owner merge approval
+### D-4. Manual review and project-scoped merge authorization
 
 The owner explicitly excluded custom Kanban plugins, their automated approval/
 review requirements, and `docs-push` from this hobby project. Use ordinary Git and
-keep documentation with related code. Reviews are discussed with the owner; the
-owner gives final merge approval, followed by the agreed checks. Root `AGENTS.md`
-and root design D-17 supersede earlier delivery clauses in the tracker/children.
+keep documentation with related code. The owner subsequently gave standing
+permission, for Tesserae only, to merge PRs that are ready after manual review and
+passing checks at the current head, without another approval prompt. Root
+`AGENTS.md` and root design D-17 supersede earlier delivery clauses in the
+tracker/children. Explicit review-only or hold requests take precedence.
 
 ## Resolved planning questions
 

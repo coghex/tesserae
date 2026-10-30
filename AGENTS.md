@@ -6,7 +6,7 @@ This is a casual hobby project developed manually with the owner. These
 project-specific instructions override conflicting global professional-project
 workflow instructions and earlier delivery notes in this repository or its issues.
 
-## Manual workflow and owner approval
+## Manual workflow and project-scoped merge authorization
 
 - Do not use the owner's custom Kanban plugins, skills, coordinator scripts,
   approval labels, readiness gates, or automatic review/merge services here.
@@ -16,10 +16,12 @@ workflow instructions and earlier delivery notes in this repository or its issue
 - Review PRs manually and report findings and suggestions in the conversation.
   Do not post a formal review, change review labels, or invoke review automation
   unless the owner explicitly requests that action.
-- The owner makes the final merge decision. Never merge until the owner approves
-  that merge. After approval, run the agreed checks and merge only if they pass;
-  report failures rather than silently bypassing them. Do not treat a request for
-  an opinion on a PR as merge approval.
+- For Tesserae only, the owner gives standing permission to merge a PR after
+  manual review finds it ready and the agreed checks pass at its current head.
+  When asked to check a PR, review it and merge if ready without another approval
+  prompt. Report unresolved blockers or failed checks and leave the PR open;
+  recheck revisions before merging. Honor any explicit request to review only or
+  hold a merge. This permission does not apply globally or to other projects.
 - There is no mandatory opposite-brand review, special provenance marker, or
   Kanban issue-approval requirement. Preserve existing attribution as history.
 - Prefer small, focused branches/PRs. Keep the primary checkout clean. Use an
@@ -62,5 +64,5 @@ python3 -m ruff format --check .
 python3 -m unittest discover -s tests -v
 ```
 
-Local verification may support a manual review. The owner controls final merge
-approval; passing checks do not authorize an automatic merge.
+Local verification supports manual review. Passing checks alone do not replace
+that review; merge under the Tesserae-only standing permission above.

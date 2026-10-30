@@ -54,16 +54,19 @@ participant joining and a streaming CLI client.
 
 ## Working together
 
-This is a casual hobby project with manual review and final merge approval by the
-owner. Use ordinary Git branches and PRs, keeping related documentation with the
-code. Do not use the owner's custom Kanban plugins, review coordinators, automatic
+This is a casual hobby project with manual review and standing owner authorization
+to merge ready PRs. Use ordinary Git branches and PRs, keeping related documentation
+with the code. Do not use the owner's custom Kanban plugins, review coordinators, automatic
 approval/merge gates, or `docs-push` workflow here.
 
 The default branch is `master`.
 
 Agents can draft and file issues without individual approval pauses, including
-batches. They review changes in conversation; the owner decides whether to merge.
-Passing tests alone do not authorize a merge. See [AGENTS.md](AGENTS.md).
+batches. When asked to check a PR, agents review it and merge if it is ready and
+the agreed checks pass at its current head, without another approval prompt.
+This authorization applies only to Tesserae. Explicit review-only or hold requests
+take precedence, and passing tests alone do not replace review. See
+[AGENTS.md](AGENTS.md).
 
 The first server scope is [tracker #1](https://github.com/coghex/tesserae/issues/1).
 Its four children and implementation order are recorded in the
