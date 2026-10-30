@@ -5,7 +5,9 @@ Design state: `exploring`
 This document records the owner's agreed direction and distinguishes it from
 implementation proposals. The public repository is now `coghex/tesserae` on
 GitHub. The local bootstrap and GitHub's original MIT-license commit have been
-reconciled without rewriting either history. No server implementation exists yet.
+reconciled without rewriting either history. A foreground, loopback-only
+development host with SQLite persistence exists (tracker #1); authenticated
+participants and the streaming CLI are in progress under tracker #12.
 
 ## Purpose and experience
 
@@ -266,9 +268,9 @@ and an untrusted extension security model are outside the first milestone.
 ### Transport and CLI implementation direction
 
 Use WebSocket messages for the duplex connection and the Python `websockets`
-library for server/client transport. This direction is accepted under D-16, but
-the dependency is not installed yet. The same message contract can later be
-used through a browser's WebSocket connection.
+library for server/client transport. This direction is accepted under D-16, and
+`websockets` is the declared runtime dependency. The same message contract can
+later be used through a browser's WebSocket connection.
 
 The library handles WebSocket handshakes, framing, ping/pong and closing. Tesserae
 still owns authentication, command validation, permissions, persistence, replay,
@@ -343,12 +345,39 @@ proof that every rule implementation is correct.
   text message with advancing time or assume all games have combat-style turns.
 - **Q-8. Transport selection:** resolved by D-16 for `websockets`.
   `prompt_toolkit` remains optional; the server-first order is settled by D-12.
-- **Q-9. Joining and recovery:** choose the initial host-issued player credentials,
-  session join flow, and snapshot/event recovery contract in the server slice.
-  Caller-supplied names alone are not authentication. No cloud account system is
-  required for local friends, but permission and disclosure checks are required.
-  The first server slice is a clearly documented loopback-only development
-  session. Multi-player credentials and LAN exposure remain gated on this flow.
+- **Q-9. Joining and recovery:** resolved for localhost by
+  [#13](https://github.com/coghex/tesserae/issues/13) under tracker
+  [#12](https://github.com/coghex/tesserae/issues/12). The contract is in
+  [protocol.md](protocol.md#authenticated-sessions). Decisions:
+  - Host-issued, personal, revocable bearer tokens, provisioned by local
+    operator commands into user-only token files. A token travels only in a
+    first `join` message, never in a URL or command. Names are labels, not
+    authority.
+  - Authenticated mode is an explicit `--authenticated` serve option, still on
+    127.0.0.1 only. The fixed-identity development mode is unchanged, and
+    neither mode falls back to the other.
+  - Joining has a 10-second timeout and happens once per connection. Nothing
+    about the game is disclosed before success, and every credential failure
+    looks the same.
+  - The recipient's view is a metadata `snapshot`: game ID, own participant ID,
+    and revision. A shared `revision` notification, carrying no participant or
+    command details, goes to every joined connection. Notifications are
+    monotonic per connection and may be coalesced. Subscribing before the
+    snapshot closes the join race. Slow clients are closed (1013) rather than
+    queued without bound.
+  - Every message gets exactly one in-order reply, and notifications are never
+    replies.
+  - Credential validity is rechecked for each protected operation. For fresh
+    actions the check happens inside the store's write transaction, so it is
+    strictly ordered with revocation. Revocation never undoes committed work.
+  - Recovery means reconnect, join, read the snapshot, and resend the uncertain
+    command unchanged. There is no event log, automatic resubmission, or
+    rewritten `expected_revision`.
+
+  Still open beyond localhost: LAN binding/transport for a friend on another
+  computer, which follows tracker #12. Implementation is planned in #14
+  (credentials), #15 (authenticated host), #16 (snapshots and notifications),
+  and #17 (CLI).
 
 ## Technical references for the transport proposal
 

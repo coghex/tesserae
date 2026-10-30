@@ -77,7 +77,12 @@ show startup/error logs and shut down cleanly with Ctrl-C.
 
 ### M1-3. Connect a thin CLI and prove several clients
 
-Depends on M1-2.
+Depends on M1-2. The localhost portion is tracker
+[#12](https://github.com/coghex/tesserae/issues/12). Its session contract (#13)
+is in [protocol.md](protocol.md#authenticated-sessions). Credentials (#14), the
+authenticated host (#15), snapshots and notifications (#16), and the CLI (#17)
+are planned, not implemented. LAN access for a friend on another computer
+follows #12.
 
 - Maintain a duplex connection: send stdin while displaying incoming messages.
 - Keep stdout machine-readable in pipe mode and diagnostics on stderr.
@@ -167,5 +172,7 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   durable SQLite game store merged (#4), documented in `game_store.md`.
 - The foreground, loopback-only WebSocket development host merged (#5), which
   completes M1-2's first server scope (tracker #1, closed). It uses one fixed
-  development participant. Real participant joining and the streaming CLI come
-  next, before LAN access.
+  development participant.
+- M1-3's localhost tracker #12 has begun: the authenticated session and recovery
+  contract (#13) is defined. Credentials, authenticated hosting, notifications,
+  and the CLI (#14–#17) are planned. LAN access follows.

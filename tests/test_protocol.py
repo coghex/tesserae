@@ -8,6 +8,7 @@ from tesserae.protocol import (
     ProtocolError,
     encode_message,
     error_message,
+    parse_client_message,
     parse_request,
     result_message,
     welcome_message,
@@ -89,13 +90,15 @@ class ProtocolValidationTests(unittest.TestCase):
         self.assertEqual(parse_request(raw.encode()), parsed)
 
     def test_rejections_have_stable_codes(self):
-        for description, raw, code, request_id in REJECTIONS:
-            with self.subTest(description):
-                with self.assertRaises(ProtocolError) as caught:
-                    parse_request(raw)
-                self.assertEqual(caught.exception.code, code)
-                self.assertEqual(caught.exception.request_id, request_id)
-                self.assertTrue(caught.exception.message)
+        # Session parsing must not change how any command is judged.
+        for parse in (parse_request, parse_client_message):
+            for description, raw, code, request_id in REJECTIONS:
+                with self.subTest(parse=parse.__name__, case=description):
+                    with self.assertRaises(ProtocolError) as caught:
+                        parse(raw)
+                    self.assertEqual(caught.exception.code, code)
+                    self.assertEqual(caught.exception.request_id, request_id)
+                    self.assertTrue(caught.exception.message)
 
     def test_rejected_request_formats_as_error(self):
         with self.assertRaises(ProtocolError) as caught:
