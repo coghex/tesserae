@@ -20,7 +20,7 @@ from websockets.sync.client import connect as sync_connect
 from tesserae.credentials import new_token, read_token_file
 from tesserae.protocol import session_error
 from tesserae.server import GameHost
-from tesserae.store import GameStore
+from tesserae.store import GameStore, StoreBusy
 
 
 def request(request_id, expected_revision, expression="2d6+3"):
@@ -376,6 +376,61 @@ class NotificationTests(AuthenticatedHostCase):
 
         _, snapshot = await self.joined("bob")  # recovery: rejoin for a snapshot
         self.assertEqual(snapshot["revision"], 1)
+
+    async def test_failed_join_snapshot_leaves_no_session(self):
+        await self.start_host(Mock(return_value=1), write_timeout=0.3)
+        alice, _ = await self.joined("alice")
+        joining = await connect(self.uri)
+        self.addAsyncCleanup(joining.close)
+        stuck_ports = {joining.local_address[1]}
+        real_send = ServerConnection.send
+
+        async def send(connection, message, *args, **kwargs):
+            if connection.remote_address[1] in stuck_ports:
+                await asyncio.Event().wait()
+            return await real_send(connection, message, *args, **kwargs)
+
+        with patch.object(ServerConnection, "send", send):
+            await joining.send(join_message(self.tokens["bob"]))
+            with self.assertRaises(ConnectionClosed):
+                await asyncio.wait_for(joining.recv(), 5)
+        self.assertEqual(joining.close_code, 1013)
+        for _ in range(50):
+            if len(self.host._sessions) == 1:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual([s.context.participant_id for s in self.host._sessions],
+                         [self.ids["alice"]])  # fmt: skip
+        await exchange(alice, request("r1", 0, "1d6"))
+        await notified(alice, 1)
+
+    async def test_failed_delivery_check_is_retried_then_resynchronizes(self):
+        await self.start_host(Mock(return_value=1))
+        alice, _ = await self.joined("alice")
+        bob, _ = await self.joined("bob")
+        real = GameStore.session_revision
+        failures = {"left": 1}
+
+        def flaky(store, context):
+            if context.participant_id == self.ids["bob"] and failures["left"]:
+                failures["left"] -= 1
+                raise StoreBusy("busy")
+            return real(store, context)
+
+        with (
+            patch.object(GameStore, "session_revision", flaky),
+            self.assertLogs("tesserae.server", "ERROR"),
+        ):
+            await exchange(alice, request("r1", 0, "1d6"))
+            await notified(bob, 1)  # one transient failure is retried
+
+            failures["left"] = 99  # now it keeps failing
+            await exchange(alice, request("r2", 1, "1d6"))
+            with self.assertRaises(ConnectionClosed):
+                await asyncio.wait_for(bob.recv(), 5)
+        self.assertEqual(bob.close_code, 1011)
+        _, snapshot = await self.joined("bob")  # rejoining resynchronizes
+        self.assertEqual(snapshot["revision"], 2)
 
     async def test_revoked_session_stops_receiving_updates(self):
         await self.start_host(Mock(return_value=1))

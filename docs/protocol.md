@@ -261,6 +261,11 @@ notification, because they do not change the revision.
   it drops the connection. The client recovers by reconnecting and joining. A
   slow connection never holds a database transaction or delays another
   connection's replies.
+- **Never silently behind.** Before each notification the host rechecks the
+  session against the store. If that check fails, for example because the
+  store is busy, it retries twice (`NOTIFY_RETRY_DELAYS`). If the check still
+  fails, the host closes the connection with code 1011 rather than leave the
+  client unaware of a newer revision. Reconnect and join for a fresh snapshot.
 
 There is no event log or history cursor. Current state always comes from a
 fresh snapshot. Notifications work only within one host process; another

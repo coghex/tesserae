@@ -44,7 +44,11 @@ DEVELOPMENT_PARTICIPANT = ParticipantContext("local-development")
 WORKER_THREADS = 8
 SESSION_CLOSE_CODE = 1008  # policy violation: the session cannot continue
 SLOW_CLOSE_CODE = 1013  # try again later: reconnect and join to resynchronize
+FAILURE_CLOSE_CODE = 1011  # internal error: reconnect and join to resynchronize
 WRITE_TIMEOUT_SECONDS = 10.0
+# Waits between retries when a notification's credential check fails, e.g.
+# StoreBusy. After the last, the connection is closed rather than left behind.
+NOTIFY_RETRY_DELAYS = (0.1, 0.5)
 _BINARY_REPLY = error_message("invalid_request", "Send requests as text JSON frames.")
 
 logger = logging.getLogger("tesserae.server")
@@ -165,7 +169,11 @@ class GameHost:
             return await self._refuse(
                 connection, session_error("authentication_failed")
             )
-        await session.send(self._view(context, revision))
+        try:
+            await session.send(self._view(context, revision))
+        except BaseException:
+            self._sessions.discard(session)  # it never became a joined session
+            raise
         return session
 
     async def _refuse(self, connection: ServerConnection, reply: dict) -> None:
@@ -193,13 +201,12 @@ class GameHost:
         try:
             while True:
                 target = await session.next_pending()
-                try:
-                    revision = await self._call(
-                        GameStore.session_revision, session.context
-                    )
-                except Exception:
-                    logger.exception("Could not check a session for a notification")
-                    continue
+                revision = await self._check_for_delivery(session)
+                if revision is _UNCHECKED:
+                    # Never leave a client silently behind: closing makes it
+                    # reconnect and join for a fresh snapshot.
+                    await session.connection.close(FAILURE_CLOSE_CODE, "internal error")
+                    return
                 if revision is None:
                     await session.connection.close(
                         SESSION_CLOSE_CODE, "session_revoked"
@@ -210,6 +217,17 @@ class GameHost:
                 )
         except (ConnectionClosed, _SlowConsumer):
             pass
+
+    async def _check_for_delivery(self, session: "_Session"):
+        """The session's current revision, None if revoked, or _UNCHECKED."""
+        for delay in (*NOTIFY_RETRY_DELAYS, None):
+            try:
+                return await self._call(GameStore.session_revision, session.context)
+            except Exception:
+                logger.exception("Could not check a session for a notification")
+                if delay is None:
+                    return _UNCHECKED
+                await asyncio.sleep(delay)
 
     async def _session_reply(self, context: ParticipantContext, message) -> dict:
         """Exactly one reply for one message from a joined connection."""
@@ -284,6 +302,9 @@ class GameHost:
 
     def _open(self) -> GameStore:
         return GameStore(self.database, randint=self._randint)
+
+
+_UNCHECKED = object()
 
 
 class _SlowConsumer(Exception):
