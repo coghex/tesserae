@@ -17,7 +17,13 @@ from typing import Callable
 
 from .credentials import token_digest
 from .dice import roll_expression
-from .protocol import ProtocolError, error_message, parse_request, result_message
+from .protocol import (
+    ProtocolError,
+    error_message,
+    parse_request,
+    result_message,
+    session_error,
+)
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
 SCHEMA_VERSION = 2
@@ -168,14 +174,27 @@ class GameStore:
         self._connection.close()
 
     def execute(self, context: ParticipantContext, raw: str | bytes) -> dict:
-        """Validate and execute one request; return a result or error message."""
+        """Validate and execute one request; return a result or error message.
+
+        An authenticated context's credential is checked inside the write
+        transaction, before replay or the revision check, so a fresh action and
+        a revocation are strictly ordered. A revoked context gets
+        session_revoked and nothing else.
+        """
         _check_context(context)
         try:
             request = parse_request(raw)
         except ProtocolError as error:
-            return error.to_message(revision=self.revision())
+            revision = self.session_revision(context)
+            if revision is None:
+                return session_error("session_revoked")
+            return error.to_message(revision=revision)
         content = request.content()
         with self._write():
+            if context.credential_id is not None and not self._credential_is_active(
+                context
+            ):
+                return session_error("session_revoked")
             record = self._find(context.participant_id, request.request_id)
             current = self._current_revision()
             if record is not None:
@@ -211,6 +230,23 @@ class GameStore:
 
     def revision(self) -> int:
         return self._current_revision()
+
+    def session_revision(self, context: ParticipantContext) -> int | None:
+        """The revision, as a participant-facing read: None if revoked.
+
+        Development contexts have no credential and always read. One statement,
+        so the check and the read see the same committed state.
+        """
+        _check_context(context)
+        if context.credential_id is None:
+            return self._current_revision()
+        row = self._connection.execute(
+            "SELECT revision FROM game WHERE EXISTS ("
+            "    SELECT 1 FROM credentials"
+            "    WHERE id = ? AND participant_id = ? AND revoked_at IS NULL)",
+            (context.credential_id, context.participant_id),
+        ).fetchone()
+        return None if row is None else row[0]
 
     def lookup(self, context: ParticipantContext, request_id: str):
         """The caller's own recorded command, or None."""

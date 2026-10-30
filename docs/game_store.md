@@ -13,13 +13,14 @@ to this service rather than reimplementing any of it.
 Implemented: one SQLite store per game, the `roll` command, replay, conflict
 and stale-revision rejection, serialized writers, read-only access, and
 [participants with personal join tokens](#participants-and-credentials) (#14).
-Not implemented: authenticated network admission (#15), turn rules, inventory,
-or hosting several games.
-The loopback-only WebSocket development host (`tesserae serve`, HOST-4,
-`tesserae/server.py`) exposes this service with one fixed development
-participant. Each store call runs on a worker thread that opens its own
-short-lived `GameStore`, following the ownership rules below. Unexpected
-failures and `StoreBusy` are reported as `internal_error`.
+Not implemented: turn rules, inventory, or hosting several games.
+The loopback-only WebSocket host (`tesserae serve`, `tesserae/server.py`)
+exposes this service. In development mode every connection uses one fixed
+participant. With `--authenticated` (#15), each connection joins with a token,
+and the host passes the context from `authenticate` to every call. Each store
+call runs on a worker thread that opens its own short-lived `GameStore`,
+following the ownership rules below. Unexpected failures and `StoreBusy` are
+reported as `internal_error`.
 
 ## One store, one game
 
@@ -55,8 +56,8 @@ connection ID. The wire format has no identity fields. A context is a stable
 `participant_id` string. An authenticated context also carries the
 `credential_id` it was verified with, so its validity can be rechecked.
 `tesserae serve` uses one fixed development context, `local-development`,
-which has no credential. `authenticate(token)` produces authenticated contexts
-for the authenticated host (#15).
+which has no credential. `authenticate(token)` produces the authenticated
+contexts that `tesserae serve --authenticated` uses.
 
 ## Participants and credentials
 
@@ -113,9 +114,16 @@ attributed to its participant in the history.
 The order of `execute(context, raw)`:
 
 1. Validate the raw message with `parse_request`. Invalid input returns an
-   error carrying the current revision.
+   error carrying the current revision. For an authenticated context whose
+   credential is no longer active, it returns `session_revoked` instead, so a
+   revoked session never learns the revision.
 2. Take the write guard (`BEGIN IMMEDIATE`). Every later decision is made
-   under it, against the latest committed state.
+   under it, against the latest committed state. For an authenticated
+   context, first check that its credential is still active, and return
+   `session_revoked` if not. Because revocation commits under the same guard,
+   an action and a revocation are strictly ordered. A credential checked
+   before waiting for the lock could otherwise act on stale authorization.
+   Replays are refused the same way.
 3. Look up (participant, `request_id`). If a record exists and its content
    equals `CommandRequest.content()`, return the original result message,
    including its original revision. If the content differs, return
@@ -132,8 +140,11 @@ Expressions compare as exact strings.
 
 ## Reads
 
-`revision()`, `lookup(context, request_id)`, and `history(context)` never
-write. They do not advance the revision, roll dice, or add history.
+`revision()`, `session_revision(context)`, `lookup(context, request_id)`, and
+`history(context)` never write. `session_revision` is the participant-facing
+read the authenticated host uses for joins and syncs. It returns `None`
+instead of the revision when the context's credential is no longer active,
+checking and reading in a single statement. They do not advance the revision, roll dice, or add history.
 `lookup` and `history` return only the caller's own records, so another
 participant's `r1` is invisible to them. `inspect_history()` returns every
 participant's records and is for operators and tests, never for answering a

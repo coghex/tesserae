@@ -144,9 +144,8 @@ committed roll.
 
 ## Participants and join tokens
 
-Players will join an authenticated host with a personal token (the host side is
-[#15](https://github.com/coghex/tesserae/issues/15)). Manage participants on
-the host machine with local operator commands, against the game's database:
+Players join an authenticated host with a personal token. Manage participants
+on the host machine with local operator commands, against the game's database:
 
 ```sh
 python3 -m tesserae participant add --database ~/tesserae-dev.sqlite3 \
@@ -171,6 +170,40 @@ python3 -m tesserae participant revoke --database ~/tesserae-dev.sqlite3 \
 lost, because tokens cannot be recovered. `revoke` stops the token without a
 replacement. Either way the participant keeps their ID and history. Names are
 labels, not identities. These commands never change the game's revision.
+
+## Authenticated host
+
+Start the host with `--authenticated` to require tokens. It still listens only
+on 127.0.0.1; playing with a friend on another computer comes later.
+
+```sh
+python3 -m tesserae serve --database ~/tesserae-dev.sqlite3 --port 8790 --authenticated
+```
+
+Until the Tesserae client exists ([#17](https://github.com/coghex/tesserae/issues/17)),
+probe it with the library's interactive client. Connect, then send a `join`
+first, within 10 seconds, with the contents of the token file as `token`.
+Pasting it shows the token on your screen, so only do this on your own machine.
+
+```sh
+python3 -m websockets ws://127.0.0.1:8790/
+```
+
+```
+> {"version": 1, "type": "join", "token": "tess_...contents of ~/alice.token..."}
+< {"version": 1, "type": "snapshot", "game_id": "...", "participant_id": "p_7bd3a7ab7d45f27b", "revision": 0}
+```
+
+After the `snapshot`, send commands exactly as in development mode, and
+`{"version": 1, "type": "sync"}` for a fresh snapshot. Each participant has
+their own request IDs, so Alice's and Bob's `r1` are separate rolls. A retry
+after reconnecting or restarting returns the original result.
+
+A missing, wrong, or revoked token gets one `authentication_failed` error and
+the connection closes, without revealing anything about the game. Revoking or
+rotating a token while someone is connected ends their session at their next
+request, with `session_revoked`. Development mode, without `--authenticated`,
+is unchanged.
 
 ## License
 
