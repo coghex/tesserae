@@ -47,15 +47,22 @@ def main(argv: list[str] | None = None) -> int:
     roll.add_argument("--json", action="store_true", help="Emit a structured result.")
     serve = commands.add_parser(
         "serve",
-        help="Run a loopback-only development host in the foreground.",
+        help="Run a loopback-only game host in the foreground.",
         description="Serve one game over WebSocket on 127.0.0.1 until Ctrl-C. "
-        "Every connection acts as one fixed development participant.",
+        "By default every connection acts as one fixed development participant; "
+        "with --authenticated, each must join with a personal token.",
     )
     serve.add_argument(
         "--database", required=True, help="SQLite game store; created if missing."
     )
     serve.add_argument(
         "--port", required=True, type=_port, help="TCP port; 0 picks a free one."
+    )
+    serve.add_argument(
+        "--authenticated",
+        action="store_true",
+        help="Require each connection to join with a token from "
+        "'tesserae participant'. There is no fallback to development mode.",
     )
     participant = commands.add_parser(
         "participant",
@@ -92,7 +99,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         from .server import run_foreground
 
-        return run_foreground(args.database, args.port)
+        return run_foreground(
+            args.database, args.port, authenticated=args.authenticated
+        )
     try:
         result = roll_expression(args.expression)
     except DiceExpressionError as error:

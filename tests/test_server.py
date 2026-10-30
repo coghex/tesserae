@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from websockets.asyncio.client import connect
 from websockets.sync.client import connect as sync_connect
 
-from tesserae.server import DEVELOPMENT_PARTICIPANT, DevelopmentHost
+from tesserae.server import DEVELOPMENT_PARTICIPANT, GameHost
 from tesserae.store import GameStore
 
 
@@ -53,11 +53,11 @@ class TemporaryStore:
             return store.revision(), store.inspect_history()
 
 
-class DevelopmentHostTests(TemporaryStore, unittest.IsolatedAsyncioTestCase):
+class GameHostTests(TemporaryStore, unittest.IsolatedAsyncioTestCase):
     async def start_host(self, randint=None):
         loop = asyncio.get_running_loop()
         self.stop, ready = loop.create_future(), loop.create_future()
-        host = DevelopmentHost(self.path, randint=randint)
+        host = GameHost(self.path, randint=randint)
         self.host_task = asyncio.create_task(
             host.run(0, self.stop, on_ready=ready.set_result)
         )

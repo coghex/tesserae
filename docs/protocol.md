@@ -141,10 +141,13 @@ the other.
   The host sends `welcome` on connect and replies to commands. It does not
   understand `join` or `sync` (they get `invalid_request`), and it sends no
   notifications, so the `python3 -m websockets` probe is unchanged.
-- **Authenticated mode**, planned for
-  [#15](https://github.com/coghex/tesserae/issues/15), is
-  `tesserae serve --database PATH --port PORT --authenticated`. Every connection
-  must join with a personal token, and acts as that token's participant.
+- **Authenticated mode** is
+  `tesserae serve --database PATH --port PORT --authenticated`
+  ([#15](https://github.com/coghex/tesserae/issues/15)). Every connection must
+  join with a personal token, and acts as that token's participant. Shared
+  `revision` notifications are not sent yet
+  ([#16](https://github.com/coghex/tesserae/issues/16)); joins, syncs, and
+  commands work as described below.
 
 ## Authenticated sessions
 
@@ -213,6 +216,8 @@ query parameter, or a command. A display name never selects an identity.
 | `join` with a malformed, unknown, revoked, or rotated token | `authentication_failed` | Close 1008 |
 | Well-formed `command` or `sync` | `join_required` | Close 1008 |
 | Malformed JSON, any other message, or a binary frame | `invalid_request` | Close 1008 |
+| A well-formed `join` for an unsupported version | `unsupported_version` | Close 1008 |
+| The host fails while checking the join | `internal_error` | Close 1008 |
 | Nothing within 10 seconds (`JOIN_TIMEOUT_SECONDS`) | `join_timeout` | Close 1008 |
 
 Before a successful join, the host sends nothing that describes the game: no
