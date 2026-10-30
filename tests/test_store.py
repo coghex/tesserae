@@ -6,7 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from tesserae.store import GameStore, ParticipantContext, StoreBusy, StoreError
+from tesserae.store import (
+    APPLICATION_ID,
+    GameStore,
+    ParticipantContext,
+    StoreBusy,
+    StoreError,
+)
 
 ALICE = ParticipantContext("alice")
 BOB = ParticipantContext("bob")
@@ -185,13 +191,33 @@ class GameStoreTests(unittest.TestCase):
         self.assertEqual(message["revision"], 1)
         self.assertEqual(len(self.open().inspect_history()), 1)
 
-    def test_foreign_database_is_refused_unchanged(self):
-        with sqlite3.connect(self.path) as connection:
-            connection.execute("CREATE TABLE notes (text TEXT)")
-        connection.close()
-        with self.assertRaises(StoreError):
-            GameStore(self.path)
-        with sqlite3.connect(self.path) as connection:
-            tables = connection.execute("SELECT name FROM sqlite_schema").fetchall()
-        connection.close()
-        self.assertEqual(tables, [("notes",)])
+    def test_other_databases_are_refused_unchanged(self):
+        impostors = {
+            "unrelated tables": "CREATE TABLE notes (text TEXT);",
+            "matching user_version": "PRAGMA user_version = 1;"
+            "CREATE TABLE game (singleton, game_id, revision);",
+            "missing commands table": f"PRAGMA application_id = {APPLICATION_ID};"
+            "PRAGMA user_version = 1;"
+            "CREATE TABLE game (singleton, game_id, revision);"
+            "INSERT INTO game VALUES (1, 'g', 0);",
+            "same schema without application_id": "PRAGMA user_version = 1;"
+            "CREATE TABLE game (singleton, game_id, revision);"
+            "CREATE TABLE commands (id, revision, participant_id, request_id,"
+            " content, result);"
+            "INSERT INTO game VALUES (1, 'g', 0);",
+            "not SQLite": None,
+        }
+        for description, script in impostors.items():
+            with self.subTest(description):
+                self.path.unlink(missing_ok=True)
+                if script is None:
+                    self.path.write_bytes(b"not a database" * 100)
+                else:
+                    connection = sqlite3.connect(self.path)
+                    connection.executescript(script)
+                    connection.close()
+                before = self.path.read_bytes()
+                with self.assertRaises(StoreError):
+                    GameStore(self.path)
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertFalse(self.path.with_name("game.sqlite3-wal").exists())

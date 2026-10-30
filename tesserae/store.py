@@ -15,8 +15,20 @@ from typing import Callable
 from .dice import roll_expression
 from .protocol import ProtocolError, error_message, parse_request, result_message
 
+APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
 SCHEMA_VERSION = 1
 DEFAULT_BUSY_TIMEOUT = 5.0
+_COLUMNS = {
+    "game": ["singleton", "game_id", "revision"],
+    "commands": [
+        "id",
+        "revision",
+        "participant_id",
+        "request_id",
+        "content",
+        "result",
+    ],
+}
 
 _SCHEMA = """
 CREATE TABLE game (
@@ -80,9 +92,10 @@ class GameStore:
             path, timeout=busy_timeout, isolation_level=None
         )
         try:
+            self._initialize()
+            # Persistent settings change only once the file is known to be ours.
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA synchronous = FULL")
-            self._initialize()
             self.game_id = self._connection.execute(
                 "SELECT game_id FROM game"
             ).fetchone()[0]
@@ -159,20 +172,20 @@ class GameStore:
         return self._select("", ())
 
     def _initialize(self):
-        if self._schema_version() == SCHEMA_VERSION:
-            return
-        with self._write():
-            version = self._schema_version()
-            if version == SCHEMA_VERSION:
+        """Validate an existing store, or create one in an empty database.
+
+        Validation only reads, so a rejected file is left byte-for-byte unchanged.
+        """
+        try:
+            if not self._is_empty():
+                self._validate()
                 return
-            tables = self._connection.execute(
-                "SELECT count(*) FROM sqlite_schema"
-            ).fetchone()[0]
-            if version != 0 or tables:
-                raise StoreError(
-                    f"Not a Tesserae game store (schema version {version}); "
-                    "refusing to modify it."
-                )
+        except sqlite3.DatabaseError as error:
+            raise StoreError(f"Not a Tesserae game store: {error}") from error
+        with self._write():
+            if not self._is_empty():
+                self._validate()
+                return
             # Not executescript(): it would commit the open transaction.
             for statement in _SCHEMA.split(";"):
                 if statement.strip():
@@ -181,10 +194,39 @@ class GameStore:
                 "INSERT INTO game (singleton, game_id, revision) VALUES (1, ?, 0)",
                 (str(uuid.uuid4()),),
             )
+            self._connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
             self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
-    def _schema_version(self) -> int:
-        return self._connection.execute("PRAGMA user_version").fetchone()[0]
+    def _pragma(self, name: str) -> int:
+        return self._connection.execute(f"PRAGMA {name}").fetchone()[0]
+
+    def _is_empty(self) -> bool:
+        objects = self._connection.execute(
+            "SELECT count(*) FROM sqlite_schema"
+        ).fetchone()[0]
+        return (
+            not objects
+            and not self._pragma("application_id")
+            and not (self._pragma("user_version"))
+        )
+
+    def _validate(self):
+        if self._pragma("application_id") != APPLICATION_ID:
+            raise StoreError("Not a Tesserae game store; refusing to modify it.")
+        version = self._pragma("user_version")
+        if version != SCHEMA_VERSION:
+            raise StoreError(f"Unsupported Tesserae store schema version {version}.")
+        for table, expected in _COLUMNS.items():
+            columns = [
+                row[0]
+                for row in self._connection.execute(
+                    "SELECT name FROM pragma_table_info(?)", (table,)
+                )
+            ]
+            if columns != expected:
+                raise StoreError(f"Tesserae store table {table!r} is damaged.")
+        if self._connection.execute("SELECT count(*) FROM game").fetchone()[0] != 1:
+            raise StoreError("Tesserae store must hold exactly one game.")
 
     @contextmanager
     def _write(self):

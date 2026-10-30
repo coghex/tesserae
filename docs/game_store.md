@@ -18,10 +18,17 @@ hosting several games.
 ## One store, one game
 
 A `GameStore` opens or creates one SQLite file holding one game. A new store
-gets a random `game_id`, which is preserved when it is reopened. Opening a file
-that is not a Tesserae store, or that has an unknown schema version, raises
-`StoreError` and leaves the file untouched. The store never clears, recreates,
-or silently repairs a database.
+gets a random `game_id`, which is preserved when it is reopened.
+
+An existing file is validated using reads only, before any persistent setting
+changes. Validation checks the Tesserae `application_id`, the schema version,
+each table's columns, and that there is exactly one game row. Anything else
+raises `StoreError` and leaves the file byte-for-byte unchanged. That includes
+an unrelated SQLite database, one that merely shares a `user_version`, a
+damaged store, and a file that is not SQLite at all. Only an empty database is
+initialized. The journal mode switches to WAL only after the file is known to
+be a Tesserae store. The store never clears, recreates, or silently repairs a
+database.
 
 ## Trusted participant context
 
@@ -115,7 +122,8 @@ lookups and dice arithmetic.
 
 ## Storage
 
-The schema version is SQLite's `user_version`, currently 1. There are two
+SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
+"TESS"). The schema version is SQLite's `user_version`, currently 1. There are two
 tables: `game` (a single row: `game_id`, `revision`) and `commands` (one row per
 committed command: `revision`, `participant_id`, `request_id`, canonical
 content JSON, and the dice result JSON). The `commands` table is the history.
