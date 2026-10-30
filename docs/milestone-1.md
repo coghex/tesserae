@@ -165,6 +165,7 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   join/recovery contract before M1-3 enables friend access over LAN.
 - Version 1 command protocol merged (#3) and documented in `protocol.md`; the
   durable SQLite game store merged (#4), documented in `game_store.md`.
-- The foreground, loopback-only WebSocket development host (#5) is in review.
-  It uses one fixed development participant. Real participant joining and the
-  streaming CLI come next, before LAN access.
+- The foreground, loopback-only WebSocket development host merged (#5), which
+  completes M1-2's first server scope (tracker #1, closed). It uses one fixed
+  development participant. Real participant joining and the streaming CLI come
+  next, before LAN access.
