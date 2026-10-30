@@ -1,7 +1,9 @@
 # Tesserae
 
 Tesserae is a local-first tabletop roleplaying application built around an AI
-referee, executable rules modules, and a browser interface.
+referee, executable rules modules, and several clients connected to one game host.
+The first game client will be a thin streaming CLI; the browser client follows.
+Friends should be able to join the same locally hosted game from other computers.
 
 Different games select different modules. The application does not assume that
 every game has dice, inventory, combat, a map, or the same character attributes.
@@ -31,3 +33,13 @@ Recorded game actions will be introduced with the state and command layer.
 There are no built-in critical, fumble, success, or damage rules.
 
 No web UI, model integration, or complete game module has been implemented yet.
+The dice utility is not yet a network client. The agreed next step is command
+handling on a minimal authoritative server, SQLite persistence, and a streaming
+CLI client. Transport libraries are proposed in the design; none are installed yet.
+
+## Documentation delivery
+
+While this repository has no origin, the owner has authorized local documentation
+commits and fast-forward updates to `main`. Keep the primary checkout clean. Once
+an origin exists, return to the owner's `docs-push` workflow. This exception does
+not authorize publication or change the code review/delivery policy.
