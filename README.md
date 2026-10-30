@@ -98,6 +98,11 @@ layout consistently; apply formatting with `python3 -m ruff format .`. Tests che
 behavior. CI repeats these checks on GitHub and checks the installed CLI from
 outside the checkout.
 
+The TLS tests also need an `openssl` executable on PATH, either OpenSSL 3.x or
+LibreSSL 3.3.6 (macOS's `/usr/bin/openssl` is fine). They make throwaway
+certificates with it and fail with a setup message if it is missing. See
+[docs/tls.md](docs/tls.md).
+
 Ruff is a pinned development dependency, not a game/runtime dependency. Start with
 this setup; additional testing frameworks, type-checking gates, and tooling can be
 added when a concrete need appears.
