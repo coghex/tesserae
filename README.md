@@ -19,13 +19,29 @@ for agreed direction, proposals, and open questions, and the
 ## First executable slice
 
 The initial command-line interface exercises a generic dice expression evaluator.
-It requires Python 3.11 or newer and no third-party packages. From this checkout:
+It requires Python 3.11 or newer and no third-party packages. Install this checkout
+into a virtual environment:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -e .
+```
+
+Then, from any directory:
 
 ```sh
 python3 -m tesserae --help
 python3 -m tesserae roll '2d6+3'
 python3 -m tesserae roll '2d6+3' --json
-python3 -m unittest discover -s tests
+```
+
+The install also provides a `tesserae` command equivalent to `python3 -m tesserae`.
+Run the tests from the checkout; GitHub Actions runs the same command on every
+pull request:
+
+```sh
+python3 -m unittest discover -s tests -v
 ```
 
 This standalone utility does not load a game, update a campaign, or persist rolls.

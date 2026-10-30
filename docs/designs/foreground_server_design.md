@@ -8,7 +8,7 @@ The owner approved the first server scope and requested that it become a tracker
 with easily accomplishable children. The approved contract is preserved in
 [tracker #1](https://github.com/coghex/tesserae/issues/1). The owner approved the
 four-child split and explicitly authorized drafting and filing all four without
-further approval pauses. All child issues are now filed; implementation has not begun.
+further approval pauses. All child issues are now filed; HOST-1 (#2) is in review.
 
 Status legend: `[ ]` unprocessed · `[#N]` linked to issue N · `[no-issue]`
 reviewed without a separate issue · `[deferred]` blocked on a concrete precondition.
@@ -22,7 +22,8 @@ reviewed without a separate issue · `[deferred]` blocked on a concrete precondi
 - [#5] HOST-4. Expose commands through a foreground WebSocket server.
 
 Issue processing is complete for this tracker. Filed is not implemented or
-independently reviewed. Start with #2; #3 is blocked by #2, #4 by #3, and #5 by #4.
+independently reviewed. HOST-1 (#2) has an open PR awaiting review and CI;
+#3 is blocked by #2, #4 by #3, and #5 by #4.
 
 ## Epic contract
 
