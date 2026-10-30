@@ -146,7 +146,8 @@ def parse_request(text: str | bytes) -> CommandRequest:
     )
 
 
-def result_message(request_id: str, revision: int, result: RollResult) -> dict:
+def result_message(request_id: str, revision: int, result: RollResult | dict) -> dict:
+    """Wrap a dice result, or its recorded structured form, as a result message."""
     _check_request_id(request_id)
     _check_revision(revision)
     return {
@@ -154,7 +155,11 @@ def result_message(request_id: str, revision: int, result: RollResult) -> dict:
         "type": "result",
         "request_id": request_id,
         "revision": revision,
-        "result": result.as_dict(),
+        "result": (
+            result.as_dict()
+            if isinstance(result, RollResult)
+            else copy.deepcopy(result)
+        ),
     }
 
 

@@ -163,4 +163,6 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
 - Foreground lifecycle and `websockets` transport accepted for M1-2.
 - Specify the first durable command contract in its issue; finish the multi-player
   join/recovery contract before M1-3 enables friend access over LAN.
+- Version 1 command protocol merged (#3) and documented in `protocol.md`; the
+  durable SQLite game store (#4) is in review, documented in `game_store.md`.
 - No server, network CLI, or transport dependencies have been implemented yet.

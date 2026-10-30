@@ -74,9 +74,9 @@ diagnostics only and may change; do not parse them.
 | `unsupported_version` | A well-formed request with a version other than 1 | HOST-2 |
 | `unsupported_command` | A well-formed request naming an unknown command | HOST-2 |
 | `invalid_expression` | A well-formed `roll` whose expression is invalid | HOST-2 |
-| `stale_revision` | Reserved: `expected_revision` does not match the current state | HOST-3 |
-| `request_conflict` | Reserved: a request ID was reused for different content | HOST-3 |
-| `internal_error` | Reserved: the host failed unexpectedly | HOST-3/HOST-4 |
+| `stale_revision` | `expected_revision` does not match the current state | HOST-3 |
+| `request_conflict` | The sender reused a request ID for different content | HOST-3 |
+| `internal_error` | Reserved: the host failed unexpectedly or its store was busy | HOST-4 |
 
 Checks run in this order, and the first failure decides the code:
 
@@ -99,10 +99,15 @@ as `expected_revision`.
 
 ## Replay identity
 
-HOST-3 uses this to return the original result for a retried request instead
-of executing it twice.
+The host uses this to return the original result for a retried request instead
+of executing it twice. See [game_store.md](game_store.md) for the execution
+order and failure behavior.
 
-- The lookup key is `request_id`.
+- The lookup key is `request_id` within the sender's server-side namespace:
+  (game, participant, `request_id`). The host establishes the participant from
+  its own trusted context, never from the message, so the wire format has no
+  identity fields. Two participants may both use `r1` without conflict, and
+  neither can see or replay the other's record.
 - The request's content is its parsed `version`, `type`, `command`, and `args`
   (`CommandRequest.content()`). Content compares by parsed JSON value, so object
   key order does not matter.
