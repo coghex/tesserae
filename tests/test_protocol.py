@@ -113,6 +113,8 @@ class ProtocolValidationTests(unittest.TestCase):
         self.assertEqual(first.content(), retry.content())
         spaced = parse_request(request(args={"expression": "2d6 + 3"}))
         self.assertNotEqual(first.content(), spaced.content())
+        first.content()["args"]["expression"] = "1d4"
+        self.assertEqual(first.content(), retry.content())
 
     def test_validation_and_formatting_need_no_randomness_database_or_socket(self):
         forbidden = AssertionError("not allowed during validation")

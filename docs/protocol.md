@@ -24,7 +24,11 @@ unchanged, the same object `tesserae roll --json` prints:
 
 ```json
 {"version": 1, "type": "result", "request_id": "r1", "revision": 1,
- "result": {"schema_version": 1, "expression": "2d6+3", "terms": [...], "total": 10}}
+ "result": {"schema_version": 1, "expression": "2d6+3",
+            "terms": [{"kind": "dice", "count": 2, "sides": 6, "rolls": [4, 3],
+                       "sign": 1, "subtotal": 7},
+                      {"kind": "constant", "value": 3, "sign": 1, "subtotal": 3}],
+            "total": 10}}
 ```
 
 Error, host to client:

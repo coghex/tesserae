@@ -4,6 +4,7 @@ This module neither executes commands, stores state, nor opens connections.
 See docs/protocol.md for the contract.
 """
 
+import copy
 import json
 import math
 from dataclasses import dataclass
@@ -58,7 +59,7 @@ class CommandRequest:
             "version": self.version,
             "type": "command",
             "command": self.command,
-            "args": self.args,
+            "args": copy.deepcopy(self.args),
         }
 
 
