@@ -197,7 +197,9 @@ unchanged, and no message carries a client-asserted identity or role.
   participant, request ID, expression, or result.
 - `game_id` and `participant_id` are opaque strings of 1 to 128 characters
   without whitespace.
-- No error message ever includes a presented token.
+- No error message ever includes a presented token or a client-supplied field
+  name. Unexpected and duplicate fields are counted or described generically,
+  never named, because a token pasted as a key would otherwise be echoed back.
 
 ### Joining
 
@@ -283,11 +285,16 @@ When a reply is uncertain (for example, the connection dropped after sending):
    newer than before.
 2. Resend the uncertain command unchanged, with its original `request_id`
    and `expected_revision`.
-3. A `result` is the original outcome. Its `revision` is the revision that
-   command produced, which may be older than the snapshot's. A
-   `stale_revision` means that command never committed. Deciding whether to
-   submit a new action, with a new `request_id` and the current revision, is
-   the player's choice.
+3. The reply is one of three outcomes:
+   - **It had committed.** The `result` is the original outcome, with no new
+     roll. Its `revision` is the revision that command produced, which may be
+     older than the snapshot's.
+   - **It never committed, and `expected_revision` still matches** the current
+     revision. It executes now, for the first time, and the `result` is that
+     fresh outcome.
+   - **It never committed, and the revision has moved on.** The reply is
+     `stale_revision`. Deciding whether to submit a new action, with a new
+     `request_id` and the current revision, is the player's choice.
 
 Clients and hosts never silently replace `expected_revision`, mint a new ID, or
 rerun a rejected action.
@@ -337,7 +344,8 @@ Reconnect and retry. Alice's connection dropped before she saw her reply to
 
 `r2` had committed at revision 2, so the retry returns that original outcome
 without rolling. Had it not committed, the reply would be `stale_revision` with
-`revision` 3.
+`revision` 3, because its `expected_revision` of 1 no longer matches. Had the game
+still been at revision 1, the retry would have executed for the first time.
 
 ## Client convention
 

@@ -353,11 +353,13 @@ def _check_revision(value):
 
 
 def _field_problem(missing: list[str], extra: list[str], subject: str) -> str:
+    # Missing names come from the protocol; extra names are client input (a
+    # token pasted as a key, for example), so they are counted, never echoed.
     parts = []
     if missing:
         parts.append("missing " + ", ".join(missing))
     if extra:
-        parts.append("unexpected " + ", ".join(extra))
+        parts.append(f"{len(extra)} unexpected field{'s' if len(extra) > 1 else ''}")
     return f"{subject} has {'; '.join(parts)}."
 
 
@@ -365,7 +367,7 @@ def _reject_duplicate_keys(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError(f"duplicate key {key!r}")
+            raise ValueError("duplicate object key")  # never echo client keys
         result[key] = value
     return result
 
