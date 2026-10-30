@@ -185,7 +185,7 @@ interactive client. A custom CLI remains thin application-specific glue.
 `prompt_toolkit` remains an optional later choice for interactive editing; pipe
 mode does not require a terminal editing library.
 
-### D-17. Casual manual development and owner-controlled merging
+### D-17. Casual manual development and project-scoped merge authorization
 
 The owner explicitly directed that Tesserae not use the custom Kanban plugins,
 their approval/review coordinators or gates, or `docs-push`. Those workflows belong
@@ -194,8 +194,12 @@ to the owner's professional projects, not this hobby project.
 Use ordinary Git branches/PRs, with related code and documentation together.
 Agents can draft and file issues autonomously. PR reviews are manual assessments
 reported in conversation, not automatic review labels or posted verdicts. The owner
-gives final merge approval; after that approval, run the agreed checks and merge
-only if they pass. No automatic merging is authorized by passing checks alone.
+subsequently gave standing permission to merge PRs that are ready after manual
+review and passing checks at the current head. A request to check a PR includes
+merging it if ready, without another approval prompt. Unresolved blockers or failed
+checks leave it open; explicit review-only or hold requests take precedence.
+This permission applies only to Tesserae, not globally or to other projects.
+Passing checks alone do not replace manual review.
 
 Root `AGENTS.md` records this project-specific exception and overrides older
 workflow instructions in this repository and issue descriptions. Earlier decisions
