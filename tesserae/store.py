@@ -181,31 +181,41 @@ class GameStore:
         a revocation are strictly ordered. A revoked context gets
         session_revoked and nothing else.
         """
+        return self.execute_command(context, raw)[0]
+
+    def execute_command(
+        self, context: ParticipantContext, raw: str | bytes
+    ) -> tuple[dict, bool]:
+        """Like execute, plus whether this call committed a fresh command.
+
+        Only a True outcome advanced the revision. Replays, conflicts, stale
+        requests, invalid input, and revoked sessions are all False.
+        """
         _check_context(context)
         try:
             request = parse_request(raw)
         except ProtocolError as error:
             revision = self.session_revision(context)
             if revision is None:
-                return session_error("session_revoked")
-            return error.to_message(revision=revision)
+                return session_error("session_revoked"), False
+            return error.to_message(revision=revision), False
         content = request.content()
         with self._write():
             if context.credential_id is not None and not self._credential_is_active(
                 context
             ):
-                return session_error("session_revoked")
+                return session_error("session_revoked"), False
             record = self._find(context.participant_id, request.request_id)
             current = self._current_revision()
             if record is not None:
                 if record.content == content:
-                    return record.to_message()
+                    return record.to_message(), False
                 return error_message(
                     "request_conflict",
                     "This request_id was already used for a different command.",
                     request_id=request.request_id,
                     revision=current,
-                )
+                ), False
             if request.expected_revision != current:
                 return error_message(
                     "stale_revision",
@@ -213,7 +223,7 @@ class GameStore:
                     f"but the game is at revision {current}.",
                     request_id=request.request_id,
                     revision=current,
-                )
+                ), False
             result = roll_expression(
                 request.args["expression"], randint=self._randint
             ).as_dict()
@@ -226,7 +236,7 @@ class GameStore:
             )
             self._insert_record(record)
             self._advance_revision(record.revision)
-        return record.to_message()
+        return record.to_message(), True
 
     def revision(self) -> int:
         return self._current_revision()

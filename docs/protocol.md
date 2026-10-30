@@ -144,10 +144,9 @@ the other.
 - **Authenticated mode** is
   `tesserae serve --database PATH --port PORT --authenticated`
   ([#15](https://github.com/coghex/tesserae/issues/15)). Every connection must
-  join with a personal token, and acts as that token's participant. Shared
-  `revision` notifications are not sent yet
-  ([#16](https://github.com/coghex/tesserae/issues/16)); joins, syncs, and
-  commands work as described below.
+  join with a personal token, and acts as that token's participant. Joined
+  connections receive shared `revision` notifications
+  ([#16](https://github.com/coghex/tesserae/issues/16)).
 
 ## Authenticated sessions
 
@@ -255,11 +254,13 @@ notification, because they do not change the revision.
   reading the snapshot it sends. A commit that races a join is therefore covered
   either by the snapshot or by a later notification. The same holds for a sync.
 - **Slow clients.** Pending notifications for one connection collapse to the
-  newest revision, so there is no unbounded queue. If a connection still cannot
-  accept writes within the host's bounded write timeout, the host closes it
-  with code 1013. The client recovers by reconnecting and joining. A slow
-  connection never holds a database transaction or delays another connection's
-  replies.
+  newest revision, so there is no unbounded queue. Announcing a commit never
+  waits for any connection. If one message to a connection cannot be written
+  within 10 seconds (`WRITE_TIMEOUT_SECONDS`), the host closes that connection
+  with code 1013 and reason `slow consumer`. If even the close cannot be sent,
+  it drops the connection. The client recovers by reconnecting and joining. A
+  slow connection never holds a database transaction or delays another
+  connection's replies.
 
 There is no event log or history cursor. Current state always comes from a
 fresh snapshot. Notifications work only within one host process; another
@@ -278,7 +279,11 @@ same guard that checks the revision and commits the effects. A revocation
 commits under the same guard, so the two are strictly ordered. A command whose
 transaction started before the revocation committed may finish and is
 recorded. After that, protected operations get `session_revoked`, and the host
-closes the connection with 1008. Revocation never undoes committed actions.
+closes the connection with 1008. If the host notices the revocation while
+delivering a notification, no request is being answered, so it closes with
+1008 and reason `session_revoked` without sending an error. Either way the
+revoked session receives no further views or notifications. Revocation never
+undoes committed actions.
 
 Rotation invalidates the old token the same way. The participant joins again
 with the new token and keeps the same `participant_id` and replay namespace.

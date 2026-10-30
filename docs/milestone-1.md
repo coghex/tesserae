@@ -82,8 +82,8 @@ Depends on M1-2. The localhost portion is tracker
 is in [protocol.md](protocol.md#authenticated-sessions). Participants and
 credentials (#14) are merged, documented in
 [game_store.md](game_store.md#participants-and-credentials). The authenticated
-host (#15) is in review. Snapshots and notifications (#16) and the CLI (#17)
-are planned, not implemented. LAN access for a friend on another computer
+host (#15) is merged. Snapshots and notifications (#16) are in review, and the
+CLI (#17) is planned, not implemented. LAN access for a friend on another computer
 follows #12.
 
 - Maintain a duplex connection: send stdin while displaying incoming messages.
@@ -177,5 +177,6 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   development participant.
 - M1-3's localhost tracker #12 has begun: the authenticated session and recovery
   contract (#13) and persisted participants with personal tokens (#14) are
-  merged, and authenticated loopback hosting (#15) is in review.
-  Notifications and the CLI (#16–#17) are planned. LAN access follows.
+  merged, as is authenticated loopback hosting (#15). Shared revision
+  notifications (#16) are in review, and the CLI (#17) is planned. LAN access
+  follows.

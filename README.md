@@ -202,6 +202,19 @@ After the `snapshot`, send commands exactly as in development mode, and
 their own request IDs, so Alice's and Bob's `r1` are separate rolls. A retry
 after reconnecting or restarting returns the original result.
 
+Only the sender sees a command's result. When anyone's roll commits, every
+joined connection, including the roller's, also gets a small notification of
+the new revision:
+
+```
+< {"version": 1, "type": "revision", "game_id": "...", "revision": 1}
+```
+
+It never says who rolled or what. Use it to keep `expected_revision` current,
+or send a `sync`. A connection that stops reading is closed with code 1013;
+reconnect and join to catch up. Notifications only cover rolls made through
+this host process.
+
 A missing, wrong, or revoked token gets one `authentication_failed` error and
 the connection closes, without revealing anything about the game. Revoking or
 rotating a token while someone is connected ends their session at their next

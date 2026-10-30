@@ -161,12 +161,24 @@ class GameHostTests(TemporaryStore, unittest.IsolatedAsyncioTestCase):
         revision, records = self.history()
         self.assertEqual((revision, len(records)), (1, 1))
 
+    async def test_development_mode_sends_no_notifications(self):
+        uri = await self.start_host(Mock(return_value=1))
+        actor, _ = await welcomed(uri)
+        watcher, _ = await welcomed(uri)
+        self.assertEqual(
+            (await exchange(actor, request("r1", 0, "1d6")))["revision"], 1
+        )
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(watcher.recv(), 0.3)
+        await actor.close()
+        await watcher.close()
+
     async def test_unexpected_store_failure_reports_internal_error(self):
         uri = await self.start_host(Mock(return_value=1))
         connection, _ = await welcomed(uri)
         with (
             patch.object(
-                GameStore, "execute", side_effect=RuntimeError("disk on fire")
+                GameStore, "execute_command", side_effect=RuntimeError("disk on fire")
             ),
             self.assertLogs("tesserae.server", "ERROR") as logs,
         ):
