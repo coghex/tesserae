@@ -23,9 +23,10 @@ reviewed without a separate issue · `[deferred]` blocked on a concrete precondi
 - [#5] HOST-4. Expose commands through a foreground WebSocket server.
 
 Issue processing is complete for this tracker. HOST-1 (#2) is complete through
-merged PR #6. HOST-2 (#3) is in review; its contract is
-[docs/protocol.md](../protocol.md). HOST-3 (#4) depends on #3, and HOST-4 (#5)
-depends on #4. No server or durable command implementation has landed yet.
+merged PR #6, and HOST-2 (#3) through merged PR #8; its contract is
+[docs/protocol.md](../protocol.md). HOST-3 (#4) is in review; its service is
+documented in [docs/game_store.md](../game_store.md). HOST-4 (#5) depends on #4.
+No server has landed yet.
 
 ## Epic contract
 
@@ -213,6 +214,8 @@ personally selected each field name. HOST-3 and HOST-4 must consume the same con
 - **Out of scope:** Network handlers, terminal clients, game schemas, and event-sourcing
   reconstruction beyond the approved result/history requirements.
 - **Open questions:** None; consume the protocol specified by issue #3.
+- **Service:** [docs/game_store.md](../game_store.md). Replay is namespaced by
+  trusted participant context; all participants share one game revision.
 - **Estimate:** Medium; the most substantial child, kept focused on one operation.
 
 ### HOST-4. Expose commands through a foreground WebSocket server
