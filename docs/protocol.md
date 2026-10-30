@@ -363,9 +363,10 @@ without rolling. Had it not committed, the reply would be `stale_revision` with
 `revision` 3, because its `expected_revision` of 1 no longer matches. Had the game
 still been at revision 1, the retry would have executed for the first time.
 
-## Client convention
+## Client
 
-The thin client ([#17](https://github.com/coghex/tesserae/issues/17)) will be:
+The thin client ([#17](https://github.com/coghex/tesserae/issues/17),
+`tesserae/client.py`) is:
 
 ```sh
 python3 -m tesserae connect ws://127.0.0.1:PORT/ --token-file PATH [--game-id ID]
@@ -375,5 +376,28 @@ python3 -m tesserae connect ws://127.0.0.1:PORT/ --token-file PATH [--game-id ID
   newline. Operator commands create it with user-only permissions. Keep it
   outside the repository. The token never appears on a command line or in a URL.
 - The client joins automatically. With `--game-id`, it exits nonzero if the
-  snapshot names another game, before sending any input.
-- Stdout is one JSON message per line. Diagnostics go to stderr.
+  snapshot names another game, before sending any input. It refuses a URI
+  that carries a query, fragment, or credentials, without echoing it.
+- Stdout is one JSON message per line: the snapshot, every reply, and every
+  notification. Diagnostics go to stderr. The token is never printed.
+- Each nonblank stdin line is sent unchanged as one message, as soon as it is
+  read. The client never validates, rewrites, or retries a request.
+- **Reply pairing in practice.** The client keeps the lines it has sent in
+  order. A message from the host answers the oldest one only if it is a
+  well-formed version 1 reply to that line:
+  - a `command` gets its own `result` (same `request_id`, a revision, and a
+    result object);
+  - a `sync` gets this session's `snapshot` (same game and participant);
+  - any line can get an `error` with a code and a message.
+
+  Anything else is a protocol failure, for example a snapshot answering a
+  roll, or a result with no payload. The client stops without printing it,
+  and reports the requests still unanswered as uncertain.
+- **End of input.** The client waits up to `--drain-timeout` seconds (default
+  10) for replies to everything sent, then closes. It does not wait for
+  further notifications. If replies are missing, or the host closes with
+  requests outstanding, it names their request IDs on stderr and exits 3.
+  Resend those lines unchanged. Ctrl-C exits 130, and a host that ends the
+  session exits 1.
+- There is no automatic reconnection. Recovery is running the client again,
+  as described under [Recovery](#recovery).
