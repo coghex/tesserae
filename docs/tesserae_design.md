@@ -226,6 +226,17 @@ Children #26–#29 are planned. No LAN runtime behavior is implemented by this
 planning work. Public hosting, router automation, browser and game modules remain
 outside this tracker.
 
+### D-20. Browser work is beyond Milestone 1
+
+The owner explicitly deferred the browser beyond Milestone 1. The first
+playable loop uses the shared server/CLI surface and the selected referee
+workflow. Module/private-game work and end-to-end play no longer depend on a
+browser slice. [Milestone 1](milestone-1.md) records the revised order.
+Preserve [browser-client-notes.md](browser-client-notes.md) for the later browser
+milestone: the same personal token/join protocol can be reused, while browser
+certificate trust needs its own operator/user experience. This does not add
+browser serving or system certificate changes to the active LAN tracker.
+
 ## Proposed implementation boundaries
 
 These are proposals to refine as implementation proceeds, not additional signed-off

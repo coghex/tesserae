@@ -2,7 +2,8 @@
 
 Tesserae is a local-first tabletop roleplaying application built around an AI
 referee, executable rules modules, and several clients connected to one game host.
-The first game client is a thin streaming CLI; the browser client follows.
+The first game client is a thin streaming CLI; the browser client follows in a
+later milestone, beyond Milestone 1.
 Friends should be able to join the same locally hosted game from other computers.
 
 Different games select different modules. The application does not assume that

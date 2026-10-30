@@ -39,7 +39,13 @@ Use Python's `ssl` contexts through the existing `websockets` library. Its
 supports a server certificate/key and explicitly trusted self-signed certificates.
 The Python [context guidance](https://docs.python.org/3.11/library/ssl.html#ssl.create_default_context)
 provides certificate verification and endpoint identity checking. Keep those
-checks enabled and use the secure defaults; do not implement cryptography.
+checks enabled and use secure defaults. Both client trust paths explicitly OR
+`ssl.VERIFY_X509_STRICT` into `context.verify_flags`, retaining other default
+flags, required verification and hostname checking. Python 3.13+ enables strict
+checking by default, while Python 3.11 CI does not; the explicit flag makes
+strictness consistent without claiming every TLS-stack default is identical.
+See the [Python 3.13 change](https://docs.python.org/3.13/whatsnew/3.13.html#ssl).
+Do not implement cryptography.
 
 Planned commands, using placeholder paths and address:
 
@@ -71,16 +77,28 @@ There is no added listener, HTTP service or automatic background process.
 
 An operator creates a self-signed host certificate with an IP/DNS subjectAltName
 matching the endpoint that friends will use. #26 supplies and exercises the
-exact OpenSSL 3.x recipe, including compatibility with Python 3.11 defaults.
-OpenSSL is setup/test tooling; normal startup uses only Python SSL loading.
-Tests generate temporary certificates with the same tooling and do not silently
-skip verification if that prerequisite is missing.
+exact recipe, compatible with OpenSSL 3.x and macOS LibreSSL 3.3.6, and verifies
+it under explicitly strict checking in Python 3.11 CI and local Python 3.13+.
+Use whichever `openssl` is on PATH: `/usr/bin/openssl` on macOS may be LibreSSL,
+while a Homebrew OpenSSL may take precedence. Verify both tools when available
+and record versions. Fail clearly if a compatible executable is absent; do not
+silently skip TLS checks or require Homebrew when the system tool works.
+The executable is setup/test tooling; normal startup uses Python SSL loading.
 
 | File | Who uses it |
 |---|---|
 | Host certificate, public | Host presents it; friends trust their supplied copy through `--ca-file` |
 | Host private key | Kept on the host, with user-only permissions |
 | Personal token file | One participant's application identity; separately provisioned using existing operator commands |
+
+The #29 runbook starts with installing Python 3.11+, obtaining a compatible
+Tesserae checkout, creating/activating a virtual environment and running
+`python3 -m pip install -e .` from the repository root on the friend's computer.
+It then verifies the installed CLI and explains connecting from both computers.
+The host keeps its private key and game database. Only the public certificate
+and that friend's personal token go to the friend; explicit `--ca-file` trust
+does not require a system-wide certificate installation. A normal client run
+does not need the `openssl` executable.
 
 All live files stay outside the repository. A replacement endpoint identity or
 expired certificate requires an appropriate replacement certificate/trust copy;
@@ -132,5 +150,7 @@ device evidence are recorded.
 
 LAN setup may require an operator's normal OS network configuration. This
 tracker does not authorize automatic firewall/router changes, port forwarding,
-UPnP, public hosting or deployment services. Browser, modules and the AI referee
-remain later milestone work.
+UPnP, public hosting or deployment services. Modules and the AI referee remain
+later Milestone 1 work. The browser is deferred beyond Milestone 1; its saved
+[authentication and certificate notes](../browser-client-notes.md) do not add
+implementation requirements to this tracker.
