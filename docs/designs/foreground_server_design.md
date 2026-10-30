@@ -1,13 +1,14 @@
 # Foreground server delivery design
 
-Design state: `exploring`
+Design state: `ready for issue processing`
 
 Owner: `coghex/tesserae`; default branch: `main`.
 
 The owner approved the first server scope and requested that it become a tracker
 with easily accomplishable children. The approved contract is preserved in
-[tracker #1](https://github.com/coghex/tesserae/issues/1). This document proposes
-delivery boundaries; the child split has not yet been approved or filed.
+[tracker #1](https://github.com/coghex/tesserae/issues/1). The owner approved the
+four-child split and explicitly authorized drafting and filing all four without
+further approval pauses. All child issues are now filed; implementation has not begun.
 
 Status legend: `[ ]` unprocessed · `[#N]` linked to issue N · `[no-issue]`
 reviewed without a separate issue · `[deferred]` blocked on a concrete precondition.
@@ -15,10 +16,13 @@ reviewed without a separate issue · `[deferred]` blocked on a concrete precondi
 ## Processing status
 
 - [#1] EPIC. Run and persist commands on a foreground local server.
-- [ ] HOST-1. Make the package installable and run existing tests in CI.
-- [ ] HOST-2. Define and validate the command protocol.
-- [ ] HOST-3. Execute and record commands atomically in SQLite.
-- [ ] HOST-4. Expose commands through a foreground WebSocket server.
+- [#2] HOST-1. Make the package installable and run existing tests in CI.
+- [#3] HOST-2. Define and validate the command protocol.
+- [#4] HOST-3. Execute and record commands atomically in SQLite.
+- [#5] HOST-4. Expose commands through a foreground WebSocket server.
+
+Issue processing is complete for this tracker. Filed is not implemented or
+independently reviewed. Start with #2; #3 is blocked by #2, #4 by #3, and #5 by #4.
 
 ## Epic contract
 
@@ -40,9 +44,8 @@ reviewed without a separate issue · `[deferred]` blocked on a concrete precondi
   dependency configuration, or GitHub Actions workflow exists yet.
 - Root documentation records host-owned SQLite, WebSocket transport, foreground
   lifecycle, and server → CLI → browser order as accepted decisions.
-- The open tracker scan and searches for server, websocket, and command found no
-  existing issue before tracker #1 was created. Children still need dedup checks
-  when their final specifications are prepared.
+- Deduplication before filing found only the existing parent tracker. All four
+  children were then filed and linked; no duplicate child was found.
 
 ## Desired experience
 
@@ -73,7 +76,8 @@ conformance or exhaustive terminal tests. These exclusions match tracker #1.
 
 ## Design
 
-The proposed dependency chain is `HOST-1 → HOST-2 → HOST-3 → HOST-4`.
+The approved dependency chain is `HOST-1 → HOST-2 → HOST-3 → HOST-4`
+(`issue #2 → #3 → #4 → #5`). GitHub sub-issue and blocked-by relationships are set.
 
 The command contract is defined before persistence and network adapters depend on
 it. HOST-2 validates requests but does not expose an unrecorded campaign execution
@@ -87,8 +91,8 @@ that introduces each behavior; there is no separate omnibus testing ticket.
 
 Keep the parent open while children are delivered. Each PR closes its child issue
 and references tracker #1 as its parent, rather than accidentally closing the
-tracker with the first implementation PR. Link the created children as sub-issues
-or a parent checklist when their individual specifications have been approved.
+tracker with the first implementation PR. All four children are linked as native
+sub-issues. Their specifications were filed using the owner's delegated authority.
 
 ## Decisions
 
@@ -104,24 +108,29 @@ the entire game/application project.
 Use the existing dice arithmetic, host-owned SQLite, and `websockets`. Run the host
 in the foreground with an explicit start and clean Ctrl-C shutdown. Begin with a
 loopback-only development session. Root design decisions D-10 through D-16 and
-tracker #1 remain authoritative; the proposed split does not alter their behavior.
+tracker #1 remain authoritative; the child split does not alter their behavior.
 
-## Proposals and open questions
+### D-3. Four children and autonomous issue filing
+
+The owner approved this four-part split and said to draft and file all four. The
+owner also explicitly waived global issue-approval pauses for this hobby project
+and authorized agents to file issues they see fit. The project-specific exception
+is persisted in root `AGENTS.md`. It covers issue work, not a waiver of code
+review, CI, or private-content boundaries.
+
+## Resolved planning questions
 
 ### Q-1. Approve the four-child split
 
-The four proposed slices below divide packaging, the command contract, durable
-execution, and transport/lifecycle into separately reviewable changes. The owner
-has not yet signed off on these boundaries. Keep the design exploring until that
-approval and any needed refinements are complete.
+Resolved by D-3. The owner approved the four boundaries and authorized batch filing.
 
 ### Q-2. Settle the exact wire contract before filing HOST-2
 
-Tracker #1 already requires a versioned JSON contract, request IDs, expected
-revision, deterministic replay of recorded results, and explicit errors. Its exact
-message shape and validation/error cases should be presented with the HOST-2 issue
-specification. Do not silently implement competing shapes in HOST-3 or HOST-4.
-This does not block the packaging/CI slice.
+Resolved in the filed specification for [HOST-2 / #3](https://github.com/coghex/tesserae/issues/3)
+under the owner's delegated issue-authoring authority. It defines version-1 command,
+result, error, and welcome messages, validation categories, and replay content
+identity. This is the implementation contract; it is not a claim that the owner
+personally selected each field name. HOST-3 and HOST-4 must consume the same contract.
 
 ## Verification strategy
 
@@ -151,7 +160,7 @@ This does not block the packaging/CI slice.
 - **Acceptance signals:** `python3 -m pip install -e .` succeeds in a clean environment;
   `python3 -m unittest discover -s tests -v` retains all ten tests; the PR check passes.
 - **Out of scope:** Server, database, protocol implementation, and refactoring dice.
-- **Open questions:** None for this proposed scope.
+- **Open questions:** None.
 - **Estimate:** Easy; configuration-sized PR.
 
 ### HOST-2. Define and validate the command protocol
@@ -169,7 +178,7 @@ This does not block the packaging/CI slice.
   including unsupported versions/commands and malformed fields. Invalid requests
   do not roll. Contract examples match the implementation.
 - **Out of scope:** Actual persisted execution, request replay, sockets, and CLI UI.
-- **Open questions:** Q-2, to be resolved in the child specification before filing.
+- **Open questions:** None; Q-2 is resolved by issue #3's specification.
 - **Estimate:** Easy–Medium; small application contract PR.
 
 ### HOST-3. Execute and record commands atomically in SQLite
@@ -188,7 +197,7 @@ This does not block the packaging/CI slice.
   revision changes, and unchanged state/history on invalid, stale, or failed requests.
 - **Out of scope:** Network handlers, terminal clients, game schemas, and event-sourcing
   reconstruction beyond the approved result/history requirements.
-- **Open questions:** Q-2 must have been resolved by HOST-2; no competing protocol.
+- **Open questions:** None; consume the protocol specified by issue #3.
 - **Estimate:** Medium; the most substantial child, kept focused on one operation.
 
 ### HOST-4. Expose commands through a foreground WebSocket server

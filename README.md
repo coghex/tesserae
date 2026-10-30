@@ -44,6 +44,15 @@ the owner's `docs-push` workflow; the local-only documentation exception has end
 New implementation work follows issue → isolated worktree/branch → pull request.
 Keep the primary checkout clean.
 
+For this hobby project, the owner has authorized agents to draft and file issues
+without individual approval pauses, including batches. Verification and clear
+scope still apply; code review and CI requirements remain in force. See
+[AGENTS.md](AGENTS.md) for the project-specific working agreements.
+
+The first server scope is [tracker #1](https://github.com/coghex/tesserae/issues/1).
+Its four children and implementation order are recorded in the
+[server delivery design](docs/designs/foreground_server_design.md).
+
 ## Server process plan
 
 The first server will run in the foreground in its own terminal, with visible
