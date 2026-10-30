@@ -231,6 +231,9 @@ class FailureTests(ClientCase):
             ("missing token file", "missing", (), None, "cannot read token file"),
             ("connection refused", "alice", (), "ws://127.0.0.1:1/", "cannot connect"),
             ("secret in URI", "alice", (), self.uri + "?token=hunter2", "must not carry"),
+            ("bad IPv6 URI", "alice", (), "ws://[::1/", "must look like"),
+            ("port out of range", "alice", (), "ws://127.0.0.1:99999/", "must look like"),
+            ("port not a number", "alice", (), "ws://127.0.0.1:abc/", "must look like"),
         ]  # fmt: skip
         for description, name, extra, uri, diagnostic in cases:
             with self.subTest(description):
@@ -260,8 +263,10 @@ class UnansweredRequestTests(ClientCase):
     """A host that never answers is not something the real host does; these
     check that the client's bounded drain reports it rather than hanging."""
 
-    def fake_host(self, behavior):
+    def fake_host(self, behavior, greet=True):
         def handler(connection):
+            if not greet:
+                return behavior(connection)
             json.loads(connection.recv())  # the join
             connection.send(
                 json.dumps(
@@ -292,6 +297,45 @@ class UnansweredRequestTests(ClientCase):
         self.assertIn("'r1'", client.stderr)
         self.assertIn("resend those lines unchanged", client.stderr)
         self.assertCleanOutput(client)
+
+    def test_host_closing_at_once_is_a_clean_failure(self):
+        uri = self.fake_host(lambda connection: connection.close(), greet=False)
+        client = self.connect("alice", uri=uri)
+        self.assertEqual(client.finish(), 1)
+        self.assertIn("host closed the connection", client.stderr)
+        self.assertCleanOutput(client)
+
+    def test_invalid_replies_leave_the_request_uncertain(self):
+        bogus = {
+            "unknown type": json.dumps({"version": 1, "type": "ack"}),
+            "not JSON": "ok!",
+            "another request's result": json.dumps(
+                {"version": 1, "type": "result", "request_id": "r9", "revision": 1,
+                 "result": {}}
+            ),
+        }  # fmt: skip
+        for description, reply in bogus.items():
+            with self.subTest(description):
+
+                def answer_wrongly(connection, reply=reply):
+                    connection.recv()
+                    connection.send(reply)
+                    try:
+                        for _ in connection:
+                            pass
+                    except ConnectionClosed:
+                        pass
+
+                client = self.connect("alice", uri=self.fake_host(answer_wrongly))
+                self.assertEqual(client.message()["type"], "snapshot")
+                client.send(roll("r1", 0))
+                self.assertEqual(client.wait(), 3)
+                self.assertIn("'r1'", client.stderr)
+                self.assertIn("resend those lines unchanged", client.stderr)
+                self.assertEqual(
+                    len(client.stdout), 1
+                )  # the bogus reply is not printed
+                self.assertCleanOutput(client)
 
     def test_disconnect_with_a_pending_request_is_uncertain(self):
         def close_on_first_command(connection):

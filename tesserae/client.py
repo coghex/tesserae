@@ -28,6 +28,9 @@ EXIT_OK = 0  # stdin ended and every request was answered
 EXIT_FAILED = 1  # could not start, or the host ended the session
 EXIT_UNCERTAIN = 3  # some requests were never answered; resend them unchanged
 EXIT_INTERRUPTED = 130  # Ctrl-C
+# What can answer a request. Anything else, other than a notification, is a
+# protocol failure and answers nothing.
+REPLY_TYPES = frozenset({"result", "error", "snapshot"})
 
 
 class _Failure(Exception):
@@ -70,14 +73,19 @@ class _Client:
         except _Interrupted:
             return self._stop("interrupted", EXIT_INTERRUPTED)
         except _Failure as failure:
-            return _diagnose(str(failure), EXIT_FAILED)
+            # Requests already sent may or may not have committed.
+            code = EXIT_UNCERTAIN if self.unanswered else EXIT_FAILED
+            return self._stop(str(failure), code)
         finally:
             await connection.close()
 
     async def _session(self, connection) -> int:
-        await connection.send(
-            json.dumps({"version": 1, "type": "join", "token": self.token})
-        )
+        try:
+            await connection.send(
+                json.dumps({"version": 1, "type": "join", "token": self.token})
+            )
+        except ConnectionClosed:
+            raise _Failure(f"the host closed the connection {_closed(connection)}")
         try:
             first = await self._first(
                 asyncio.wait_for(connection.recv(), JOIN_REPLY_TIMEOUT_SECONDS)
@@ -86,7 +94,8 @@ class _Client:
             raise _Failure("the host did not answer the join in time") from None
         except ConnectionClosed:
             raise _Failure(f"the host closed the connection {_closed(connection)}")
-        message = _emit(first)
+        message = _decode(first)
+        _print(message)
         if message.get("type") == "welcome":
             raise _Failure("this is a development host; start it with --authenticated")
         if message.get("type") == "error":
@@ -131,15 +140,26 @@ class _Client:
                 raise _HostClosed from None
 
     async def _receive(self, connection):
-        """Print everything the host sends; ends quietly when it closes."""
+        """Print everything the host sends; ends quietly when it closes.
+
+        A message counts as the reply to the oldest unanswered line only if it
+        is a valid reply to it. Anything else stops the client, leaving that
+        request reported as uncertain.
+        """
         try:
             async for raw in connection:
-                if isinstance(raw, bytes):
-                    raise _Failure("the host sent a binary frame")
-                message = _emit(raw)
-                if message.get("type") != "revision" and self.unanswered:
-                    self.unanswered.popleft()
-                    self.replied.set()
+                message = _decode(raw)
+                if message.get("type") == "revision":
+                    if not _is_revision(message.get("revision")):
+                        raise _Failure("the host sent a malformed notification")
+                    _print(message)
+                    continue
+                if not self.unanswered:
+                    raise _Failure("the host sent a reply to nothing")
+                _check_reply(message, self.unanswered[0])
+                _print(message)
+                self.unanswered.popleft()
+                self.replied.set()
         except ConnectionClosed:
             pass
 
@@ -205,16 +225,49 @@ class _HostClosed(Exception):
     pass
 
 
-def _emit(raw) -> dict:
-    """Print one host message as one JSON line."""
+def _decode(raw) -> dict:
+    if isinstance(raw, bytes):
+        raise _Failure("the host sent a binary frame")
     try:
         message = json.loads(raw)
     except ValueError:
         raise _Failure("the host sent something that is not JSON") from None
     if not isinstance(message, dict):
         raise _Failure("the host sent a JSON value that is not an object")
-    print(json.dumps(message), flush=True)
     return message
+
+
+def _print(message: dict):
+    """Print one host message as one JSON line."""
+    print(json.dumps(message), flush=True)
+
+
+def _check_reply(message: dict, sent: str):
+    """Raise unless `message` can be the host's reply to the line `sent`."""
+    kind = message.get("type")
+    if kind not in REPLY_TYPES:
+        raise _Failure(f"the host sent an unexpected {kind!r} message")
+    if kind == "result":
+        if not _is_revision(message.get("revision")):
+            raise _Failure("the host sent a result without a valid revision")
+        if message.get("request_id") != _sent_request_id(sent):
+            raise _Failure("the host sent a result for a different request")
+    elif kind == "error" and not isinstance(message.get("code"), str):
+        raise _Failure("the host sent an error without a code")
+    elif kind == "snapshot" and not _is_revision(message.get("revision")):
+        raise _Failure("the host sent a snapshot without a valid revision")
+
+
+def _is_revision(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _sent_request_id(line: str):
+    try:
+        data = json.loads(line)
+    except ValueError:
+        return None
+    return data.get("request_id") if isinstance(data, dict) else None
 
 
 def _decode_line(line: bytes):
@@ -256,9 +309,14 @@ def _start_stdin_reader(loop, lines: asyncio.Queue):
 
 
 def _check_uri(uri: str):
-    parts = urlsplit(uri)
+    shape = "the host URI must look like ws://127.0.0.1:PORT/"
+    try:
+        parts = urlsplit(uri)
+        parts.port  # validates the port
+    except ValueError:
+        raise _Failure(shape) from None
     if parts.scheme not in ("ws", "wss") or not parts.hostname:
-        raise _Failure("the host URI must look like ws://127.0.0.1:PORT/")
+        raise _Failure(shape)
     if parts.query or parts.fragment or parts.username or parts.password:
         # Do not echo it: it might be carrying a secret.
         raise _Failure(
@@ -281,10 +339,7 @@ def _read_token(path) -> str:
 
 
 def _request_id(line: str) -> str:
-    try:
-        request_id = json.loads(line).get("request_id")
-    except (ValueError, AttributeError):
-        request_id = None
+    request_id = _sent_request_id(line)
     return (
         repr(request_id)
         if isinstance(request_id, str)

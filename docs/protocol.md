@@ -383,7 +383,10 @@ python3 -m tesserae connect ws://127.0.0.1:PORT/ --token-file PATH [--game-id ID
 - Each nonblank stdin line is sent unchanged as one message, as soon as it is
   read. The client never validates, rewrites, or retries a request.
 - **Reply pairing in practice.** The client keeps the lines it has sent in
-  order. Each non-`revision` message from the host answers the oldest one.
+  order. A message from the host answers the oldest one only if it is a valid
+  reply: a `result` for that line's `request_id`, an `error` with a code, or a
+  `snapshot`. Anything else is a protocol failure. The client stops without
+  printing it, and reports the requests still unanswered as uncertain.
 - **End of input.** The client waits up to `--drain-timeout` seconds (default
   10) for replies to everything sent, then closes. It does not wait for
   further notifications. If replies are missing, or the host closes with
