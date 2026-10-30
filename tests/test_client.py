@@ -217,6 +217,26 @@ class StreamingTests(ClientCase):
         self.assertEqual(len(self.history()[1]), 1)
 
 
+class ReplyTests(ClientCase):
+    def test_syncs_and_rejected_lines_get_their_replies(self):
+        self.start_host()
+        alice, snapshot = self.joined("alice")
+        alice.send(
+            '{"version": 1, "type": "sync"}',
+            "not json",
+            json.dumps({"version": 1, "type": "join", "token": "x"}),
+            roll("r1", 5),
+        )
+        replies = [alice.message() for _ in range(4)]
+        self.assertEqual(replies[0], snapshot)
+        self.assertEqual(
+            [r.get("code") for r in replies[1:]],
+            ["invalid_request", "already_joined", "stale_revision"],
+        )
+        self.assertEqual(alice.finish(), 0)
+        self.assertCleanOutput(alice)
+
+
 class FailureTests(ClientCase):
     def test_failed_starts_exit_nonzero_and_send_nothing(self):
         self.start_host()
@@ -306,11 +326,27 @@ class UnansweredRequestTests(ClientCase):
         self.assertCleanOutput(client)
 
     def test_invalid_replies_leave_the_request_uncertain(self):
+        # Each is answered to a roll; none of them is a valid answer to it.
         bogus = {
             "unknown type": json.dumps({"version": 1, "type": "ack"}),
             "not JSON": "ok!",
             "another request's result": json.dumps(
                 {"version": 1, "type": "result", "request_id": "r9", "revision": 1,
+                 "result": {}}
+            ),
+            "snapshot instead of a result": json.dumps(
+                {"version": 1, "type": "snapshot", "game_id": "g",
+                 "participant_id": "p_fake", "revision": 1}
+            ),
+            "result without a payload": json.dumps(
+                {"version": 1, "type": "result", "request_id": "r1", "revision": 1}
+            ),
+            "error without a message": json.dumps(
+                {"version": 1, "type": "error", "request_id": "r1", "revision": 0,
+                 "code": "stale_revision"}
+            ),
+            "unsupported version": json.dumps(
+                {"version": 2, "type": "result", "request_id": "r1", "revision": 1,
                  "result": {}}
             ),
         }  # fmt: skip

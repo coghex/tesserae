@@ -28,9 +28,6 @@ EXIT_OK = 0  # stdin ended and every request was answered
 EXIT_FAILED = 1  # could not start, or the host ended the session
 EXIT_UNCERTAIN = 3  # some requests were never answered; resend them unchanged
 EXIT_INTERRUPTED = 130  # Ctrl-C
-# What can answer a request. Anything else, other than a notification, is a
-# protocol failure and answers nothing.
-REPLY_TYPES = frozenset({"result", "error", "snapshot"})
 
 
 class _Failure(Exception):
@@ -100,8 +97,9 @@ class _Client:
             raise _Failure("this is a development host; start it with --authenticated")
         if message.get("type") == "error":
             raise _Failure(f"the host refused to join: {message.get('code')}")
-        if message.get("type") != "snapshot":
-            raise _Failure("the host's first reply was not a snapshot")
+        if message.get("type") != "snapshot" or not _is_snapshot(message):
+            raise _Failure("the host's first reply was not a valid snapshot")
+        self.view = (message["game_id"], message["participant_id"])
         if self.game_id is not None and message.get("game_id") != self.game_id:
             raise _Failure(
                 f"the host serves game {message.get('game_id')}, not {self.game_id}; "
@@ -156,7 +154,7 @@ class _Client:
                     continue
                 if not self.unanswered:
                     raise _Failure("the host sent a reply to nothing")
-                _check_reply(message, self.unanswered[0])
+                _check_reply(message, self.unanswered[0], self.view)
                 _print(message)
                 self.unanswered.popleft()
                 self.replied.set()
@@ -242,20 +240,60 @@ def _print(message: dict):
     print(json.dumps(message), flush=True)
 
 
-def _check_reply(message: dict, sent: str):
-    """Raise unless `message` can be the host's reply to the line `sent`."""
-    kind = message.get("type")
-    if kind not in REPLY_TYPES:
-        raise _Failure(f"the host sent an unexpected {kind!r} message")
-    if kind == "result":
-        if not _is_revision(message.get("revision")):
-            raise _Failure("the host sent a result without a valid revision")
-        if message.get("request_id") != _sent_request_id(sent):
-            raise _Failure("the host sent a result for a different request")
-    elif kind == "error" and not isinstance(message.get("code"), str):
-        raise _Failure("the host sent an error without a code")
-    elif kind == "snapshot" and not _is_revision(message.get("revision")):
-        raise _Failure("the host sent a snapshot without a valid revision")
+def _check_reply(message: dict, sent: str, view: tuple):
+    """Raise unless `message` is a well-formed reply to the line `sent`.
+
+    A command is answered by its own result or an error, a sync by this
+    session's snapshot or an error, and anything else only by an error.
+    """
+    try:
+        line = json.loads(sent)
+    except ValueError:
+        line = None
+    kind = line.get("type") if isinstance(line, dict) else None
+    if message.get("version") != 1:
+        raise _Failure("the host sent a reply with an unsupported version")
+    if message.get("type") == "error":
+        if not _is_error(message):
+            raise _Failure("the host sent a malformed error")
+    elif kind == "command" and message.get("type") == "result":
+        if not (
+            message.get("request_id") == line.get("request_id")
+            and _is_revision(message.get("revision"))
+            and isinstance(message.get("result"), dict)
+        ):
+            raise _Failure("the host sent a result that does not answer the request")
+    elif kind == "sync" and message.get("type") == "snapshot":
+        if not (
+            _is_snapshot(message)
+            and (message["game_id"], message["participant_id"]) == view
+        ):
+            raise _Failure("the host sent a snapshot that does not match this session")
+    else:
+        raise _Failure(
+            f"the host answered a {kind or 'malformed'} line with a "
+            f"{message.get('type')!r} message"
+        )
+
+
+def _is_error(message: dict) -> bool:
+    return (
+        isinstance(message.get("code"), str)
+        and isinstance(message.get("message"), str)
+        and (
+            message.get("request_id") is None or isinstance(message["request_id"], str)
+        )
+        and (message.get("revision") is None or _is_revision(message["revision"]))
+    )
+
+
+def _is_snapshot(message: dict) -> bool:
+    return (
+        message.get("version") == 1
+        and isinstance(message.get("game_id"), str)
+        and isinstance(message.get("participant_id"), str)
+        and _is_revision(message.get("revision"))
+    )
 
 
 def _is_revision(value) -> bool:
