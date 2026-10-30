@@ -12,8 +12,12 @@ to this service rather than reimplementing any of it.
 
 Implemented: one SQLite store per game, the `roll` command, replay, conflict
 and stale-revision rejection, serialized writers, and read-only access. Not
-implemented: authentication, a network endpoint, turn rules, inventory, or
-hosting several games.
+implemented: authentication, turn rules, inventory, or hosting several games.
+The loopback-only WebSocket development host (`tesserae serve`, HOST-4,
+`tesserae/server.py`) exposes this service with one fixed development
+participant. Each store call runs on a worker thread that opens its own
+short-lived `GameStore`, following the ownership rules below. Unexpected
+failures and `StoreBusy` are reported as `internal_error`.
 
 ## One store, one game
 
