@@ -1,6 +1,6 @@
 # Tesserae working notes
 
-Repository: `coghex/tesserae`. Default branch: `main`.
+Repository: `coghex/tesserae`. Default branch: `master`.
 
 This is a casual hobby project developed manually with the owner. These
 project-specific instructions override conflicting global professional-project
@@ -22,9 +22,9 @@ workflow instructions and earlier delivery notes in this repository or its issue
   an opinion on a PR as merge approval.
 - There is no mandatory opposite-brand review, special provenance marker, or
   Kanban issue-approval requirement. Preserve existing attribution as history.
-- Prefer small, focused branches/PRs. Keep the main checkout clean. Use an isolated
-  worktree when another agent is working; never rewrite or clean another agent's
-  branch or worktree.
+- Prefer small, focused branches/PRs. Keep the primary checkout clean. Use an
+  isolated worktree when another agent is working; never rewrite or clean another
+  agent's branch or worktree.
 - Ordinary Git, GitHub CLI, and standard GitHub connector tools are fine.
 
 ## Issue work
@@ -49,7 +49,7 @@ design under `docs/designs/` before changing behavior.
   character fields, dice success rules, inventory, turns, or combat.
 - Keep tooling modest. Use meaningful tests for behavior and important failure
   cases; avoid tests that mirror configuration or duplicate library conformance.
-- Do not report filed, proposed, or unmerged work as implemented on `main`.
+- Do not report filed, proposed, or unmerged work as implemented on `master`.
 
 ## Local checks
 

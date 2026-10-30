@@ -60,6 +60,8 @@ owner. Use ordinary Git branches and PRs, keeping related documentation with the
 code. Do not use the owner's custom Kanban plugins, review coordinators, automatic
 approval/merge gates, or `docs-push` workflow here.
 
+The default branch is `master`.
+
 Agents can draft and file issues without individual approval pauses, including
 batches. They review changes in conversation; the owner decides whether to merge.
 Passing tests alone do not authorize a merge. See [AGENTS.md](AGENTS.md).

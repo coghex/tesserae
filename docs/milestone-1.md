@@ -155,7 +155,7 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
 
 ## Progress and next decision
 
-- Repository initialized on `main`.
+- Repository initialized; its default branch is now `master`.
 - Agreed architecture captured in `tesserae_design.md`; remaining proposals marked.
 - M1-1 implemented and verified with ten passing tests.
 - SQLite live persistence and server → CLI → browser order accepted.

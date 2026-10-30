@@ -2,7 +2,7 @@
 
 Design state: `ready for issue processing`
 
-Owner: `coghex/tesserae`; default branch: `main`.
+Owner: `coghex/tesserae`; default branch: `master`.
 
 The owner approved the first server scope and requested that it become a tracker
 with easily accomplishable children. The approved contract is preserved in

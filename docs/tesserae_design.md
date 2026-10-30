@@ -23,7 +23,7 @@ combat, inventory, or turn model.
 ## Verified starting point
 
 - The repository began as a local Git bootstrap. It now tracks GitHub's public
-  `coghex/tesserae`, default branch `main`, with the original MIT license preserved.
+  `coghex/tesserae`, default branch `master`, with the original MIT license preserved.
 - A separate private pilot has demonstrated conversational play backed by Python
   dice tools, structured character/campaign records, and a browser map.
 - That pilot has not been imported into this repository. Its original records
@@ -111,9 +111,10 @@ multiplayer features remain deferred.
 Historical bootstrap record; current workflow is D-17.
 
 The owner explicitly approved committing the README and these two design documents
-locally and fast-forwarding `main` to the completed bootstrap work. This is a
-one-time exception because `docs-push` requires an origin and the repository has
-none. It does not authorize remote publication or change future delivery policy.
+locally and fast-forwarding the then-default branch to the completed bootstrap
+work. This is a one-time exception because `docs-push` requires an origin and
+the repository has none. It does not authorize remote publication or change future
+delivery policy.
 
 ### D-10. SQLite for live state; JSON for exchange
 
@@ -154,9 +155,10 @@ failure behavior rather than reimplementing a library's conformance suite.
 Historical policy, superseded by D-17. Do not apply its publication instruction.
 
 The owner explicitly authorized local documentation commits and fast-forwarding
-`main` while this repository has no origin. This replaces the need for another
-one-time documentation exception on each edit. Keep edits isolated and the primary
-checkout clean. Once an origin exists, use the standing `docs-push` workflow again.
+the then-default branch while this repository has no origin. This replaces the
+need for another one-time documentation exception on each edit. Keep edits isolated
+and the primary checkout clean. Once an origin exists, use the standing `docs-push`
+workflow again.
 This exception applies only to documentation; it does not authorize publication,
 remote creation, or a bypass of code delivery/review requirements.
 
@@ -196,6 +198,13 @@ only if they pass. No automatic merging is authorized by passing checks alone.
 Root `AGENTS.md` records this project-specific exception and overrides older
 workflow instructions in this repository and issue descriptions. Earlier decisions
 about product architecture, privacy, and issue scope are preserved.
+
+### D-18. Default branch is master
+
+At the owner's explicit request, GitHub's default branch and the local primary
+branch were renamed to `master` after PR #7 merged. Preserve the existing commit
+history; no rebase or force-push is needed. CI push filters, instructions, and
+current repository links must use `master`.
 
 ## Proposed implementation boundaries
 
