@@ -10,16 +10,17 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from websockets.asyncio.client import connect
+from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect as sync_connect
 
 from tesserae.credentials import new_token, read_token_file
 from tesserae.protocol import session_error
 from tesserae.server import GameHost
-from tesserae.store import GameStore
+from tesserae.store import GameStore, StoreBusy
 
 
 def request(request_id, expected_revision, expression="2d6+3"):
@@ -42,17 +43,41 @@ def join_message(token):
 SYNC = json.dumps({"version": 1, "type": "sync"})
 
 
+NOTIFIED = {}  # connection id -> highest revision notification seen
+
+
+async def reply(connection):
+    """The next reply, skipping revision notifications, which are never replies."""
+    while True:
+        message = json.loads(await asyncio.wait_for(connection.recv(), 5))
+        if message["type"] != "revision":
+            return message
+        NOTIFIED[connection.id] = max(
+            NOTIFIED.get(connection.id, -1), message["revision"]
+        )
+
+
+async def notified(connection, revision):
+    """Wait until the connection has been told about `revision`."""
+    while NOTIFIED.get(connection.id, -1) < revision:
+        message = json.loads(await asyncio.wait_for(connection.recv(), 5))
+        assert message["type"] == "revision", message
+        NOTIFIED[connection.id] = max(
+            NOTIFIED.get(connection.id, -1), message["revision"]
+        )
+
+
 async def exchange(connection, message):
     await connection.send(message)
-    return json.loads(await asyncio.wait_for(connection.recv(), 5))
+    return await reply(connection)
 
 
 async def drain(connection):
-    """Every message until the host closes, and the close code."""
+    """Every reply until the host closes, and the close code."""
     messages = []
     try:
         while True:
-            messages.append(json.loads(await asyncio.wait_for(connection.recv(), 5)))
+            messages.append(await reply(connection))
     except ConnectionClosed:
         return messages, connection.close_code
 
@@ -70,11 +95,15 @@ class AuthenticatedHostCase(unittest.IsolatedAsyncioTestCase):
                 for name, token in self.tokens.items()
             }
 
-    async def start_host(self, randint=None, join_timeout=5):
+    async def start_host(self, randint=None, join_timeout=5, write_timeout=10):
         loop = asyncio.get_running_loop()
         stop, ready = loop.create_future(), loop.create_future()
-        host = GameHost(
-            self.path, authenticated=True, randint=randint, join_timeout=join_timeout
+        host = self.host = GameHost(
+            self.path,
+            authenticated=True,
+            randint=randint,
+            join_timeout=join_timeout,
+            write_timeout=write_timeout,
         )
         task = asyncio.create_task(host.run(0, stop, on_ready=ready.set_result))
 
@@ -202,6 +231,10 @@ class RevocationTests(AuthenticatedHostCase):
         bob, _ = await self.joined("bob")
         await exchange(alice, request("r1", 0, "1d6"))
         before = self.state()
+        # Let the notifications settle, so the next request is what meets the
+        # revocation. (Delivery would otherwise find it first, and close.)
+        await notified(alice, 1)
+        await notified(bob, 1)
 
         self.store().revoke_credential(self.ids["alice"])
         await alice.send(request("r1", 0, "1d6"))  # even a replay is refused
@@ -224,6 +257,191 @@ class RevocationTests(AuthenticatedHostCase):
 
         self.assertEqual(draw.call_count, 1)
         self.assertEqual(self.state(), before)
+
+
+async def quiet(test, connection, seconds=0.3):
+    """Assert nothing at all arrives on the connection for a while."""
+    with test.assertRaises(TimeoutError):
+        await asyncio.wait_for(connection.recv(), seconds)
+
+
+class NotificationTests(AuthenticatedHostCase):
+    async def test_passive_participant_learns_only_the_new_revision(self):
+        await self.start_host(Mock(side_effect=[4, 3]))
+        alice, _ = await self.joined("alice")
+        bob, _ = await self.joined("bob")
+        result = await exchange(alice, request("r1", 0))
+
+        note = json.loads(await asyncio.wait_for(bob.recv(), 5))
+        self.assertEqual(
+            note,
+            {"version": 1, "type": "revision", "game_id": self.game_id, "revision": 1},
+        )
+        for private in (self.ids["alice"], "r1", "2d6+3", "rolls", "total"):
+            self.assertNotIn(private, json.dumps(note))
+        await notified(alice, 1)  # the requester is told too
+        await quiet(self, bob)
+        self.assertEqual((await exchange(bob, SYNC))["revision"], 1)
+        self.assertEqual(result["revision"], 1)
+
+    async def test_only_fresh_commits_are_announced(self):
+        draw = Mock(return_value=2)
+        await self.start_host(draw)
+        alice, _ = await self.joined("alice")
+        bob, _ = await self.joined("bob")
+        await exchange(alice, request("r1", 0, "1d6"))
+        await notified(alice, 1)
+        await notified(bob, 1)
+
+        await exchange(alice, request("r1", 0, "1d6"))  # replay
+        await exchange(alice, request("r1", 1, "1d4"))  # conflict
+        await exchange(alice, request("r2", 0, "1d6"))  # stale
+        await exchange(alice, "{")  # invalid
+        await exchange(alice, SYNC)
+        await self.joined("alice")  # another connection joins
+        failing = patch.object(
+            GameStore, "execute_command", side_effect=OSError("disk")
+        )
+        with failing, self.assertLogs("tesserae.server", "ERROR"):
+            await exchange(alice, request("r3", 1, "1d6"))
+        await quiet(self, bob)
+        self.assertEqual(self.state()[0], 1)
+
+        await exchange(alice, request("r4", 1, "1d6"))
+        self.assertEqual(
+            json.loads(await asyncio.wait_for(bob.recv(), 5))["revision"], 2
+        )
+        self.assertEqual(draw.call_count, 2)
+
+    async def test_out_of_order_commit_callbacks_never_regress(self):
+        await self.start_host()
+        bob, _ = await self.joined("bob")
+        with GameStore(self.path, randint=Mock(return_value=1)) as store:
+            alice = store.authenticate(self.tokens["alice"])
+            store.execute(alice, request("r1", 0, "1d6"))
+            store.execute(alice, request("r2", 1, "1d6"))
+        self.host._publish(2)  # the later commit's callback finishes first
+        self.host._publish(1)
+
+        note = json.loads(await asyncio.wait_for(bob.recv(), 5))
+        self.assertEqual(note["revision"], 2)
+        await quiet(self, bob)
+        self.assertEqual((await exchange(bob, SYNC))["revision"], 2)
+
+    async def test_join_racing_a_commit_is_not_left_behind(self):
+        await self.start_host()
+        loop = asyncio.get_running_loop()
+        real = GameStore.session_revision
+        raced = []
+
+        def stale_read_then_commit(store, context):
+            revision = real(store, context)  # the joiner's snapshot reads first...
+            if context.participant_id == self.ids["bob"] and not raced:
+                raced.append(True)  # ...then Alice's commit lands and is announced
+                with GameStore(self.path, randint=Mock(return_value=1)) as other:
+                    alice = other.authenticate(self.tokens["alice"])
+                    reply = other.execute(alice, request("r1", revision, "1d6"))
+                loop.call_soon_threadsafe(self.host._publish, reply["revision"])
+            return revision
+
+        with patch.object(GameStore, "session_revision", stale_read_then_commit):
+            bob, snapshot = await self.joined("bob")
+        self.assertEqual(snapshot["revision"], 0)
+        note = json.loads(await asyncio.wait_for(bob.recv(), 5))
+        self.assertEqual(note["revision"], 1)
+
+    async def test_slow_reader_is_dropped_without_delaying_others(self):
+        await self.start_host(Mock(return_value=1), write_timeout=1)
+        alice, _ = await self.joined("alice")
+        slow, _ = await self.joined("bob")
+        carol = await connect(self.uri)  # Bob's second connection, reading normally
+        self.addAsyncCleanup(carol.close)
+        await exchange(carol, join_message(self.tokens["bob"]))
+        stuck_ports = {slow.local_address[1]}
+        real_send = ServerConnection.send
+
+        async def send(connection, message, *args, **kwargs):
+            if connection.remote_address[1] in stuck_ports:
+                await asyncio.Event().wait()  # like a socket that never drains
+            return await real_send(connection, message, *args, **kwargs)
+
+        with patch.object(ServerConnection, "send", send):
+            started = asyncio.get_running_loop().time()
+            await exchange(alice, request("r1", 0, "1d6"))
+            await notified(carol, 1)
+            self.assertLess(asyncio.get_running_loop().time() - started, 0.8)
+            with self.assertRaises(ConnectionClosed):
+                await asyncio.wait_for(slow.recv(), 5)
+        self.assertEqual(slow.close_code, 1013)
+
+        _, snapshot = await self.joined("bob")  # recovery: rejoin for a snapshot
+        self.assertEqual(snapshot["revision"], 1)
+
+    async def test_failed_join_snapshot_leaves_no_session(self):
+        await self.start_host(Mock(return_value=1), write_timeout=0.3)
+        alice, _ = await self.joined("alice")
+        joining = await connect(self.uri)
+        self.addAsyncCleanup(joining.close)
+        stuck_ports = {joining.local_address[1]}
+        real_send = ServerConnection.send
+
+        async def send(connection, message, *args, **kwargs):
+            if connection.remote_address[1] in stuck_ports:
+                await asyncio.Event().wait()
+            return await real_send(connection, message, *args, **kwargs)
+
+        with patch.object(ServerConnection, "send", send):
+            await joining.send(join_message(self.tokens["bob"]))
+            with self.assertRaises(ConnectionClosed):
+                await asyncio.wait_for(joining.recv(), 5)
+        self.assertEqual(joining.close_code, 1013)
+        for _ in range(50):
+            if len(self.host._sessions) == 1:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual([s.context.participant_id for s in self.host._sessions],
+                         [self.ids["alice"]])  # fmt: skip
+        await exchange(alice, request("r1", 0, "1d6"))
+        await notified(alice, 1)
+
+    async def test_failed_delivery_check_is_retried_then_resynchronizes(self):
+        await self.start_host(Mock(return_value=1))
+        alice, _ = await self.joined("alice")
+        bob, _ = await self.joined("bob")
+        real = GameStore.session_revision
+        failures = {"left": 1}
+
+        def flaky(store, context):
+            if context.participant_id == self.ids["bob"] and failures["left"]:
+                failures["left"] -= 1
+                raise StoreBusy("busy")
+            return real(store, context)
+
+        with (
+            patch.object(GameStore, "session_revision", flaky),
+            self.assertLogs("tesserae.server", "ERROR"),
+        ):
+            await exchange(alice, request("r1", 0, "1d6"))
+            await notified(bob, 1)  # one transient failure is retried
+
+            failures["left"] = 99  # now it keeps failing
+            await exchange(alice, request("r2", 1, "1d6"))
+            with self.assertRaises(ConnectionClosed):
+                await asyncio.wait_for(bob.recv(), 5)
+        self.assertEqual(bob.close_code, 1011)
+        _, snapshot = await self.joined("bob")  # rejoining resynchronizes
+        self.assertEqual(snapshot["revision"], 2)
+
+    async def test_revoked_session_stops_receiving_updates(self):
+        await self.start_host(Mock(return_value=1))
+        alice, _ = await self.joined("alice")
+        bob, _ = await self.joined("bob")
+        self.store().revoke_credential(self.ids["bob"])
+        await exchange(alice, request("r1", 0, "1d6"))
+        with self.assertRaises(ConnectionClosed):
+            message = await asyncio.wait_for(bob.recv(), 5)
+            self.fail(f"revoked session received {message}")
+        self.assertEqual((bob.close_code, bob.close_reason), (1008, "session_revoked"))
 
 
 class AuthorizationOrderingTests(unittest.TestCase):

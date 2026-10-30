@@ -138,13 +138,19 @@ Invalid, conflicting, stale, and replayed requests draw no dice and change no
 state. Content compares as parsed JSON, so object key order is irrelevant.
 Expressions compare as exact strings.
 
+`execute_command(context, raw)` is `execute` plus a flag saying whether that
+call committed a fresh command. The authenticated host announces a new
+revision only when the flag is true, never for replays, conflicts, stale or
+invalid requests, failures, or revoked sessions.
+
 ## Reads
 
 `revision()`, `session_revision(context)`, `lookup(context, request_id)`, and
 `history(context)` never write. `session_revision` is the participant-facing
 read the authenticated host uses for joins and syncs. It returns `None`
 instead of the revision when the context's credential is no longer active,
-checking and reading in a single statement. They do not advance the revision, roll dice, or add history.
+checking and reading in a single statement. None of these advance the
+revision, roll dice, or add history.
 `lookup` and `history` return only the caller's own records, so another
 participant's `r1` is invisible to them. `inspect_history()` returns every
 participant's records and is for operators and tests, never for answering a

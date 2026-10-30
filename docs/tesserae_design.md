@@ -380,8 +380,8 @@ proof that every rule implementation is correct.
 
   Still open beyond localhost: LAN binding/transport for a friend on another
   computer, which follows tracker #12. Participants and credentials (#14) are
-  merged, and the authenticated host (#15) is in review. Snapshots and
-  notifications (#16) and the CLI (#17) are planned.
+  merged, as is the authenticated host (#15). Snapshots and notifications
+  (#16) are in review, and the CLI (#17) is planned.
 
 ## Technical references for the transport proposal
 
