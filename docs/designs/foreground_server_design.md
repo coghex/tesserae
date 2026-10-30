@@ -23,10 +23,11 @@ reviewed without a separate issue · `[deferred]` blocked on a concrete precondi
 - [#5] HOST-4. Expose commands through a foreground WebSocket server.
 
 Issue processing is complete for this tracker. HOST-1 (#2) is complete through
-merged PR #6, and HOST-2 (#3) through merged PR #8; its contract is
-[docs/protocol.md](../protocol.md). HOST-3 (#4) is in review; its service is
-documented in [docs/game_store.md](../game_store.md). HOST-4 (#5) depends on #4.
-No server has landed yet.
+merged PR #6, HOST-2 (#3) through merged PR #8 (contract:
+[docs/protocol.md](../protocol.md)), and HOST-3 (#4) through merged PR #9
+(service: [docs/game_store.md](../game_store.md)). HOST-4 (#5), the foreground
+WebSocket development host, is in review. Tracker #1 closes once its combined
+acceptance is verified after HOST-4 merges.
 
 ## Epic contract
 

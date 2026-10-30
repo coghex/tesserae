@@ -19,8 +19,8 @@ for agreed direction, proposals, and open questions, and the
 ## First executable slice
 
 The initial command-line interface exercises a generic dice expression evaluator.
-It requires Python 3.11 or newer and no third-party packages. Install this checkout
-into a virtual environment:
+It requires Python 3.11 or newer; the only runtime dependency is `websockets`, for
+the development host. Install this checkout into a virtual environment:
 
 ```sh
 python3 -m venv .venv
@@ -49,9 +49,8 @@ Recorded game actions will be introduced with the state and command layer.
 There are no built-in critical, fumble, success, or damage rules.
 
 No web UI, model integration, or complete game module has been implemented yet.
-The dice utility is not yet a network client. The agreed next step is command
-handling on a minimal authoritative server, SQLite persistence, and a streaming
-CLI client. `websockets` is selected for transport but is not installed yet.
+Recorded rolls go through the development host below. The next step is real
+participant joining and a streaming CLI client.
 
 ## Working together
 
@@ -96,12 +95,52 @@ Ruff is a pinned development dependency, not a game/runtime dependency. Start wi
 this setup; additional testing frameworks, type-checking gates, and tooling can be
 added when a concrete need appears.
 
-## Server process plan
+## Development host
 
-The first server will run in the foreground in its own terminal, with visible
-startup/error logs and Ctrl-C shutdown. Clients connect to that running process;
-they do not start or daemonize a server implicitly. The first server slice is
-loopback-only; the player join/identity flow precedes LAN access for friends.
+`tesserae serve` runs one game in the foreground until Ctrl-C. It listens only on
+127.0.0.1 and has no login: **every connection acts as one fixed development
+participant, `local-development`**. This is for local development only. Playing
+with friends needs the later authenticated join flow and per-player views. Keep
+game databases outside this repository.
+
+Start it in its own terminal (`--port 0` picks a free port):
+
+```sh
+python3 -m tesserae serve --database ~/tesserae-dev.sqlite3 --port 8790
+```
+
+It prints the address to connect to, for example
+`Tesserae development host listening on ws://127.0.0.1:8790/ (database: ...)`,
+and logs connections to stderr. In a second terminal, connect with the
+`websockets` library's interactive client:
+
+```sh
+python3 -m websockets ws://127.0.0.1:8790/
+```
+
+The host greets you with the game's current revision:
+
+```
+< {"version": 1, "type": "welcome", "revision": 0}
+```
+
+Send a roll by pasting one line of JSON at the `>` prompt. `expected_revision`
+is the revision from the welcome, and `request_id` is any ID you choose:
+
+```json
+{"version": 1, "type": "command", "request_id": "r1", "expected_revision": 0, "command": "roll", "args": {"expression": "2d6+3"}}
+```
+
+The reply is the committed result, and the game is now at revision 1. Sending
+exactly the same line again, even after reconnecting or restarting the host,
+returns the original result without rolling again. A new roll needs a new
+`request_id` and the current `expected_revision`. A stale revision is rejected
+with `stale_revision`, and reusing an ID for a different roll is rejected with
+`request_conflict`. See the [protocol](docs/protocol.md) and the
+[game store](docs/game_store.md) for the full contract.
+
+Press Ctrl-C in the host's terminal to stop it. The database keeps every
+committed roll.
 
 ## License
 
