@@ -23,7 +23,8 @@ reviewed without a separate issue · `[deferred]` blocked on a concrete precondi
 - [#5] HOST-4. Expose commands through a foreground WebSocket server.
 
 Issue processing is complete for this tracker. HOST-1 (#2) is complete through
-merged PR #6; HOST-2 (#3) is next. HOST-3 (#4) depends on #3, and HOST-4 (#5)
+merged PR #6. HOST-2 (#3) is in review; its contract is
+[docs/protocol.md](../protocol.md). HOST-3 (#4) depends on #3, and HOST-4 (#5)
 depends on #4. No server or durable command implementation has landed yet.
 
 ## Epic contract
@@ -191,6 +192,8 @@ personally selected each field name. HOST-3 and HOST-4 must consume the same con
   do not roll. Contract examples match the implementation.
 - **Out of scope:** Actual persisted execution, request replay, sockets, and CLI UI.
 - **Open questions:** None; Q-2 is resolved by issue #3's specification.
+- **Contract:** [docs/protocol.md](../protocol.md). `request_id` may not contain
+  whitespace anywhere (owner's choice, 2026-10-30).
 - **Estimate:** Easy–Medium; small application contract PR.
 
 ### HOST-3. Execute and record commands atomically in SQLite
