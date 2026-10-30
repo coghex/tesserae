@@ -11,8 +11,10 @@ to this service rather than reimplementing any of it.
 ## Status
 
 Implemented: one SQLite store per game, the `roll` command, replay, conflict
-and stale-revision rejection, serialized writers, and read-only access. Not
-implemented: authentication, turn rules, inventory, or hosting several games.
+and stale-revision rejection, serialized writers, read-only access, and
+[participants with personal join tokens](#participants-and-credentials) (#14).
+Not implemented: authenticated network admission (#15), turn rules, inventory,
+or hosting several games.
 The loopback-only WebSocket development host (`tesserae serve`, HOST-4,
 `tesserae/server.py`) exposes this service with one fixed development
 participant. Each store call runs on a worker thread that opens its own
@@ -34,15 +36,65 @@ initialized. The journal mode switches to WAL only after the file is known to
 be a Tesserae store. The store never clears, recreates, or silently repairs a
 database.
 
+**Upgrades.** Opening a store with an older schema upgrades it to the current
+one in a single transaction, after the old schema has been validated. Either
+every schema and version change commits, or the file stays exactly at its old
+version. Upgrading from version 1 only adds the participant and credential
+tables. The game ID, revision, every command and its result, and the
+`local-development` attribution of earlier history are untouched. A store
+whose schema is newer than this Tesserae understands is refused unchanged, with
+a message to upgrade Tesserae. Older Tesserae versions refuse an upgraded store
+the same way.
+
 ## Trusted participant context
 
 Every execution and participant-facing read takes a `ParticipantContext`. Only
 the host creates it, from its own knowledge of who is connected. It is never
 read from client JSON, a nickname, request args, or a client-supplied
-connection ID. The wire format has no identity fields. A context is just a
-stable `participant_id` string; there is no account schema yet. HOST-4 uses one
-fixed local development context. Later multi-user work will supply
-authenticated contexts.
+connection ID. The wire format has no identity fields. A context is a stable
+`participant_id` string. An authenticated context also carries the
+`credential_id` it was verified with, so its validity can be rechecked.
+`tesserae serve` uses one fixed development context, `local-development`,
+which has no credential. `authenticate(token)` produces authenticated contexts
+for the authenticated host (#15).
+
+## Participants and credentials
+
+Participants are durable identities in the store, managed by local operator
+commands on the host. There is no network administration and no account,
+password, or role system.
+
+- **Identity.** `add_participant` assigns an opaque ID, `p_` followed by 16 hex
+  characters. A generated ID can never be `local-development`, and no command
+  renames a participant, so development history stays in its own namespace. A
+  name is a display label only. Two participants may share one, and it never
+  authenticates anyone or selects a replay namespace.
+- **Tokens.** Each token is `tess_` plus 32 random bytes from `secrets`,
+  URL-safe encoded. The store keeps only its SHA-256 digest, never the token.
+  These are random bearer credentials, not passwords, so a fast hash is
+  appropriate.
+- **One active credential per participant.** `rotate_credential` revokes the
+  current token and issues a new one. `revoke_credential` revokes it without a
+  replacement, and a later rotation re-enables the participant. Both keep the
+  participant ID, every recorded command, and the old credential rows, which
+  are marked revoked with a timestamp.
+- **Verification.** `authenticate(token)` returns the participant's context for
+  an active token and `None` for anything else, without raising on bad input.
+  `credential_active(context)` rechecks a context later. Development contexts
+  are never active there. Network input becomes a trusted context only through
+  `authenticate`.
+- **Transactions.** Every change commits under the store's write guard with
+  the usual bounded wait, and takes effect for authentication as soon as it
+  commits, including in other processes and after a restart. Administration
+  never changes the revision or adds history.
+
+Operator commands (`tesserae participant add|list|rotate|revoke`) write each
+new token only to a `--token-file` that must not exist yet. The file is created
+with user-only permissions (0600). The token file is written before the store
+change, and removed again if that change fails, so a committed credential
+always has its token on disk. A token never appears in arguments, output,
+errors, or the database. A lost token cannot be recovered; rotate to issue a
+new one. See the README for examples.
 
 ## Revisions
 
@@ -127,8 +179,15 @@ lookups and dice arithmetic.
 ## Storage
 
 SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
-"TESS"). The schema version is SQLite's `user_version`, currently 1. There are two
-tables: `game` (a single row: `game_id`, `revision`) and `commands` (one row per
-committed command: `revision`, `participant_id`, `request_id`, canonical
-content JSON, and the dice result JSON). The `commands` table is the history.
-It is not an event-sourcing log, and SQLite is the only live authority.
+"TESS"). The schema version is SQLite's `user_version`, currently 2.
+
+| Table | Since | Contents |
+|---|---|---|
+| `game` | 1 | One row: `game_id`, `revision` |
+| `commands` | 1 | One row per committed command: `revision`, `participant_id`, `request_id`, canonical content JSON, dice result JSON |
+| `participants` | 2 | `participant_id`, display `name`, `created_at` |
+| `credentials` | 2 | `id`, `participant_id`, token `digest`, `issued_at`, `revoked_at` (null while active; at most one active per participant) |
+
+The `commands` table is the history. It is not an event-sourcing log, and
+SQLite is the only live authority. `local-development` appears in `commands`
+but has no `participants` row.

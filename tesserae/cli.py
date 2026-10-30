@@ -57,7 +57,38 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument(
         "--port", required=True, type=_port, help="TCP port; 0 picks a free one."
     )
+    participant = commands.add_parser(
+        "participant",
+        help="Manage this game's participants and their join tokens (local only).",
+        description="Operator commands, run on the host against its database. "
+        "New tokens are written only to the --token-file you name, which must "
+        "not exist yet, with user-only permissions.",
+    )
+    actions = participant.add_subparsers(dest="action", required=True)
+    add = actions.add_parser("add", help="Add a participant and issue their token.")
+    add.add_argument("--name", required=True, help="Display label; not an identity.")
+    actions.add_parser("list", help="List participants and whether they can join.")
+    rotate = actions.add_parser(
+        "rotate", help="Issue a new token; the old one stops working."
+    )
+    revoke = actions.add_parser(
+        "revoke", help="Revoke a token; the participant and history stay."
+    )
+    for action in (rotate, revoke):
+        action.add_argument("participant_id")
+    for action in (add, rotate):
+        action.add_argument(
+            "--token-file", required=True, help="New file to write the token to."
+        )
+    for action in actions.choices.values():
+        action.add_argument(
+            "--database", required=True, help="The game's SQLite store."
+        )
     args = parser.parse_args(argv)
+    if args.command == "participant":
+        from .admin import run
+
+        return run(args)
     if args.command == "serve":
         from .server import run_foreground
 

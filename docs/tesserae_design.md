@@ -375,9 +375,9 @@ proof that every rule implementation is correct.
     rewritten `expected_revision`.
 
   Still open beyond localhost: LAN binding/transport for a friend on another
-  computer, which follows tracker #12. Implementation is planned in #14
-  (credentials), #15 (authenticated host), #16 (snapshots and notifications),
-  and #17 (CLI).
+  computer, which follows tracker #12. Participants and credentials (#14) are
+  in review. The authenticated host (#15), snapshots and notifications (#16),
+  and the CLI (#17) are planned.
 
 ## Technical references for the transport proposal
 
