@@ -85,8 +85,11 @@ credentials (#14) are merged, documented in
 host (#15), snapshots and notifications (#16), and streaming `tesserae connect`
 CLI (#17) are merged. The localhost portion of M1-3 is complete: tracker #12's
 [combined acceptance](acceptance/localhost-multiplayer.md) passed on master at
-`a5f0a80`. LAN access for a friend on another computer follows #12 and remains
-unimplemented.
+`a5f0a80`. LAN access for a friend on another computer is planned under tracker
+[#25](https://github.com/coghex/tesserae/issues/25), with the owner selecting
+encrypted connections. The [LAN delivery design](designs/encrypted_lan_design.md)
+splits configuration/certificate setup (#26), the host (#27), the client (#28),
+and combined actual-device acceptance (#29). These are planned, not implemented.
 
 - Maintain a duplex connection: send stdin while displaying incoming messages.
 - Keep stdout machine-readable in pipe mode and diagnostics on stderr.
@@ -182,4 +185,5 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   merged, as are authenticated loopback hosting (#15) and shared revision
   notifications (#16) and the streaming CLI (#17). Combined acceptance passed;
   see the linked record above. LAN access for a friend on another computer is
-  the next multiplayer step.
+  planned under tracker #25. Its encrypted host/client and real two-computer
+  acceptance complete the remaining LAN portion of M1-3.

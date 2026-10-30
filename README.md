@@ -51,7 +51,9 @@ There are no built-in critical, fumble, success, or damage rules.
 No web UI, model integration, or complete game module has been implemented yet.
 Authenticated participant joining and the streaming CLI work on localhost.
 The [combined acceptance record](docs/acceptance/localhost-multiplayer.md)
-closes tracker #12. LAN access for another computer follows.
+closes tracker #12. Encrypted LAN access is planned under
+[tracker #25](https://github.com/coghex/tesserae/issues/25); see its
+[delivery design](docs/designs/encrypted_lan_design.md). It is not implemented yet.
 
 ## Working together
 
