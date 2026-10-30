@@ -7,7 +7,9 @@ implementation proposals. The public repository is now `coghex/tesserae` on
 GitHub. The local bootstrap and GitHub's original MIT-license commit have been
 reconciled without rewriting either history. A foreground, loopback-only
 development host with SQLite persistence exists (tracker #1); authenticated
-participants and the streaming CLI are in progress under tracker #12.
+participants and the streaming CLI are complete for localhost under tracker #12.
+Its [combined acceptance](acceptance/localhost-multiplayer.md) passed on master
+at `a5f0a80`; LAN access remains the next multiplayer step.
 
 ## Purpose and experience
 
@@ -30,9 +32,10 @@ combat, inventory, or turn model.
   dice tools, structured character/campaign records, and a browser map.
 - That pilot has not been imported into this repository. Its original records
   and source materials must remain unchanged during bootstrap work.
-- The standalone Python dice CLI is now implemented and verified with ten tests;
-  live game storage, module loading, browser integration, and model integration
-  are not implemented yet.
+- The initial standalone Python dice CLI had ten tests. Live SQLite storage,
+  authenticated localhost sessions and the streaming client are now implemented,
+  with 77 tests at tracker #12's acceptance. Module loading, browser integration
+  and model integration are not implemented yet.
 
 ## Agreed direction
 
@@ -380,8 +383,9 @@ proof that every rule implementation is correct.
 
   Still open beyond localhost: LAN binding/transport for a friend on another
   computer, which follows tracker #12. Participants and credentials (#14) are
-  merged, as are the authenticated host (#15) and snapshots and notifications
-  (#16). The `tesserae connect` CLI (#17) is in review.
+  merged, as are the authenticated host (#15), snapshots and notifications
+  (#16), and the `tesserae connect` CLI (#17). Tracker #12's localhost scope
+  passed combined acceptance; the linked record above preserves the evidence.
 
 ## Technical references for the transport proposal
 

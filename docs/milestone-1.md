@@ -82,10 +82,11 @@ Depends on M1-2. The localhost portion is tracker
 is in [protocol.md](protocol.md#authenticated-sessions). Participants and
 credentials (#14) are merged, documented in
 [game_store.md](game_store.md#participants-and-credentials). The authenticated
-host (#15) and snapshots and notifications (#16) are merged. The streaming
-`tesserae connect` CLI (#17) is in review. With it, the localhost portion of
-M1-3 is complete pending tracker #12's combined acceptance. LAN access for a friend on another computer
-follows #12.
+host (#15), snapshots and notifications (#16), and streaming `tesserae connect`
+CLI (#17) are merged. The localhost portion of M1-3 is complete: tracker #12's
+[combined acceptance](acceptance/localhost-multiplayer.md) passed on master at
+`a5f0a80`. LAN access for a friend on another computer follows #12 and remains
+unimplemented.
 
 - Maintain a duplex connection: send stdin while displaying incoming messages.
 - Keep stdout machine-readable in pipe mode and diagnostics on stderr.
@@ -176,8 +177,9 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
 - The foreground, loopback-only WebSocket development host merged (#5), which
   completes M1-2's first server scope (tracker #1, closed). It uses one fixed
   development participant.
-- M1-3's localhost tracker #12 has begun: the authenticated session and recovery
+- M1-3's localhost tracker #12 is complete: the authenticated session and recovery
   contract (#13) and persisted participants with personal tokens (#14) are
   merged, as are authenticated loopback hosting (#15) and shared revision
-  notifications (#16). The streaming CLI (#17) is in review. LAN access, for a
-  friend on another computer, follows.
+  notifications (#16) and the streaming CLI (#17). Combined acceptance passed;
+  see the linked record above. LAN access for a friend on another computer is
+  the next multiplayer step.
