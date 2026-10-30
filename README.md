@@ -2,7 +2,7 @@
 
 Tesserae is a local-first tabletop roleplaying application built around an AI
 referee, executable rules modules, and several clients connected to one game host.
-The first game client will be a thin streaming CLI; the browser client follows.
+The first game client is a thin streaming CLI; the browser client follows.
 Friends should be able to join the same locally hosted game from other computers.
 
 Different games select different modules. The application does not assume that
@@ -20,7 +20,7 @@ for agreed direction, proposals, and open questions, and the
 
 The initial command-line interface exercises a generic dice expression evaluator.
 It requires Python 3.11 or newer; the only runtime dependency is `websockets`, for
-the development host. Install this checkout into a virtual environment:
+the host and network client. Install this checkout into a virtual environment:
 
 ```sh
 python3 -m venv .venv
@@ -45,12 +45,13 @@ python3 -m unittest discover -s tests -v
 ```
 
 This standalone utility does not load a game, update a campaign, or persist rolls.
-Recorded game actions will be introduced with the state and command layer.
+Use the foreground host below for recorded game actions.
 There are no built-in critical, fumble, success, or damage rules.
 
 No web UI, model integration, or complete game module has been implemented yet.
-Recorded rolls go through the development host below. The next step is real
-participant joining and a streaming CLI client.
+Authenticated participant joining and the streaming CLI work on localhost.
+The [combined acceptance record](docs/acceptance/localhost-multiplayer.md)
+closes tracker #12. LAN access for another computer follows.
 
 ## Working together
 
@@ -103,8 +104,9 @@ added when a concrete need appears.
 `tesserae serve` runs one game in the foreground until Ctrl-C. It listens only on
 127.0.0.1 and has no login: **every connection acts as one fixed development
 participant, `local-development`**. This is for local development only. Playing
-with friends needs the later authenticated join flow and per-player views. Keep
-game databases outside this repository.
+with friends on another computer needs the later LAN support. Authenticated
+participants can use the localhost procedure below. Keep game databases outside
+this repository.
 
 Start it in its own terminal (`--port 0` picks a free port):
 
