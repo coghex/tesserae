@@ -174,52 +174,96 @@ lost, because tokens cannot be recovered. `revoke` stops the token without a
 replacement. Either way the participant keeps their ID and history. Names are
 labels, not identities. These commands never change the game's revision.
 
-## Authenticated host
+## Two players on one computer
 
-Start the host with `--authenticated` to require tokens. It still listens only
-on 127.0.0.1; playing with a friend on another computer comes later.
+This is the localhost part of Milestone 1's multiplayer step: an authenticated
+host and the thin `tesserae connect` client. Playing with a friend on another
+computer needs LAN access, which comes next.
+
+**1. Provision two participants** (see above), keeping token files outside
+this repository:
+
+```sh
+python3 -m tesserae participant add --database ~/tesserae-dev.sqlite3 --name Alice --token-file ~/alice.token
+python3 -m tesserae participant add --database ~/tesserae-dev.sqlite3 --name Bob --token-file ~/bob.token
+```
+
+**2. Start the authenticated host** in its own terminal. It listens only on
+127.0.0.1 and runs until Ctrl-C:
 
 ```sh
 python3 -m tesserae serve --database ~/tesserae-dev.sqlite3 --port 8790 --authenticated
 ```
 
-Until the Tesserae client exists ([#17](https://github.com/coghex/tesserae/issues/17)),
-probe it with the library's interactive client. Connect, then send a `join`
-first, within 10 seconds, with the contents of the token file as `token`.
-Pasting it shows the token on your screen, so only do this on your own machine.
+**3. Connect each player** in their own terminal:
 
 ```sh
-python3 -m websockets ws://127.0.0.1:8790/
+python3 -m tesserae connect ws://127.0.0.1:8790/ --token-file ~/alice.token
+python3 -m tesserae connect ws://127.0.0.1:8790/ --token-file ~/bob.token
 ```
 
-```
-> {"version": 1, "type": "join", "token": "tess_...contents of ~/alice.token..."}
-< {"version": 1, "type": "snapshot", "game_id": "...", "participant_id": "p_7bd3a7ab7d45f27b", "revision": 0}
-```
-
-After the `snapshot`, send commands exactly as in development mode, and
-`{"version": 1, "type": "sync"}` for a fresh snapshot. Each participant has
-their own request IDs, so Alice's and Bob's `r1` are separate rolls. A retry
-after reconnecting or restarting returns the original result.
-
-Only the sender sees a command's result. When anyone's roll commits, every
-joined connection, including the roller's, also gets a small notification of
-the new revision:
+The client joins with the token and prints the host's reply, a snapshot of
+the game, your participant ID, and the current revision:
 
 ```
-< {"version": 1, "type": "revision", "game_id": "...", "revision": 1}
+{"version": 1, "type": "snapshot", "game_id": "...", "participant_id": "p_7bd3a7ab7d45f27b", "revision": 0}
 ```
 
-It never says who rolled or what. Use it to keep `expected_revision` current,
-or send a `sync`. A connection that stops reading is closed with code 1013;
-reconnect and join to catch up. Notifications only cover rolls made through
-this host process.
+Add `--game-id ID` to refuse to send anything unless the host serves that game.
 
-A missing, wrong, or revoked token gets one `authentication_failed` error and
-the connection closes, without revealing anything about the game. Revoking or
-rotating a token while someone is connected ends their session at their next
-request, with `session_revoked`. Development mode, without `--authenticated`,
-is unchanged.
+**4. Play by typing JSON lines.** Every nonblank line you type is sent as one
+message, and every message from the host is printed as one JSON line, even
+while you are idle. Alice rolls:
+
+```json
+{"version": 1, "type": "command", "request_id": "r1", "expected_revision": 0, "command": "roll", "args": {"expression": "1d20"}}
+```
+
+Only Alice sees her `result`. Both players see
+`{"version": 1, "type": "revision", "game_id": "...", "revision": 1}`, which
+never says who rolled or what. To check the current state at any time, send
+`{"version": 1, "type": "sync"}`.
+
+- **Stale requests.** A command whose `expected_revision` is behind gets
+  `stale_revision` with the current revision. Nothing is retried for you;
+  send a new command with a new `request_id` and the current revision if you
+  still want it.
+- **Request IDs are per player.** Alice's and Bob's `r1` are separate.
+- **Lost replies and restarts.** If the client or host stops before you saw a
+  reply, run `tesserae connect` again and resend the same line unchanged. A
+  command that committed returns its original result without rolling again.
+- **Piping.** Stdout is only JSON lines and diagnostics go to stderr, so you
+  can pipe a file of commands in. Lines are sent as they are read, without
+  waiting for each reply:
+
+  ```sh
+  python3 -m tesserae connect ws://127.0.0.1:8790/ --token-file ~/alice.token < moves.jsonl > replies.jsonl
+  ```
+
+**Ending.** When stdin ends (Ctrl-D, or the end of a piped file), the client
+waits up to 10 seconds (`--drain-timeout`) for replies to everything it sent,
+then exits. It does not wait for further notifications. Closing the client
+never stops the host. Exit status:
+
+| Status | Meaning |
+|---|---|
+| 0 | Input ended and every request was answered |
+| 1 | It could not start (token file, connection, join, or `--game-id`), or the host ended the session |
+| 3 | Some requests got no reply. Stderr names their request IDs; resend those lines unchanged |
+| 130 | Ctrl-C |
+
+A wrong or revoked token gets `authentication_failed` and exit status 1,
+without anything about the game being revealed. Revoking or rotating a token
+while its player is connected ends their session. A client that stops reading
+is disconnected (code 1013); reconnecting catches it up. Notifications cover
+only rolls made through this host process. The token is read only from the
+file, never from the command line or the URI, and is never printed.
+
+`python3 -m websockets ws://127.0.0.1:8790/` still works for probing an
+authenticated host by hand. Send `{"version": 1, "type": "join", "token":
+"..."}` first, within 10 seconds. Pasting a token shows it on screen, so only
+do that on your own machine. Development mode, without `--authenticated`, is
+unchanged.
 
 ## License
 

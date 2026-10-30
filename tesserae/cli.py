@@ -64,6 +64,29 @@ def main(argv: list[str] | None = None) -> int:
         help="Require each connection to join with a token from "
         "'tesserae participant'. There is no fallback to development mode.",
     )
+    connect = commands.add_parser(
+        "connect",
+        help="Join an authenticated host and stream JSON lines over stdin/stdout.",
+        description="Join the game at URI with the token in --token-file, then "
+        "send each nonblank stdin line as one message and print every message "
+        "from the host as one JSON line. Diagnostics go to stderr. Exit status: "
+        "0 when stdin ended and every request was answered, 1 when the client "
+        "could not start or the host ended the session, 3 when some requests "
+        "got no reply (resend them unchanged), 130 on Ctrl-C.",
+    )
+    connect.add_argument("uri", help="The host's address, e.g. ws://127.0.0.1:8790/.")
+    connect.add_argument(
+        "--token-file", required=True, help="File holding your personal join token."
+    )
+    connect.add_argument(
+        "--game-id", help="Refuse to send anything unless the host serves this game."
+    )
+    connect.add_argument(
+        "--drain-timeout",
+        type=float,
+        default=10.0,
+        help="Seconds to wait for outstanding replies after stdin ends (default 10).",
+    )
     participant = commands.add_parser(
         "participant",
         help="Manage this game's participants and their join tokens (local only).",
@@ -92,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
             "--database", required=True, help="The game's SQLite store."
         )
     args = parser.parse_args(argv)
+    if args.command == "connect":
+        from .client import run
+
+        return run(args.uri, args.token_file, args.game_id, args.drain_timeout)
     if args.command == "participant":
         from .admin import run
 
