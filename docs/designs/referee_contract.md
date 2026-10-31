@@ -4,7 +4,10 @@ Status: specification for [#64](https://github.com/coghex/tesserae/issues/64)
 under tracker [#63](https://github.com/coghex/tesserae/issues/63). Implemented
 so far: the store (section 5, with the step journal of section 6 and the reply
 validation and audiences of section 7) in `tesserae/referee/store.py` (#65), and
-`tesserae referee enable`. The runner, bridge, host wiring and CLI are not. It turns the [M1-6 delivery plan](codex_referee_design.md)
+`tesserae referee enable`; the referee folder, its config, the job lock and the
+Codex runner (sections 2 to 4) in `tesserae/referee/runner.py` (#66), with
+`tesserae referee setup` and `check`. The bridge, host wiring, the CLI and
+`referee stop`/`rebuild` are not. It turns the [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
 records how the CLI shows conversation (owner decision O-1).
 
@@ -116,8 +119,10 @@ later jobs:  codex exec resume SESSION_ID --json --skip-git-repo-check \
 - **Diagnostics.** Every stdout line and stderr goes to the job's diagnostics
   file. None of it is ever sent to a player.
 - **Limits.** A job ends after 300 s (operator-configurable). The host then
-  stops the process group it started (SIGTERM, then SIGKILL after 10 s) and
-  never touches any other process.
+  stops the process group it started (SIGTERM, then SIGKILL after 10 s to
+  whatever is left) and never touches any other process. A run counts as over
+  only once every member of that group is gone, not just Codex itself, so a
+  helper that ignores SIGTERM cannot outlive its job.
 
 ### Who is still running: the job lock
 
@@ -139,7 +144,13 @@ kernel releases only when every holder has exited:
      the Codex process, `started_at` its start time as `ps -o lstart= -p PID`
      reports it, and `command` its executable path;
   3. `{"state": "ended", "job_id"}` after the process exits, before the host
-     closes its descriptor.
+     closes its descriptor; or
+  4. `{"state": "stuck", ...}`, keeping the `running` fields, if the run's
+     process group survived SIGKILL. While any process has that group ID, the
+     lock counts as held even once every descriptor is closed, so no new job
+     starts. When the group is gone, the next attempt to take the lock clears
+     the record to `ended`. The ID may by then belong to an unrelated group,
+     so a stuck record only ever blocks: nothing is signalled on its word.
 - After Codex exits normally, the host writes `ended` and closes its own
   descriptor; the lock is free again.
 - **At host startup**, for a job still marked `running`, the host tries the lock
@@ -165,6 +176,13 @@ kernel releases only when every holder has exited:
     `command`. Any mismatch or missing field means the job's process cannot be
     identified: `stop` changes nothing and says why (the operator can wait, or
     stop the process by hand after checking it).
+  - For a `stuck` record, it signals nothing: the leader is gone, so whoever
+    has that group ID now cannot be verified as the job's. It says which group
+    to check by hand (`ps -A -o pid,pgid,lstart,command`). The record clears
+    itself once the group is gone; if the group turns out to be unrelated, the
+    operator clears it (`clear_stuck`, `tesserae referee stop --clear-stuck`
+    with #69), which also signals nothing and refuses while the lock itself is
+    still held.
   - Stop during startup (record `starting`) refuses: there is no process to
     identify yet; retry in a moment. Stop after the process exited (record
     `ended`, or the lock is free) reports that nothing is running.
@@ -410,8 +428,9 @@ reply tells their players about; a reply always narrates its own job's steps.
 Each listed step's sender must be able to see at least one of the reply's
 messages, or the reply is refused: a result is only acknowledged once it can
 have reached its player, and anything not listed stays waiting. A
-reply that does not parse or validate fails the job (`malformed_reply`), and
-nothing from it is published.
+reply that does not parse, or does not match this schema everywhere (types,
+required keys and limits, checked by the runner), fails the job
+(`malformed_reply`), and nothing from it is published.
 
 ### Limits
 
@@ -448,7 +467,9 @@ must be complete; the referee is told to read every page on a new session.
 
 | What fails | Detected by | Result |
 |---|---|---|
-| Codex will not start, or exits non-zero before `thread.started` | exit status | job `failed` (`runner_failed`); no session change; busy released |
+| Codex will not start, or exits non-zero before `thread.started` | launch error or exit status | job `failed` (`runner_failed`); no session change; busy released |
+| The host cannot save the session ID from `thread.started` | the save raises, or has not returned by the deadline | the run is stopped; job `failed` (`runner_failed`), even if Codex exited cleanly; the ID is kept in the run's result and diagnostics |
+| The run's process group survives SIGKILL | cleanup is not confirmed | job `failed` (`cleanup_failed`), nothing published; lock record `stuck`, so the game stays busy until the group is gone or the operator, after checking by hand, clears it |
 | Exit with no valid final reply | missing or invalid `LAST_MESSAGE` | job `failed` (`malformed_reply`), `narrated` false; its committed steps stay and are listed to the next job |
 | Timeout | the 300 s limit | process group stopped; job `interrupted`; committed steps stay |
 | Host stops cleanly during a job (SIGINT) | shutdown | the host stops the job's process group, waits for the lock, and marks the job `interrupted` |
@@ -572,6 +593,14 @@ section 3 settings and a one-tool stub bridge:
 
 The probes say nothing about crash recovery, the step journal or client
 reconnects; those are specified above and tested by REF-2 to REF-5.
+
+REF-3's real probe (2026-10-31, `codex-cli 0.166.0`, through `CodexRun` with
+the referee folder set up by `tesserae referee setup` and logged in): a first
+run captured session `01a1937b-…` from `thread.started` and returned a valid
+reply; a second run resumed that session by ID and recalled a word given only
+in the first. The session file was saved in the referee's own Codex home, not
+`~/.codex`. With the bridge module not yet present (#67), runs that call no
+tool were unaffected.
 
 ## 14. An illustrative exchange
 

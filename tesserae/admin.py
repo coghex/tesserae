@@ -57,8 +57,9 @@ def _runtime(module_id: str, module_dir):
 
 
 def run_referee(args) -> int:
-    """`tesserae referee enable`: turn the AI referee on for an existing game.
-    It stays on; players' gameplay then goes through the referee."""
+    """`tesserae referee enable|setup|check`."""
+    if args.action in ("setup", "check"):
+        return _referee_folder(args)
     from .referee.store import RefereeStore
 
     try:
@@ -69,6 +70,33 @@ def run_referee(args) -> int:
         return 1
     print(f"Referee mode is on for {args.database}.")
     return 0
+
+
+def _referee_folder(args) -> int:
+    from .referee import runner
+
+    root = (
+        Path(args.referee_dir).expanduser() if args.referee_dir else runner.DEFAULT_DIR
+    )
+    if args.action == "setup":
+        folder = runner.setup(root)
+        print(f"Referee folder ready at {folder.root}.")
+        print(f"Log Codex in for the referee once, with: {folder.login_command()}")
+        return 0
+    report = runner.check(root)
+    print(f"Referee folder: {report['folder']}")
+    print(f"Codex: {report['codex_version'] or 'not found'}")
+    print(
+        f"Config current: {'yes' if report['config_current'] else 'no (run tesserae referee setup)'}"
+    )
+    print(
+        f"Logged in: {'yes' if report['logged_in'] else 'no (' + runner.RefereeDir(root).login_command() + ')'}"
+    )
+    return (
+        0
+        if report["codex_version"] and report["config_current"] and report["logged_in"]
+        else 1
+    )
 
 
 def run(args) -> int:
