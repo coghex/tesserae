@@ -9,8 +9,9 @@ belong to this module alone. The host has no worker, effort, repair or check
 rules.
 
 The module is registered in the bundled catalog. `game create --database
-NEW.sqlite3 --module relay` creates a bound Relay game (#39). Hosting it
-with player views follows in #41; `serve` currently refuses non-`dice` games.
+NEW.sqlite3 --module relay` creates a bound Relay game (#39), and `serve
+--authenticated` hosts it, sending each player their view on join and sync
+(#41). The combined two-player walkthrough is #42.
 
 ## Binding
 
@@ -19,7 +20,7 @@ with player views follows in #41; `serve` currently refuses non-`dice` games.
 | Module | `relay`, version `1`, state version 1, host API 1 |
 | Requires | `dice.roll.v1`, selected explicitly as `builtin.dice` version `1` |
 | Tags | `demo`, `original`, `dice` (descriptive only) |
-| Participants | Authenticated participants only |
+| Participants | Authenticated participants only: `serve` refuses development mode for a Relay game |
 
 It has no raw `roll` command; its dice are drawn only by `relay.repair`.
 

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from .builtin import DICE_RUNTIME
 from .dice import RollResult
-from .modules import ArgumentError, Runtime, describe_fields
+from .modules import ArgumentError, Module, Runtime, describe_fields
 
 PROTOCOL_VERSION = 1
 MAX_REVISION = 2**63 - 1
@@ -97,7 +97,7 @@ class JoinRequest:
 
 @dataclass(frozen=True)
 class SyncRequest:
-    """A read-only request for a fresh metadata snapshot."""
+    """A read-only request for a fresh snapshot."""
 
 
 def is_valid_request_id(value) -> bool:
@@ -333,18 +333,40 @@ def welcome_message(revision: int) -> dict:
     return {"version": PROTOCOL_VERSION, "type": "welcome", "revision": revision}
 
 
-def snapshot_message(game_id: str, participant_id: str, revision: int) -> dict:
-    """The recipient's metadata view: the reply to a join or a sync."""
+def snapshot_message(
+    game_id: str,
+    participant_id: str,
+    revision: int,
+    module: Module | None = None,
+    view: dict | None = None,
+) -> dict:
+    """The recipient's view: the reply to a join or a sync.
+
+    A game whose module projects views adds `module` and that participant's
+    `view`, read with `revision`. Otherwise the snapshot is metadata only.
+    """
     _check_identifier(game_id, "game_id")
     _check_identifier(participant_id, "participant_id")
     _check_revision(revision)
-    return {
+    message = {
         "version": PROTOCOL_VERSION,
         "type": "snapshot",
         "game_id": game_id,
         "participant_id": participant_id,
         "revision": revision,
     }
+    if (module is None) != (view is None):
+        raise ValueError("A snapshot has both a module and a view, or neither.")
+    if view is not None:
+        if not isinstance(view, dict):
+            raise ValueError("A view must be a JSON object.")
+        message["module"] = {
+            "id": module.id,
+            "version": module.version,
+            "state_version": module.state_version,
+        }
+        message["view"] = view
+    return message
 
 
 def revision_message(game_id: str, revision: int) -> dict:

@@ -331,20 +331,20 @@ class NotificationTests(AuthenticatedHostCase):
     async def test_join_racing_a_commit_is_not_left_behind(self):
         await self.start_host()
         loop = asyncio.get_running_loop()
-        real = GameStore.session_revision
+        real = GameStore.participant_view
         raced = []
 
         def stale_read_then_commit(store, context):
-            revision = real(store, context)  # the joiner's snapshot reads first...
+            current = real(store, context)  # the joiner's snapshot reads first...
             if context.participant_id == self.ids["bob"] and not raced:
                 raced.append(True)  # ...then Alice's commit lands and is announced
                 with GameStore(self.path, randint=Mock(return_value=1)) as other:
                     alice = other.authenticate(self.tokens["alice"])
-                    reply = other.execute(alice, request("r1", revision, "1d6"))
+                    reply = other.execute(alice, request("r1", current.revision, "1d6"))
                 loop.call_soon_threadsafe(self.host._publish, reply["revision"])
-            return revision
+            return current
 
-        with patch.object(GameStore, "session_revision", stale_read_then_commit):
+        with patch.object(GameStore, "participant_view", stale_read_then_commit):
             bob, snapshot = await self.joined("bob")
         self.assertEqual(snapshot["revision"], 0)
         note = json.loads(await asyncio.wait_for(bob.recv(), 5))

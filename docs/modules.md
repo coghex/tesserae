@@ -18,10 +18,11 @@ The [game store](game_store.md#modules-and-state) persists each game's
 binding and module state, and runs commands with `action_rejected` handling.
 `tesserae game create` makes a game bound to a bundled module (#39).
 
-Host snapshots with views (#41) are not implemented yet.
-
-`serve` still hosts only `dice` games. It refuses a game bound to another
-module until #41.
+`serve` loads the game's bound runtime once at startup, refusing an unknown or
+mismatched binding before it listens, and sends each joined participant the
+module's view of the game in join and sync snapshots (#41,
+[protocol.md](protocol.md#messages)). A `dice` game's snapshots stay metadata
+only, since `dice` has no view.
 
 ## Catalog and selection
 

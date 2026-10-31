@@ -4,8 +4,9 @@ Status: in progress; tracker [#37](https://github.com/coghex/tesserae/issues/37)
 M1-3 is complete at `1afa9a7`. DEMO-1 (#38) delivers the module contract and
 `dice` adapter ([modules.md](../modules.md)); DEMO-2 (#39) the schema-3 binding,
 module state and `game create` ([game_store.md](../game_store.md#modules-and-state));
-DEMO-3 (#40) the [Relay module](../relay.md). Hosted views and combined demo
-acceptance (DEMO-4/#41 and DEMO-5/#42) are not implemented yet. The relay theme
+DEMO-3 (#40) the [Relay module](../relay.md); DEMO-4 (#41) hosting with
+per-player snapshot views ([protocol.md](../protocol.md#messages)). Combined
+demo acceptance (DEMO-5/#42) is not done yet. The relay theme
 and small rule numbers are an original example, not universal game concepts.
 
 ## Outcome

@@ -61,8 +61,8 @@ Next is [M1-4 / tracker #37](https://github.com/coghex/tesserae/issues/37):
 minimal bundled modules and an original relay-repair demo. Its
 [delivery contract](docs/designs/demo_modules_design.md) is in progress: the
 [module contract](docs/modules.md), `dice` adapter, persisted module state
-(`tesserae game create`), and [Relay rules](docs/relay.md) are in place. Hosting
-module games with player views and the combined demo are not implemented yet.
+(`tesserae game create`), [Relay rules](docs/relay.md), and hosting module games
+with per-player views are in place. The combined two-player demo is not done yet.
 
 ## Working together
 

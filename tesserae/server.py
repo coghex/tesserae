@@ -6,10 +6,10 @@ The host runs in one of two explicit modes and never falls back between them:
 - authenticated: each connection must first join with a personal token and then
   acts as that token's participant.
 
-Dice, replay, revisions, credentials, and persistence all live in GameStore;
-this module only moves messages between sockets and that service, and tells
-joined connections when the shared revision changes. See docs/protocol.md and
-docs/game_store.md.
+The game's module, replay, revisions, credentials, and persistence all live in
+GameStore; this module only moves messages between sockets and that service,
+and tells joined connections when the shared revision changes. See
+docs/protocol.md and docs/game_store.md.
 """
 
 import asyncio
@@ -23,7 +23,6 @@ from pathlib import Path
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
-from .builtin import DICE_RUNTIME
 from .protocol import (
     JOIN_TIMEOUT_SECONDS,
     JoinRequest,
@@ -56,12 +55,16 @@ _BINARY_REPLY = error_message("invalid_request", "Send requests as text JSON fra
 logger = logging.getLogger("tesserae.server")
 
 
+class HostConfigError(ValueError):
+    """The game cannot be served in the requested mode; nothing was started."""
+
+
 class GameHost:
     """Serves one game store to any number of local connections.
 
     Store calls run on worker threads, each opening its own short-lived
     GameStore, so the event loop never waits on SQLite and no SQLite connection
-    is shared between threads.
+    is shared between threads. The game's module is loaded once, at startup.
     """
 
     def __init__(
@@ -80,17 +83,23 @@ class GameHost:
         self.host = host
         self._ssl = ssl_context
         self._randint = randint
-        # Messages are parsed with the game's own commands, so a command the
-        # store would accept is never refused first. Stores refuse a game
-        # bound to anything else. Only `dice` until #41.
-        self._runtime = DICE_RUNTIME
         self._join_timeout = join_timeout
         self._write_timeout = write_timeout
         # Joined connections, subscribed to revision notifications. Only this
         # process's commits are announced; other writers are not observed.
         self._sessions: set[_Session] = set()
-        with self._open() as store:
+        with GameStore(self.database) as store:
             self.game_id = store.game_id
+            # Exactly the game's bound module and providers, or StoreError:
+            # never a fallback. Messages are parsed with its commands, and
+            # every worker's store executes with it.
+            self._runtime = store.runtime()
+        self.module = self._runtime.module
+        if self.module.requires_authentication and not authenticated:
+            raise HostConfigError(
+                f"this game's module, {self.module.id}, requires --authenticated, "
+                "even on this computer"
+            )
         self._executor = ThreadPoolExecutor(
             WORKER_THREADS, thread_name_prefix="tesserae-store"
         )
@@ -133,8 +142,7 @@ class GameHost:
         notifier = asyncio.create_task(self._deliver_notifications(session))
         try:
             async for message in connection:
-                reply = await self._session_reply(session.context, message)
-                await session.send(reply)
+                reply = await self._answer(session, message)
                 if reply["type"] == "error" and reply["code"] == "session_revoked":
                     await connection.close(SESSION_CLOSE_CODE, "session_revoked")
                     return
@@ -161,42 +169,59 @@ class GameHost:
             return await self._refuse(connection, error.to_message())
         if not isinstance(message, JoinRequest):
             return await self._refuse(connection, session_error("join_required"))
-        session = None
         try:
             context = await self._call(GameStore.authenticate, message.token)
-            if context is not None:
-                session = _Session(connection, context, self._write_timeout)
-                self._sessions.add(session)
-                revision = await self._call(GameStore.session_revision, context)
         except Exception:
             logger.exception("Could not check a join")  # the token is never logged
-            self._sessions.discard(session)
-            return await self._refuse(
-                connection,
-                error_message("internal_error", "The host could not check the join."),
-            )
-        if session is None or revision is None:
-            self._sessions.discard(session)
+            return await self._refuse(connection, _JOIN_FAILED)
+        if context is None:
             return await self._refuse(
                 connection, session_error("authentication_failed")
             )
+        session = _Session(connection, context, self._write_timeout)
+        self._sessions.add(session)
         try:
-            await session.send(self._view(context, revision))
+            reply = await session.send_read(lambda: self._join_snapshot(context))
         except BaseException:
             self._sessions.discard(session)  # it never became a joined session
             raise
+        if reply["type"] != "snapshot":
+            self._sessions.discard(session)
+            await connection.close(SESSION_CLOSE_CODE, reply["code"])
+            return None
         return session
+
+    async def _join_snapshot(self, context: ParticipantContext) -> dict:
+        try:
+            snapshot = await self._snapshot(context)
+        except Exception:
+            logger.exception("Could not check a join")
+            return _JOIN_FAILED
+        return snapshot or session_error("authentication_failed")
 
     async def _refuse(self, connection: ServerConnection, reply: dict) -> None:
         await connection.send(encode_message(reply))
         await connection.close(SESSION_CLOSE_CODE, reply["code"])
         return None
 
-    def _view(self, context: ParticipantContext, revision: int) -> dict:
-        """The recipient's view: the one place that decides what a joined
-        participant may see. Today that is only the allowlisted metadata.
+    async def _snapshot(self, context: ParticipantContext) -> dict | None:
+        """The recipient's snapshot, or None if revoked: the one place that
+        decides what a joined participant may see.
+
+        The credential check, revision and module state are read together, and
+        the module projects this participant's view from that state. A `dice`
+        game has no view, so its snapshot is metadata only.
         """
-        return snapshot_message(self.game_id, context.participant_id, revision)
+        current = await self._call(GameStore.participant_view, context)
+        if current is None:
+            return None
+        return snapshot_message(
+            self.game_id,
+            context.participant_id,
+            current.revision,
+            None if current.view is None else self.module,
+            current.view,
+        )
 
     def _publish(self, revision: int):
         """Announce a committed revision to every joined connection. Never waits."""
@@ -240,19 +265,25 @@ class GameHost:
                     return _UNCHECKED
                 await asyncio.sleep(delay)
 
-    async def _session_reply(self, context: ParticipantContext, message) -> dict:
-        """Exactly one reply for one message from a joined connection."""
+    async def _answer(self, session: "_Session", message) -> dict:
+        """Send exactly one reply to one message from a joined connection."""
+        context = session.context
         if isinstance(message, bytes):
-            return _BINARY_REPLY
-        try:
-            parsed = parse_client_message(message, self._runtime)
-        except ProtocolError as error:
-            return await self._rejection(context, error)
-        if isinstance(parsed, JoinRequest):
-            return session_error("already_joined")
-        if isinstance(parsed, SyncRequest):
-            return await self._sync(context)
-        return await self._execute(context, message)
+            reply = _BINARY_REPLY
+        else:
+            try:
+                parsed = parse_client_message(message, self._runtime)
+            except ProtocolError as error:
+                reply = await self._rejection(context, error)
+            else:
+                if isinstance(parsed, SyncRequest):
+                    return await session.send_read(lambda: self._sync(context))
+                if isinstance(parsed, JoinRequest):
+                    reply = session_error("already_joined")
+                else:
+                    reply = await self._execute(context, message)
+        await session.send(reply)
+        return reply
 
     async def _rejection(self, context: ParticipantContext, error: ProtocolError):
         """An invalid message's error, carrying the revision only if still joined."""
@@ -266,12 +297,10 @@ class GameHost:
 
     async def _sync(self, context: ParticipantContext) -> dict:
         try:
-            revision = await self._call(GameStore.session_revision, context)
+            snapshot = await self._snapshot(context)
         except Exception:
             return self._failure(None)
-        if revision is None:
-            return session_error("session_revoked")
-        return self._view(context, revision)
+        return snapshot or session_error("session_revoked")
 
     async def _welcome(self) -> dict:
         try:
@@ -316,6 +345,7 @@ class GameHost:
 
 
 _UNCHECKED = object()
+_JOIN_FAILED = error_message("internal_error", "The host could not check the join.")
 
 
 class _SlowConsumer(Exception):
@@ -325,10 +355,12 @@ class _SlowConsumer(Exception):
 class _Session:
     """One joined connection: its trusted context, and what it has been sent.
 
-    Every outgoing message goes through send(), under one lock. Snapshots and
-    notifications on a connection never go backwards. Pending notifications
-    collapse to the newest revision, so a slow reader costs one integer, not a
-    queue.
+    Every outgoing message is sent under one lock. Snapshots are read and
+    sent while holding it, so no notification lands between reading a view
+    and sending it: a snapshot always carries the revision its view was read
+    with, and revisions on a connection never go backwards. Pending
+    notifications collapse to the newest revision, so a slow reader costs one
+    integer, not a queue.
     """
 
     def __init__(self, connection, context: ParticipantContext, write_timeout: float):
@@ -354,21 +386,33 @@ class _Session:
 
     async def send(self, message: dict):
         async with self._lock:
-            kind = message["type"]
-            if kind == "revision" and message["revision"] <= self._sent_revision:
-                return  # already covered by something this connection was sent
-            if kind == "snapshot" and message["revision"] < self._sent_revision:
-                # Read before a newer revision was announced; revisions only grow.
-                message = {**message, "revision": self._sent_revision}
-            try:
-                await asyncio.wait_for(
-                    self.connection.send(encode_message(message)), self._write_timeout
-                )
-            except TimeoutError:
-                await self._drop()
-                raise _SlowConsumer from None
-            if kind in ("snapshot", "revision"):
-                self._sent_revision = message["revision"]
+            await self._send(message)
+
+    async def send_read(self, read) -> dict:
+        """Await `read()` and send the message it returns, holding back
+        notifications from before the read until after the send."""
+        async with self._lock:
+            message = await read()
+            await self._send(message)
+            return message
+
+    async def _send(self, message: dict):
+        kind = message["type"]
+        if kind == "revision" and message["revision"] <= self._sent_revision:
+            return  # already covered by something this connection was sent
+        if kind == "snapshot" and message["revision"] < self._sent_revision:
+            # Every revision sent was committed before this snapshot was read,
+            # under the lock. Never relabel a view with another revision.
+            raise RuntimeError("A snapshot was older than its connection's revision.")
+        try:
+            await asyncio.wait_for(
+                self.connection.send(encode_message(message)), self._write_timeout
+            )
+        except TimeoutError:
+            await self._drop()
+            raise _SlowConsumer from None
+        if kind in ("snapshot", "revision"):
+            self._sent_revision = message["revision"]
 
     async def _drop(self):
         logger.warning("Closing a connection that stopped reading")
@@ -412,6 +456,8 @@ def run_foreground(
             host=transport.host,
             ssl_context=context,
         )
+    except HostConfigError as error:
+        return _fail(f"{error}; nothing was started", code=2)
     except (StoreError, sqlite3.Error, OSError) as error:
         return _fail(f"cannot open database {database}: {error}")
 
@@ -423,7 +469,8 @@ def run_foreground(
         encryption = "TLS" if transport.tls else "no encryption, this computer only"
         print(
             f"Tesserae {'authenticated' if authenticated else 'development'} host "
-            f"listening on {uri} (database: {game.database}, {who}, {encryption}). "
+            f"listening on {uri} (database: {game.database}, module: "
+            f"{game.module.id} {game.module.version}, {who}, {encryption}). "
             "Press Ctrl-C to stop.",
             flush=True,
         )

@@ -392,6 +392,11 @@ class GameStore:
             row[0], runtime.view(json.loads(row[1]), context.participant_id)
         )
 
+    def runtime(self) -> Runtime:
+        """The game's runtime, resolved from the bundled catalog and checked
+        against its binding. Raises StoreError if it cannot be loaded exactly."""
+        return self._loaded_runtime()
+
     def binding(self) -> ModuleBinding:
         """The game's module binding; needs no module code."""
         module_id, version, state_version, providers = self._connection.execute(
