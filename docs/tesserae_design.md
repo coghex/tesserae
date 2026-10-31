@@ -268,7 +268,10 @@ Initially give the referee the complete context for the agreed bounded scene.
 Custom selective context loading is a deferred stretch goal. Player-specific
 privacy still applies. While the referee is busy, reject new player input;
 input queues and steering are deferred. Read-only inspection and recovery
-remain responsive. The
+remain responsive. The owner also selected a host-controlled command bridge
+within each invocation: all player gameplay goes through Codex. Unmarked
+conversation broadcasts to the table; private routing is explicitly marked.
+The
 [M1-6 tracker draft](designs/codex_referee_design.md) records the delivery
 proposal and engineering contracts still to specify before implementation.
 

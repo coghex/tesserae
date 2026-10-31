@@ -23,6 +23,13 @@ The owner's choices below supersede the earlier direct-model-API proposal.
 - SQLite remains the authority for mechanics, accepted messages, results,
   pending decisions and rulings. Codex history supplies conversational
   continuity; it does not own another character sheet or database.
+- All player gameplay requests go through Codex, which uses a narrow
+  host-controlled command bridge within its invocation. Players cannot invoke
+  raw gameplay commands directly in referee mode. Authentication, sync,
+  job-status/recovery and operator administration remain host plumbing.
+- Table conversation and referee narration broadcast by default, without a
+  public marker. Only explicitly private messages/replies use private routing.
+  Keep the user-facing convention simple; the host still validates recipients.
 - CLI first, using the existing authenticated host and thin streaming client.
   Browser work remains beyond Milestone 1.
 - Keep the original public demonstration and the already accepted private
@@ -134,9 +141,11 @@ an owner/role field. Optional module hooks expose referee context, supported
 actions, explanations/stakes and module-specific NPC operations without adding
 universal inventory, turn or combat fields to the host.
 
-REF-1 chooses the smallest concrete exchange: a structured decision/result
-loop between invocations or a narrow local command bridge within an invocation.
-Do not build both. Whichever is chosen, supported mechanical effects use the
+The owner selected a narrow local command bridge within each invocation.
+Codex can inspect state, call supported actions and narrate their returned
+results without exiting between individual tool calls. REF-1 specifies that
+bridge's concrete transport and capability contract; do not build an alternate
+between-invocation action-proposal loop. Supported mechanical effects use the
 same authoritative execution service, validation, expected revision and atomic
 state/result/history storage. No direct model database edits or unrestricted
 "set state" command. Stable step IDs belong to the job, survive retries and
@@ -160,9 +169,14 @@ Keep the CLI as a JSON-line pipe. Define accepted/busy/status/completed and
 awaiting-input responses plus reconnect inspection. Read-only sync and other
 clients remain responsive while a subprocess is running.
 
-Structured referee output carries an explicitly checked audience. Default
-direct answers to the sender; shared narration is an explicit publication.
-Recheck identity/access before delivery, including credential revocation.
+Unmarked table messages and referee narration broadcast to the table. Only
+messages explicitly marked private are routed privately. A reply to private
+input inherits its private audience unless a separate public message is
+explicitly produced; never accidentally publish a private reply by dropping
+its marker. Choose a small concrete private-message convention in REF-1, not
+an elaborate player-facing reply format. The host validates private recipients
+and keeps audience metadata in durable messages. Recheck identity/access before
+delivery, including credential revocation.
 Player snapshots still use module projections. Store recipient-safe messages
 so reconnect/retry can retrieve them without invoking Codex again.
 
@@ -191,7 +205,7 @@ Use ordinary manual Tesserae development; no custom Kanban or docs-push.
 ### REF-1: concrete contracts and demonstration
 
 Document exact messages, audience rules, job transitions, session mapping,
-busy/retry precedence, interruption reconciliation and one chosen tool exchange.
+busy/retry precedence, interruption reconciliation and the in-invocation bridge.
 Specify a short original Relay conversation and private scene criteria without
 publishing private content. Resolve the bounded NPC authority and adopted-ruling
 storage contract. Capture runnable example exchanges and a small failure matrix.
@@ -237,7 +251,8 @@ connections to prove simultaneous submit and reconnect behavior.
 
 Connect the store, runner, context/actions and delivery for the agreed Relay
 conversation. Use real supported module commands, pending player declarations
-and recorded outcomes. Follow the specified interruption/rebuild path and
+and recorded outcomes through Codex and its command bridge. Follow the specified
+interruption/rebuild path and
 publish completed replies once. Scripted referee tests cover questions without
 time advancement, unauthorized action attempts, missing choices, malformed
 output and failures around a committed tool step. One real Codex walkthrough
