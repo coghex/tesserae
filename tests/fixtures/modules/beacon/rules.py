@@ -6,6 +6,7 @@ from tesserae.modules import (
     Outcome,
     Provider,
     ProviderChoice,
+    SeedError,
     exact_fields,
 )
 
@@ -37,6 +38,25 @@ def _signal(action) -> Outcome:
     return Outcome(state, {"roll": roll, "colour": colour})
 
 
+def _validate_seed(state: dict, participant_ids: frozenset[str]):
+    """An imported Beacon game: known colours, and signal counts that belong
+    to seeded participants and add up to the colours shown."""
+    if set(state) != {"shown", "by"}:
+        raise SeedError("Beacon state has exactly 'shown' and 'by'.")
+    colours, shown, by = signals.colours(), state["shown"], state["by"]
+    if not isinstance(shown, list) or any(colour not in colours for colour in shown):
+        raise SeedError("'shown' must list known colours.")
+    if not isinstance(by, dict):
+        raise SeedError("'by' must map participants to signal counts.")
+    for participant_id, count in by.items():
+        if participant_id not in participant_ids:
+            raise SeedError("A signal count names someone who is not a participant.")
+        if type(count) is not int or count < 1:
+            raise SeedError("Signal counts are positive integers.")
+    if sum(by.values()) != len(shown):
+        raise SeedError("The signal counts do not add up to the colours shown.")
+
+
 BEACON = Module(
     id="beacon",
     version="1",
@@ -48,6 +68,7 @@ BEACON = Module(
         "yours": state["by"].get(participant_id, 0),
     },
     requires=frozenset({DICE}),
+    validate_seed=_validate_seed,
     # Complete defaults, but ignored for an external package: module.toml
     # alone selects providers, and a partial manifest is never filled from here.
     providers=(ProviderChoice(DICE, "builtin.dice", "1"),),

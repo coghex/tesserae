@@ -13,23 +13,34 @@ from pathlib import Path
 from .builtin import CATALOG
 from .credentials import new_token, write_token_file
 from .external import load_module_dir
-from .modules import ModuleError
+from .modules import ModuleError, SeedError
+from .seed import read_seed
 from .store import GameStore, StoreError
 
 
 def run_game(args) -> int:
     """`tesserae game create`: a new game bound to one bundled module, or to
-    the module in an explicit package directory (`--module-dir`)."""
+    the module in an explicit package directory (`--module-dir`), optionally
+    starting from a seed file (`--seed`)."""
     try:
         runtime = _runtime(args.module, args.module_dir)  # before any file exists
-        with GameStore.create(args.database, runtime) as store:
+        seed = None if args.seed is None else read_seed(args.seed)
+        with GameStore.create(args.database, runtime, seed=seed) as store:
             game_id = store.game_id
-    except (ModuleError, StoreError, sqlite3.Error, OSError) as error:
+    except (ModuleError, SeedError, StoreError, sqlite3.Error, OSError) as error:
         print(f"tesserae game create: {error}", file=sys.stderr)
         return 1
     module = runtime.module
     print(f"Created game {game_id} ({module.id} {module.version}) at {args.database}.")
-    print("Add its participants with 'tesserae participant add'.")
+    if seed is None:
+        print("Add its participants with 'tesserae participant add'.")
+        return 0
+    print(
+        f"Started from the seed, with {len(seed.participants)} participants and no tokens:"
+    )
+    for participant in seed.participants:
+        print(f"{participant.participant_id}\t{participant.name}")
+    print("Issue each a token with 'tesserae participant rotate'.")
     return 0
 
 
@@ -69,15 +80,21 @@ def _list(args) -> int:
         records = store.participants()
     print("participant_id\tstatus\tcreated_at\tname")
     for record in records:
-        status = "active" if record.active else "revoked"
+        if record.active:
+            status = "active"
+        else:
+            status = "revoked" if record.ever_issued else "no token"
         print(f"{record.participant_id}\t{status}\t{record.created_at}\t{record.name}")
     return 0
 
 
 def _rotate(args) -> int:
     with _existing(args.database) as store, _issued_token(args.token_file) as token:
-        store.rotate_credential(args.participant_id, token)
-    print(f"Rotated {args.participant_id}: the old token no longer works.")
+        replaced = store.rotate_credential(args.participant_id, token)
+    if replaced:
+        print(f"Rotated {args.participant_id}: the old token no longer works.")
+    else:
+        print(f"Issued {args.participant_id} a token; they had no active one.")
     print(f"Wrote the new token to {args.token_file}. Give it only to them.")
     return 0
 

@@ -8,6 +8,7 @@ docs/game_store.md for the execution boundary.
 
 import json
 import os
+import re
 import secrets
 import sqlite3
 import unicodedata
@@ -30,9 +31,11 @@ from .protocol import (
 )
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+SEED_VERSION = 1  # the seed file format (tesserae/seed.py)
 DEFAULT_BUSY_TIMEOUT = 5.0
 PARTICIPANT_ID_PREFIX = "p_"
+_PARTICIPANT_ID = re.compile(r"p_[0-9a-f]{16}")
 MAX_NAME_LENGTH = 100
 _V1_COLUMNS = {
     "game": ["singleton", "game_id", "revision"],
@@ -61,6 +64,10 @@ _COLUMNS = {
     1: _V1_COLUMNS,
     2: _V2_COLUMNS,
     3: {**_V2_COLUMNS, "module": ["singleton", *_BINDING_COLUMNS]},
+}
+_COLUMNS[4] = {
+    **_COLUMNS[3],
+    "seed": ["singleton", "seed_version", "provenance", "created_at"],
 }
 
 # Version 1 tables. A new store creates these, then applies every migration.
@@ -127,6 +134,15 @@ _MIGRATIONS = {
             _binding_row(DICE_RUNTIME, DICE_RUNTIME.initial_state()),
         ),
     ],
+    # The provenance of a game created from a seed; no row for any other game.
+    4: [
+        """CREATE TABLE seed (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            seed_version INTEGER NOT NULL,
+            provenance TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+    ],
 }
 
 
@@ -167,6 +183,7 @@ class ParticipantRecord:
     name: str
     created_at: str
     active: bool
+    ever_issued: bool = True  # False until a first token, e.g. after a seed
 
 
 @dataclass(frozen=True)
@@ -225,6 +242,7 @@ class GameStore:
         runtime: Runtime | None = None,
         load_runtime: bool = False,
         _new_game: Runtime | None = None,
+        _seed=None,
         _existing: bool = False,
     ):
         self._randint = randint
@@ -232,6 +250,7 @@ class GameStore:
         self._wanted_runtime = runtime
         self._load_runtime = load_runtime
         self._new_game = _new_game
+        self._seed = _seed
         self._existing = _existing
         if _existing:
             # mode=rw: SQLite opens the file but will never create it.
@@ -253,19 +272,24 @@ class GameStore:
             raise
 
     @classmethod
-    def create(cls, path, runtime: Runtime, **options) -> "GameStore":
+    def create(cls, path, runtime: Runtime, *, seed=None, **options) -> "GameStore":
         """Create a new game bound to `runtime`, at revision 0, in a new file.
 
         Refuses any existing path. The binding and the module's initial state
         are written in the same transaction as the rest of the new store.
+        With a `tesserae.seed.Seed`, checked first (SeedError), the game starts
+        from the seed's state and participants instead, without credentials,
+        with its provenance recorded and an empty command history.
         """
+        if seed is not None:
+            seed.check(runtime)  # before any file exists
         path = Path(path)
         try:
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         except FileExistsError:
             raise StoreError(f"Refusing to replace existing file {path}.") from None
         try:
-            return cls(path, runtime=runtime, _new_game=runtime, **options)
+            return cls(path, runtime=runtime, _new_game=runtime, _seed=seed, **options)
         except BaseException:
             for name in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
                 name.unlink(missing_ok=True)
@@ -433,6 +457,12 @@ class GameStore:
             tuple(ProviderChoice(*choice) for choice in json.loads(providers)),
         )
 
+    def seed_provenance(self) -> dict | None:
+        """The provenance recorded when this game was created from a seed, or
+        None for any other game. Operator inspection; needs no module code."""
+        row = self._connection.execute("SELECT provenance FROM seed").fetchone()
+        return None if row is None else json.loads(row[0])
+
     def inspect_state(self) -> dict:
         """Operator/test inspection of the complete module state."""
         return self._state()
@@ -468,13 +498,15 @@ class GameStore:
             self._issue_credential(participant_id, token, now)
         return participant_id
 
-    def rotate_credential(self, participant_id: str, token: str):
-        """Replace any credential with a new one; the identity is unchanged."""
+    def rotate_credential(self, participant_id: str, token: str) -> bool:
+        """Replace any credential with a new one; the identity is unchanged.
+        Returns whether an active one was replaced (False for a first token)."""
         now = _now()
         with self._write():
             self._require_participant(participant_id)
-            self._revoke_active(participant_id, now)
+            replaced = self._revoke_active(participant_id, now) > 0
             self._issue_credential(participant_id, token, now)
+        return replaced
 
     def revoke_credential(self, participant_id: str) -> bool:
         """Revoke the active credential; False if there was none."""
@@ -487,9 +519,11 @@ class GameStore:
             "SELECT participant_id, name, created_at, EXISTS ("
             "    SELECT 1 FROM credentials AS c"
             "    WHERE c.participant_id = p.participant_id AND c.revoked_at IS NULL"
+            "), EXISTS ("
+            "    SELECT 1 FROM credentials AS c WHERE c.participant_id = p.participant_id"
             ") FROM participants AS p ORDER BY created_at, participant_id"
         )
-        return [ParticipantRecord(i, n, c, bool(a)) for i, n, c, a in rows]
+        return [ParticipantRecord(i, n, c, bool(a), bool(e)) for i, n, c, a, e in rows]
 
     def authenticate(self, token) -> ParticipantContext | None:
         """The trusted context for an active token, or None. Never raises on input."""
@@ -632,14 +666,31 @@ class GameStore:
                     self._connection.execute(*statement)
             if self._new_game is not None:
                 runtime = self._new_game
+                seed = self._seed
+                state = runtime.initial_state() if seed is None else seed.state
                 self._connection.execute(
                     "UPDATE module SET "
                     + ", ".join(f"{column} = ?" for column in _BINDING_COLUMNS),
-                    _binding_row(runtime, runtime.initial_state()),
+                    _binding_row(runtime, state),
                 )
+                if seed is not None:
+                    self._write_seed(seed)
             self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             # Before the upgrade commits: a refusal rolls it back.
             self._settle_runtime()
+
+    def _write_seed(self, seed):
+        now = _now()
+        self._connection.executemany(
+            "INSERT INTO participants (participant_id, name, created_at) "
+            "VALUES (?, ?, ?)",
+            [(p.participant_id, p.name, now) for p in seed.participants],
+        )
+        self._connection.execute(
+            "INSERT INTO seed (singleton, seed_version, provenance, created_at) "
+            "VALUES (1, ?, ?, ?)",
+            (SEED_VERSION, json.dumps(seed.provenance, sort_keys=True), now),
+        )
 
     def _settle_runtime(self):
         """Check the wanted runtime against the binding, or with `load_runtime`
@@ -769,6 +820,17 @@ def _describe(providers) -> str:
         ", ".join(f"{c.operation}={c.provider} {c.version}" for c in providers)
         or "none"
     )
+
+
+def is_participant_id(value) -> bool:
+    """Whether `value` has the form every participant ID has: p_ and 16
+    lowercase hexadecimal digits."""
+    return isinstance(value, str) and _PARTICIPANT_ID.fullmatch(value) is not None
+
+
+def check_name(name):
+    """Raise ValueError unless `name` is a valid participant display name."""
+    _check_name(name)
 
 
 def _check_name(name):

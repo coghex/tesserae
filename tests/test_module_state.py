@@ -21,7 +21,13 @@ from tesserae.modules import (
     Provider,
     ProviderChoice,
 )
-from tesserae.store import GameStore, ModuleBinding, ParticipantContext, StoreError
+from tesserae.store import (
+    SCHEMA_VERSION,
+    GameStore,
+    ModuleBinding,
+    ParticipantContext,
+    StoreError,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 DICE_CHOICE = ProviderChoice("dice.roll.v1", "builtin.dice", "1")
@@ -112,7 +118,7 @@ class ModuleGameTests(StoreCase):
             store.binding(), ModuleBinding("tally", "1", 1, (DICE_CHOICE,))
         )
         self.assertEqual(store.inspect_state(), TALLY.initial_state())
-        self.assertEqual(self.raw("PRAGMA user_version"), [(3,)])
+        self.assertEqual(self.raw("PRAGMA user_version"), [(SCHEMA_VERSION,)])
 
         other_path = self.directory / "other.sqlite3"
         other = self.keep(
@@ -276,7 +282,9 @@ class LegacyGameTests(StoreCase):
             store.execute(context, dice_request("r1", 0))
             snapshot = (store.game_id, store.inspect_history())
         connection = sqlite3.connect(self.path)
-        connection.executescript("DROP TABLE module; PRAGMA user_version = 2;")
+        connection.executescript(
+            "DROP TABLE seed; DROP TABLE module; PRAGMA user_version = 2;"
+        )
         connection.close()
         return token, participant, snapshot
 
@@ -285,7 +293,7 @@ class LegacyGameTests(StoreCase):
         token, participant, (game_id, history) = self.make_version_2()
         draw = Mock()
         store = self.open(randint=draw)
-        self.assertEqual(self.raw("PRAGMA user_version"), [(3,)])
+        self.assertEqual(self.raw("PRAGMA user_version"), [(SCHEMA_VERSION,)])
         self.assertEqual((store.binding(), store.inspect_state()), (dice, {}))
         self.assertEqual(
             (store.game_id, store.revision(), store.inspect_history()),

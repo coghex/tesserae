@@ -69,7 +69,8 @@ a player on the Ubuntu VM. Next is [M1-5 / tracker #49](https://github.com/coghe
 a private module loaded from outside the repository. Its
 [delivery contract](docs/designs/private_module_design.md) is in progress: the
 [external package loader](docs/modules.md#external-packages) (#51) is
-implemented, and `game create`/`serve` take its `--module-dir` (#52).
+implemented, `game create`/`serve` take its `--module-dir` (#52), and a game
+can start from an [imported seed](docs/game_store.md#seeded-creation) (#53).
 
 ## Working together
 

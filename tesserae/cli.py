@@ -143,6 +143,11 @@ def main(argv: list[str] | None = None) -> int:
         help="A trusted module package directory (see docs/modules.md). "
         "Its code runs as you.",
     )
+    create.add_argument(
+        "--seed",
+        help="Start from this seed file's state and participants instead "
+        "(see docs/game_store.md). Then issue tokens with 'participant rotate'.",
+    )
     participant = commands.add_parser(
         "participant",
         help="Manage this game's participants and their join tokens (local only).",

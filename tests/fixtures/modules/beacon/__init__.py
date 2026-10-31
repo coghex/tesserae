@@ -1,7 +1,8 @@
 """Beacon: an original example of an external module package.
 
 A keeper shows one of three lamp colours, chosen by a die. Everyone sees the
-last colour; each participant also sees how many signals they showed. The package has a
+last colour; each participant also sees how many signals they showed. A
+game can start from a seed, which `_validate_seed` checks. The package has a
 relative helper (`signals`), JSON data (`signals.json`), and its own
 provider for `dice.roll.v1`, `beacon.steady`, which the manifest may select
 instead of `builtin.dice`. Tests load it with tesserae.external.
