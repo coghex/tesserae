@@ -8,8 +8,8 @@ loading and the private adaptation are not implemented.
 
 The owner selected equipment inspection/changes, one skill check with a declared
 spendable resource, and a short single-opponent ranged encounter. Use a copy of
-private pilot state, independent of the original campaign. Resolve exact scene parameters and
-source interpretations privately before implementing its mechanics.
+private pilot state, independent of the original campaign. Resolve exact scene
+parameters and source interpretations privately before implementing its mechanics.
 
 The CLI remains a JSON-line pipe. Test the mechanics through authenticated
 commands, with fixed module-owned opponent behavior for this exercise. Model
@@ -36,8 +36,8 @@ verification note, never by uploading the private implementation.
 The owner chose a separate local-only Git workspace without a remote. Its
 private `LOCAL_HANDOFF.md` records the exact workspace and original source/tool/
 ruling locations. PRIVATE-1 adds copied-input paths and fingerprints when those
-copies are created; no pilot input has been copied as part of planning. Read that handoff before
-private work; no actual input locations are published here. Track private code,
+copies are created; no pilot input has been copied as part of planning. Read
+that handoff before private work; no actual input locations are published here. Track private code,
 specifications and tests in local Git. Before a private child closes, another
 agent or the owner manually reviews named private base/head commits and test
 evidence against a full Tesserae commit ID. Record scope, reviewer, verdict,
