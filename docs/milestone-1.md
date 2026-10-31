@@ -133,7 +133,8 @@ Do not add a plugin marketplace, dependency solver, or general override framewor
 Depends on M1-4. Planned tracker [#49](https://github.com/coghex/tesserae/issues/49)
 and the [private-module delivery contract](designs/private_module_design.md)
 split this work into eight children. The owner selected equipment, one skill
-check with declared Luck, and a short single-opponent pistol encounter.
+check with a declared spendable resource, and a short single-opponent ranged
+encounter.
 #50 records the exact scene and rules privately; #51 can independently begin
 external package loading. No M1-5 implementation is claimed yet.
 
