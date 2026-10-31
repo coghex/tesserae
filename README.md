@@ -65,8 +65,10 @@ minimal bundled modules and an original relay-repair demo: the
 with per-player views. Two players can follow the
 [Relay demo runbook](docs/relay-demo.md); the
 [demo acceptance](docs/acceptance/relay-demo.md) records live runs, one with
-a player on the Ubuntu VM. Next is M1-5, a private module loaded from outside
-the repository.
+a player on the Ubuntu VM. Next is [M1-5 / tracker #49](https://github.com/coghex/tesserae/issues/49),
+a private module loaded from outside the repository. Its
+[delivery contract](docs/designs/private_module_design.md) is planned;
+implementation has not started.
 
 ## Working together
 

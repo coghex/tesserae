@@ -130,7 +130,12 @@ Do not add a plugin marketplace, dependency solver, or general override framewor
 
 ### M1-5. Add the private module and extract the first reusable features
 
-Depends on M1-4. Agree the exact private validation scene first.
+Depends on M1-4. Planned tracker [#49](https://github.com/coghex/tesserae/issues/49)
+and the [private-module delivery contract](designs/private_module_design.md)
+split this work into eight children. The owner selected equipment, one skill
+check with declared Luck, and a short single-opponent pistol encounter.
+#50 records the exact scene and rules privately; #51 can independently begin
+external package loading. No M1-5 implementation is claimed yet.
 
 - Load the private module/content from a configured directory outside the repo.
 - Implement a bounded rules subset with explicit recorded interpretations.
