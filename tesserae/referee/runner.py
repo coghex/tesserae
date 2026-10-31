@@ -214,15 +214,17 @@ class JobLock:
     alive by itself (see `stop_orphan`).
 
     A `stuck` record (a run whose process group survived SIGKILL) keeps the
-    lock unavailable even after every descriptor is closed, until that group
-    is gone.
+    lock unavailable even after every descriptor is closed, while any process
+    has that group ID (it may by then be unrelated: nothing is ever signalled
+    on a stuck record's word). It clears once the group is gone, or by
+    `clear_stuck` after the operator has checked by hand.
     """
 
     def __init__(self, path: Path):
         self.path = Path(path)
         self.fd = None
 
-    def try_acquire(self) -> bool:
+    def try_acquire(self, *, stuck_blocks: bool = True) -> bool:
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -233,7 +235,7 @@ class JobLock:
         record = JobLock.read(self.path) or {}
         if record.get("state") == "stuck":
             pgid = record.get("pgid")
-            if isinstance(pgid, int) and _group_alive(pgid):
+            if stuck_blocks and isinstance(pgid, int) and _group_alive(pgid):
                 self.release()
                 return False
             self.write({"state": "ended", "job_id": record.get("job_id")})
@@ -324,7 +326,7 @@ def stop_orphan(lock_path: Path) -> str:
             "The job is still starting; there is no process to identify yet. Try again."
         )
     if state == "stuck":
-        return _stop_stuck(lock_path, record)
+        raise RunnerError(_stuck_advice(lock_path, record))
     if state != "running":
         raise RunnerError(
             f"The lock is held but its record is {state!r}; not stopping anything."
@@ -358,23 +360,32 @@ def stop_orphan(lock_path: Path) -> str:
     return f"Stopped the job's Codex (process group {pgid})."
 
 
-def _stop_stuck(lock_path: Path, record: dict) -> str:
-    """Retry stopping a run's group that survived SIGKILL. Its leader is gone,
-    so there is no identity to check; but a group ID cannot be reused while any
-    member exists, and only Codex's own descendants can be in that group."""
+def _stuck_advice(lock_path: Path, record: dict) -> str:
     pgid = record.get("pgid")
-    if not isinstance(pgid, int):
-        raise RunnerError(
-            "The stuck record has no process group; not stopping anything."
-        )
-    if not _stop_group(pgid, lambda: not _group_alive(pgid)):
-        raise RunnerError(
-            f"Process group {pgid} still survives SIGKILL; check it by hand."
-        )
+    return (
+        f"Job {record.get('job_id')}'s process group {pgid} survived SIGKILL when its run "
+        "ended. Its owner cannot be verified now (the leader is gone, and the group ID may "
+        "since have been reused), so nothing is signalled. Check it with "
+        f"`ps -A -o pid,pgid,lstart,command` (process group {pgid}) and stop anything that is "
+        "the job's by hand. The record clears itself once that group is gone; if the group "
+        f"is unrelated, clear it with clear_stuck({str(lock_path)!r})."
+    )
+
+
+def clear_stuck(lock_path: Path) -> str:
+    """Clear a `stuck` record after the operator has checked its group by
+    hand. Signals nothing, and refuses while the lock itself is still held."""
+    record = JobLock.read(lock_path) or {}
+    if record.get("state") != "stuck":
+        return "The record is not stuck; nothing to clear."
     lock = JobLock(lock_path)
-    if lock.try_acquire():  # the group is gone: this clears the record
-        lock.release()
-    return f"Stopped what was left of the job (process group {pgid})."
+    if not lock.try_acquire(stuck_blocks=False):
+        raise RunnerError(
+            "The lock itself is still held, so a process from the job still has it open; "
+            "stop that first."
+        )
+    lock.release()
+    return "Cleared the stuck record; the game can start referee jobs again."
 
 
 def _group_alive(pgid: int) -> bool:

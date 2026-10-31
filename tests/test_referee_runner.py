@@ -350,11 +350,49 @@ class ReviewRegressionTests(RunnerCase):
             # Every descriptor is closed, yet no next job can start...
             self.assertFalse(JobLock(lock_path).try_acquire())
             self.assertTrue(JobLock.held(lock_path))
-            with self.assertRaisesRegex(RunnerError, "still survives SIGKILL"):
+            with self.assertRaisesRegex(RunnerError, "nothing is signalled"):
                 runner.stop_orphan(lock_path)
         # ...until the group is really gone, which clears the record.
         self.assertFalse(JobLock.held(lock_path))
         self.assertEqual(JobLock.read(lock_path)["state"], "ended")
+
+    def test_a_stale_stuck_record_never_signals_whoever_has_its_group_now(
+        self,
+    ):  # R76-5
+        # A bystander in its own group, standing in for a reused group ID.
+        signalled = self.tmp / "signalled"
+        bystander = subprocess.Popen([sys.executable, "-c", (
+            "import signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, lambda *a: (open(sys.argv[1], 'w').close(), sys.exit(0)))\n"
+            "print('ready', flush=True); time.sleep(60)"
+        ), str(signalled)], start_new_session=True, stdout=subprocess.PIPE)  # fmt: skip
+        self.addCleanup(bystander.wait)
+        self.addCleanup(lambda: bystander.poll() is None and bystander.kill())
+        bystander.stdout.readline()  # its handler is installed
+        lock_path = self.folder.lock_path(GAME)
+        with JobLock(lock_path) as lock:
+            lock.write({"state": "stuck", "job_id": "j-old", "host_run": "old", "pid": bystander.pid,
+                        "pgid": bystander.pid, "started_at": "Thu Jan  1 00:00:00 2026",
+                        "command": "/old/codex"})  # fmt: skip
+        self.assertTrue(JobLock.held(lock_path))  # still blocks new jobs: the safe side
+        with self.assertRaisesRegex(RunnerError, "nothing is signalled"):
+            runner.stop_orphan(lock_path)
+        time.sleep(0.3)
+        self.assertEqual((bystander.poll(), signalled.exists()), (None, False))
+        # After checking by hand, the operator clears it; still no signal.
+        self.assertIn("Cleared", runner.clear_stuck(lock_path))
+        self.assertFalse(JobLock.held(lock_path))
+        self.assertEqual((bystander.poll(), signalled.exists()), (None, False))
+
+    def test_clear_stuck_refuses_while_the_lock_itself_is_held(self):  # R76-5
+        lock_path = self.folder.lock_path(GAME)
+        lock = JobLock(lock_path)
+        self.assertTrue(lock.try_acquire())
+        self.addCleanup(lock.release)
+        lock.write({"state": "stuck", "job_id": "j-1", "pgid": os.getpid()})
+        with self.assertRaisesRegex(RunnerError, "still held"):
+            runner.clear_stuck(lock_path)
+        self.assertEqual(JobLock.read(lock_path)["state"], "stuck")
 
     def test_a_session_save_that_does_not_return_in_time_fails_the_run(self):  # R76-2a
         entered, release = threading.Event(), threading.Event()
