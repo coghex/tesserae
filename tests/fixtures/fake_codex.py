@@ -77,6 +77,7 @@ elif mode != "no_reply":
                     {"audience": "table", "text": f"Heard: {prompt.strip()[:40]}"}
                 ],
                 "choices": {"ask": [], "resolve": []},
+                "narrated": [],
             }
         )
     )

@@ -100,6 +100,20 @@ class SetupTests(RunnerCase):
             json.loads(self.folder.schema.read_text()), runner.REPLY_SCHEMA
         )
 
+    def test_the_reply_schema_is_the_contracts(self):
+        import re
+
+        contract = (
+            Path(__file__).resolve().parents[1]
+            / "docs"
+            / "designs"
+            / "referee_contract.md"
+        ).read_text()
+        block = re.search(
+            r"### Reply schema.*?```json\n(.*?)```", contract, re.S
+        ).group(1)
+        self.assertEqual(json.loads(block), runner.REPLY_SCHEMA)
+
     def test_check_reports_version_config_and_login(self):
         report = runner.check(self.folder.root, codex=CODEX)
         self.assertEqual((report["codex_version"], report["config_current"], report["logged_in"]),

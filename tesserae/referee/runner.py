@@ -36,7 +36,7 @@ FEATURES_OFF = (
 REPLY_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["messages", "choices"],
+    "required": ["messages", "choices", "narrated"],
     "properties": {
         "messages": {"type": "array", "minItems": 1, "maxItems": 8, "items": {
             "type": "object", "additionalProperties": False, "required": ["audience", "text"],
@@ -52,6 +52,9 @@ REPLY_SCHEMA = {
                     "properties": {"participant_id": {"type": "string"},
                                    "question": {"type": "string", "maxLength": 1000}}}},
                 "resolve": {"type": "array", "maxItems": 4, "items": {"type": "string"}}}},
+        "narrated": {"type": "array", "maxItems": 16, "items": {
+            "type": "object", "additionalProperties": False, "required": ["job_id", "step_id"],
+            "properties": {"job_id": {"type": "string"}, "step_id": {"type": "string"}}}},
     },
 }  # fmt: skip
 
@@ -70,8 +73,11 @@ You are the referee for a tabletop game played by friends over Tesserae.
 - Before any roll, state what is rolled, against what, and any declared resource
   the player is spending. Questions and talk need no tool step and do not move
   time on.
-- Give every mutating call a new, short `step_id`; reuse one only to retry that
-  exact call.
+- Give every mutating call a new, short `step_id` with no spaces; reuse one only
+  to retry that exact call.
+- `get_context` lists earlier results nobody has been told about yet. Tell the
+  player each one belongs to, and list it in `narrated`; list nothing you have
+  not told them.
 - Keep hidden preparation and other players' private details out of table
   messages. Reply privately (`sender`) only to private input.
 - Do not start other agents.
@@ -516,8 +522,9 @@ def _reply_shape(reply) -> bool:
     """The reply schema's structure; the store checks audiences and names."""
     return (
         isinstance(reply, dict)
-        and set(reply) == {"messages", "choices"}
+        and set(reply) == {"messages", "choices", "narrated"}
         and isinstance(reply["messages"], list)
+        and isinstance(reply["narrated"], list)
         and isinstance(reply["choices"], dict)
         and set(reply["choices"]) == {"ask", "resolve"}
     )
