@@ -13,6 +13,7 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tesserae.referee import runner
 from tesserae.referee.runner import CodexRun, JobLock, RunnerError
@@ -332,6 +333,52 @@ class ReviewRegressionTests(RunnerCase):
         self.assertIsNone(result.reply)
         self.assertLess(time.monotonic() - started, 10)  # stopped, not left to time out
         self.assertEqual(uncaught, [])
+
+    def test_a_group_that_survives_cleanup_is_stuck_not_ended(self):  # R76-1a
+        self.mode("reply")
+        lock_path = self.folder.lock_path(GAME)
+        with mock.patch.object(runner, "_group_alive", return_value=True):
+            result = self.run_job()  # a valid reply, but cleanup is never confirmed
+            self.assertEqual(
+                (result.outcome, result.error, result.reply),
+                ("failed", "cleanup_failed", None),
+            )
+            record = JobLock.read(lock_path)
+            self.assertEqual((record["state"], record["pgid"], record["pid"]),
+                             ("stuck", self.run.process.pid, self.run.process.pid))  # fmt: skip
+            self.assertIn("started_at", record)  # kept for the operator
+            # Every descriptor is closed, yet no next job can start...
+            self.assertFalse(JobLock(lock_path).try_acquire())
+            self.assertTrue(JobLock.held(lock_path))
+            with self.assertRaisesRegex(RunnerError, "still survives SIGKILL"):
+                runner.stop_orphan(lock_path)
+        # ...until the group is really gone, which clears the record.
+        self.assertFalse(JobLock.held(lock_path))
+        self.assertEqual(JobLock.read(lock_path)["state"], "ended")
+
+    def test_a_session_save_that_does_not_return_in_time_fails_the_run(self):  # R76-2a
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_save(thread_id):
+            entered.set()
+            release.wait(30)
+
+        uncaught = []
+        hook = threading.excepthook
+        threading.excepthook = uncaught.append
+        self.addCleanup(setattr, threading, "excepthook", hook)
+        self.addCleanup(release.set)
+        self.mode("reply")  # Codex itself finishes normally
+        result = self.run_job(timeout=2.0, on_session=slow_save)
+        self.assertTrue(entered.is_set())
+        self.assertEqual((result.outcome, result.error, result.session_id, result.reply),
+                         ("failed", "runner_failed", "fake-thread-1", None))  # fmt: skip
+        self.assertIn("Saving the session ID did not finish", result.details[0])
+        log = self.run.diagnostics.read_text()
+        release.set()  # the save returns late; its reader resumes on a closed log
+        self.run._readers[0].join(5)
+        self.assertFalse(self.run._readers[0].is_alive())
+        self.assertEqual((uncaught, self.run.diagnostics.read_text()), ([], log))
 
     def test_a_missing_executable_is_a_runner_failure(self):  # R76-3
         result = self.run_job(codex=(str(self.tmp / "no-such-codex"),))

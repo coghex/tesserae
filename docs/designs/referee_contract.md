@@ -144,7 +144,12 @@ kernel releases only when every holder has exited:
      the Codex process, `started_at` its start time as `ps -o lstart= -p PID`
      reports it, and `command` its executable path;
   3. `{"state": "ended", "job_id"}` after the process exits, before the host
-     closes its descriptor.
+     closes its descriptor; or
+  4. `{"state": "stuck", ...}`, keeping the `running` fields, if the run's
+     process group survived SIGKILL. While any member of that group is alive,
+     the lock counts as held even once every descriptor is closed, so no new
+     job starts. When the group is gone, the next attempt to take the lock
+     clears the record to `ended`.
 - After Codex exits normally, the host writes `ended` and closes its own
   descriptor; the lock is free again.
 - **At host startup**, for a job still marked `running`, the host tries the lock
@@ -170,6 +175,9 @@ kernel releases only when every holder has exited:
     `command`. Any mismatch or missing field means the job's process cannot be
     identified: `stop` changes nothing and says why (the operator can wait, or
     stop the process by hand after checking it).
+  - For a `stuck` record, it signals the recorded group again. The leader is
+    gone, so there is no start time to check, but a group ID is not reused
+    while any member exists, and only Codex's descendants can be in it.
   - Stop during startup (record `starting`) refuses: there is no process to
     identify yet; retry in a moment. Stop after the process exited (record
     `ended`, or the lock is free) reports that nothing is running.
@@ -455,7 +463,8 @@ must be complete; the referee is told to read every page on a new session.
 | What fails | Detected by | Result |
 |---|---|---|
 | Codex will not start, or exits non-zero before `thread.started` | launch error or exit status | job `failed` (`runner_failed`); no session change; busy released |
-| The host cannot save the session ID from `thread.started` | the save raises | the run is stopped; job `failed` (`runner_failed`); the ID is kept in the run's result and diagnostics |
+| The host cannot save the session ID from `thread.started` | the save raises, or has not returned by the deadline | the run is stopped; job `failed` (`runner_failed`), even if Codex exited cleanly; the ID is kept in the run's result and diagnostics |
+| The run's process group survives SIGKILL | cleanup is not confirmed | job `failed` (`cleanup_failed`), nothing published; lock record `stuck`, so the game stays busy until the group is gone or the operator stops it |
 | Exit with no valid final reply | missing or invalid `LAST_MESSAGE` | job `failed` (`malformed_reply`), `narrated` false; its committed steps stay and are listed to the next job |
 | Timeout | the 300 s limit | process group stopped; job `interrupted`; committed steps stay |
 | Host stops cleanly during a job (SIGINT) | shutdown | the host stops the job's process group, waits for the lock, and marks the job `interrupted` |

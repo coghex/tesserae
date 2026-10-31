@@ -212,6 +212,10 @@ class JobLock:
     kernel holds it until the host *and* Codex have both closed it. Its file
     records the job's stage for operators; it never proves which process is
     alive by itself (see `stop_orphan`).
+
+    A `stuck` record (a run whose process group survived SIGKILL) keeps the
+    lock unavailable even after every descriptor is closed, until that group
+    is gone.
     """
 
     def __init__(self, path: Path):
@@ -226,6 +230,13 @@ class JobLock:
             os.close(fd)
             return False
         self.fd = fd
+        record = JobLock.read(self.path) or {}
+        if record.get("state") == "stuck":
+            pgid = record.get("pgid")
+            if isinstance(pgid, int) and _group_alive(pgid):
+                self.release()
+                return False
+            self.write({"state": "ended", "job_id": record.get("job_id")})
         return True
 
     def write(self, record: dict):
@@ -312,6 +323,8 @@ def stop_orphan(lock_path: Path) -> str:
         raise RunnerError(
             "The job is still starting; there is no process to identify yet. Try again."
         )
+    if state == "stuck":
+        return _stop_stuck(lock_path, record)
     if state != "running":
         raise RunnerError(
             f"The lock is held but its record is {state!r}; not stopping anything."
@@ -343,6 +356,25 @@ def stop_orphan(lock_path: Path) -> str:
     if not _stop_group(pgid, lambda: not _group_alive(pgid)):
         raise RunnerError(f"Process group {pgid} survived SIGKILL; check it by hand.")
     return f"Stopped the job's Codex (process group {pgid})."
+
+
+def _stop_stuck(lock_path: Path, record: dict) -> str:
+    """Retry stopping a run's group that survived SIGKILL. Its leader is gone,
+    so there is no identity to check; but a group ID cannot be reused while any
+    member exists, and only Codex's own descendants can be in that group."""
+    pgid = record.get("pgid")
+    if not isinstance(pgid, int):
+        raise RunnerError(
+            "The stuck record has no process group; not stopping anything."
+        )
+    if not _stop_group(pgid, lambda: not _group_alive(pgid)):
+        raise RunnerError(
+            f"Process group {pgid} still survives SIGKILL; check it by hand."
+        )
+    lock = JobLock(lock_path)
+    if lock.try_acquire():  # the group is gone: this clears the record
+        lock.release()
+    return f"Stopped what was left of the job (process group {pgid})."
 
 
 def _group_alive(pgid: int) -> bool:
@@ -420,6 +452,9 @@ class CodexRun:
         self._stopped = None
         self._failure = None  # (error, detail) found while running
         self._log = None
+        self._log_guard = threading.Lock()
+        self._record = None
+        self._saving = False
         self._stderr = []
 
     @property
@@ -451,6 +486,7 @@ class CodexRun:
         self.session_id = session_id
         self._on_session = on_session
         try:
+            self._deadline = time.monotonic() + self.timeout
             self.version = codex_version(self.codex)
             self.diagnostics.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.reply_path.unlink(missing_ok=True)
@@ -474,8 +510,9 @@ class CodexRun:
             return
         try:
             identity = settled_identity(self.process.pid) or {}
-            self.lock.write({"state": "running", "job_id": self.job_id, "host_run": self.host_run,
-                             "pid": self.process.pid, "pgid": self.process.pid, **identity})  # fmt: skip
+            self._record = {"job_id": self.job_id, "host_run": self.host_run,
+                            "pid": self.process.pid, "pgid": self.process.pid, **identity}  # fmt: skip
+            self.lock.write({"state": "running", **self._record})
             self._readers = [threading.Thread(target=self._read_events, daemon=True),
                              threading.Thread(target=self._read_stderr, daemon=True)]  # fmt: skip
             for reader in self._readers:
@@ -495,7 +532,7 @@ class CodexRun:
     def _read_events(self):
         for raw in self.process.stdout:
             line = raw[:MAX_LINE].decode("utf-8", "replace").rstrip("\n")
-            self._log.write(line + "\n")
+            self._write_log(line)
             try:
                 event = json.loads(line)
             except ValueError:
@@ -509,6 +546,7 @@ class CodexRun:
                 if isinstance(thread_id, str) and thread_id:
                     self.session_id = thread_id
                     if self._on_session is not None:
+                        self._saving = True
                         try:
                             self._on_session(thread_id)
                         except Exception as error:
@@ -521,6 +559,8 @@ class CodexRun:
                             )
                             threading.Thread(target=self.stop, args=("session_not_saved",),
                                              daemon=True).start()  # fmt: skip
+                        finally:
+                            self._saving = False
 
     def _read_stderr(self):
         total = 0
@@ -530,13 +570,12 @@ class CodexRun:
                 total += len(text)
                 self._stderr.append(text)
 
-    def stop(self, reason: str = "shutdown"):
-        """End the run: SIGTERM, then SIGKILL, to this run's own process group,
-        returning once every member of the group is gone."""
+    def stop(self, reason: str = "shutdown") -> bool:
+        """End the run: SIGTERM, then SIGKILL, to this run's own process group.
+        True once every member of the group is gone; wait() decides the rest."""
         if self._stopped is None:
             self._stopped = reason
-        if self.process is not None:
-            self._end_group()
+        return self.process is None or self._end_group()
 
     def _end_group(self) -> bool:
         """Stop and reap this run's process group: the leader we started (it
@@ -549,33 +588,54 @@ class CodexRun:
         )
 
     def wait(self) -> RunResult:
-        """Block until the run ends. Returns only once its whole process group
-        is gone, then closes the diagnostics and ends the lock record."""
+        """Block until the run ends: its whole process group is gone and its
+        output readers (with any `on_session` save) have finished, within the
+        run's deadline. Then it closes the diagnostics and ends the lock record.
+
+        If the group survives SIGKILL, the run fails (`cleanup_failed`) and the
+        record becomes `stuck`, keeping its process group: the game's lock
+        stays unavailable until that group is gone. If a reader is still busy
+        at the deadline, such as a session save that has not returned, the run
+        fails (`runner_failed`) with the session ID kept.
+        """
         if self.process is None:  # it never started
             error, detail = self._failure
             return RunResult("failed", error, self.session_id, codex_version=self.version,
                              details=[detail])  # fmt: skip
         try:
-            self.process.wait(timeout=self.timeout)
+            self.process.wait(timeout=max(0.0, self._deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             self.stop("timeout")
         cleaned = self._end_group()  # helpers it left behind go with it
-        for reader in self._readers:
-            reader.join(timeout=5)
+        if not cleaned:
+            self._failure = (
+                "cleanup_failed",
+                f"Process group {self.process.pid} survived SIGKILL.",
+            )
+        for reader in self._readers:  # their pipes close once the group is gone
+            reader.join(timeout=max(1.0, self._deadline - time.monotonic()))
+        if any(reader.is_alive() for reader in self._readers) and self._failure is None:
+            busy = "Saving the session ID" if self._saving else "Reading Codex's output"
+            self._failure = ("runner_failed", f"{busy} did not finish in time.")
         stderr = "".join(self._stderr)
         self._finish({"tesserae": "end", "exit_code": self.process.returncode,
-                      "group_stopped": cleaned, "stderr": stderr})  # fmt: skip
+                      "group_stopped": cleaned, "stderr": stderr},
+                     {"state": "stuck", **self._record} if not cleaned else None)  # fmt: skip
         result = self._result(stderr)
         result.codex_version = self.version
-        if not cleaned:
-            result.details.append("Its process group survived SIGKILL.")
         return result
 
-    def _finish(self, entry: dict):
-        if self._log is not None:
-            self._log.write(json.dumps(entry) + "\n")
-            self._log.close()
-        self.lock.write({"state": "ended", "job_id": self.job_id})
+    def _write_log(self, line: str):
+        with self._log_guard:
+            if self._log is not None and not self._log.closed:
+                self._log.write(line + "\n")
+
+    def _finish(self, entry: dict, record: dict | None = None):
+        with self._log_guard:
+            if self._log is not None:
+                self._log.write(json.dumps(entry) + "\n")
+                self._log.close()
+        self.lock.write(record or {"state": "ended", "job_id": self.job_id})
 
     def _result(self, stderr: str) -> RunResult:
         code, session = self.process.returncode, self.session_id
