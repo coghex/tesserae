@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from http import HTTPStatus
 from pathlib import Path
 
 from websockets.exceptions import ConnectionClosed
@@ -29,7 +30,10 @@ class RecordingHost:
     answers like a Tesserae host: a snapshot for the join, a result per roll."""
 
     def __init__(self, test, ssl_context=None):
-        self.received = []
+        self.received, self.requests = [], []
+
+        def record(connection, request):
+            self.requests.append(request.path)  # any HTTP request at all
 
         def handler(connection):
             try:
@@ -46,10 +50,29 @@ class RecordingHost:
             except ConnectionClosed:
                 pass
 
-        self.server = serve(handler, "127.0.0.1", 0, ssl=ssl_context)
+        self.server = serve(
+            handler, "127.0.0.1", 0, ssl=ssl_context, process_request=record
+        )
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         test.addCleanup(self.server.shutdown)
         self.port = self.server.socket.getsockname()[1]
+
+
+class RedirectingHost:
+    """Answers every handshake with 302 Found to `location`."""
+
+    def __init__(self, test, location, ssl_context=None):
+        def redirect(connection, request):
+            response = connection.respond(HTTPStatus.FOUND, "Moved\n")
+            response.headers["Location"] = location
+            return response
+
+        server = serve(
+            lambda c: None, "127.0.0.1", 0, ssl=ssl_context, process_request=redirect
+        )
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        test.addCleanup(server.shutdown)
+        self.port = server.socket.getsockname()[1]
 
 
 class ClientTrustTests(unittest.TestCase):
@@ -141,3 +164,30 @@ class ClientTrustTests(unittest.TestCase):
                 self.assertEqual(process.returncode, 1)
                 self.assertIn(diagnostic, process.stderr)
                 self.assertEqual(process.stdout, "")
+
+    def test_redirects_are_never_followed(self):
+        tls = server_context(self.cert, self.key)
+        plain_target, tls_target = RecordingHost(self), RecordingHost(self, tls)
+        cases = [
+            # 127.1 is loopback, but not an address check_client accepts.
+            ("to an unchecked plaintext address", plain_target,
+             RedirectingHost(self, f"ws://127.1:{plain_target.port}/"), "ws", []),
+            ("between trusted TLS hosts", tls_target,
+             RedirectingHost(self, f"wss://localhost:{tls_target.port}/", tls), "wss",
+             ["--ca-file", str(self.cert)]),
+            ("to plaintext on another computer", None,
+             RedirectingHost(self, "ws://192.0.2.1:8790/"), "ws", []),
+        ]  # fmt: skip
+        for description, target, redirector, scheme, extra in cases:
+            with self.subTest(description):
+                started = time.monotonic()
+                process = self.connect(
+                    f"{scheme}://127.0.0.1:{redirector.port}/", *extra
+                )
+                self.assertLess(time.monotonic() - started, 5)
+                self.assertEqual(process.returncode, 1)
+                self.assertIn("never follows redirects", process.stderr)
+                self.assertNotIn("192.0.2.1", process.stderr)
+                self.assertEqual(process.stdout, "")
+                if target is not None:
+                    self.assertEqual((target.requests, target.received), ([], []))

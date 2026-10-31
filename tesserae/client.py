@@ -18,7 +18,12 @@ import threading
 from collections import deque
 
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
+from websockets.exceptions import (
+    ConnectionClosed,
+    InvalidHandshake,
+    InvalidStatus,
+    InvalidURI,
+)
 
 from .credentials import read_token_file
 from .transport import TransportConfigError, check_client
@@ -74,7 +79,16 @@ class _Client:
         try:
             # TLS, including certificate and name checks, completes before the
             # join is sent, so a host that fails them never sees the token.
-            connection = await self._first(connect(self.uri, **options))
+            connection = await self._first(
+                _connect_without_redirects(self.uri, **options)
+            )
+        except _Redirected:
+            return _diagnose(
+                f"the host at {self.uri} answered with a redirect. Tesserae never "
+                "follows redirects, because only the address you gave was "
+                "checked; connect to the host's own address. Nothing was sent",
+                EXIT_FAILED,
+            )
         except ssl.SSLCertVerificationError as error:
             return _diagnose(
                 f"cannot trust {self.uri}: {error.verify_message or 'verification failed'}. "
@@ -249,6 +263,23 @@ class _Client:
 
 class _Interrupted(Exception):
     pass
+
+
+class _Redirected(Exception):
+    """The host answered the handshake with an HTTP redirect."""
+
+
+class _connect_without_redirects(connect):
+    """websockets' connect, except that handshake redirects are never followed.
+
+    check_client vetted the URI the user gave. A redirect could send the join
+    token somewhere it never checked, such as plaintext to another computer.
+    """
+
+    def process_redirect(self, exc: Exception) -> Exception:
+        if isinstance(exc, InvalidStatus) and 300 <= exc.response.status_code < 400:
+            return _Redirected()
+        return exc
 
 
 class _HostClosed(Exception):
