@@ -186,6 +186,18 @@ def main(argv: list[str] | None = None) -> int:
         "enable", help="Turn referee mode on for a game. It stays on."
     )
     enable.add_argument("--database", required=True, help="The game's SQLite store.")
+    for name, text in (
+        ("setup", "Create the referee folder and its Codex config; then log in once."),
+        (
+            "check",
+            "Report the Codex version, the login and whether the config is current.",
+        ),
+    ):
+        folder_action = referee_actions.add_parser(name, help=text)
+        folder_action.add_argument(
+            "--referee-dir",
+            help="The referee folder (default ~/.local/share/tesserae/referee).",
+        )
     args = parser.parse_args(argv)
     if args.command == "connect":
         from .client import run

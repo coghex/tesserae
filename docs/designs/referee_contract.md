@@ -4,7 +4,10 @@ Status: specification for [#64](https://github.com/coghex/tesserae/issues/64)
 under tracker [#63](https://github.com/coghex/tesserae/issues/63). Implemented
 so far: the store (section 5, with the step journal of section 6 and the reply
 validation and audiences of section 7) in `tesserae/referee/store.py` (#65), and
-`tesserae referee enable`. The runner, bridge, host wiring and CLI are not. It turns the [M1-6 delivery plan](codex_referee_design.md)
+`tesserae referee enable`; the referee folder, its config, the job lock and the
+Codex runner (sections 2 to 4) in `tesserae/referee/runner.py` (#66), with
+`tesserae referee setup` and `check`. The bridge, host wiring, the CLI and
+`referee stop`/`rebuild` are not. It turns the [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
 records how the CLI shows conversation (owner decision O-1).
 
