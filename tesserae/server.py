@@ -23,6 +23,7 @@ from pathlib import Path
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
+from .builtin import DICE_RUNTIME
 from .protocol import (
     JOIN_TIMEOUT_SECONDS,
     JoinRequest,
@@ -79,6 +80,9 @@ class GameHost:
         self.host = host
         self._ssl = ssl_context
         self._randint = randint
+        # Messages are parsed with the game's own commands, so a command the
+        # store would accept is never refused first. Only `dice` until #41.
+        self._runtime = DICE_RUNTIME
         self._join_timeout = join_timeout
         self._write_timeout = write_timeout
         # Joined connections, subscribed to revision notifications. Only this
@@ -151,7 +155,7 @@ class GameHost:
         if isinstance(first, bytes):
             return await self._refuse(connection, _BINARY_REPLY)
         try:
-            message = parse_client_message(first)
+            message = parse_client_message(first, self._runtime)
         except ProtocolError as error:
             return await self._refuse(connection, error.to_message())
         if not isinstance(message, JoinRequest):
@@ -240,7 +244,7 @@ class GameHost:
         if isinstance(message, bytes):
             return _BINARY_REPLY
         try:
-            parsed = parse_client_message(message)
+            parsed = parse_client_message(message, self._runtime)
         except ProtocolError as error:
             return await self._rejection(context, error)
         if isinstance(parsed, JoinRequest):
@@ -279,7 +283,7 @@ class GameHost:
         try:
             reply, committed = await self._call(GameStore.execute_command, context, raw)
         except Exception:
-            return self._failure(_request_id(raw))
+            return self._failure(_request_id(raw, self._runtime))
         if committed and self.authenticated:
             self._publish(reply["revision"])
         return reply
@@ -447,8 +451,8 @@ def _fail(message: str, code: int = 1) -> int:
     return code
 
 
-def _request_id(raw):
+def _request_id(raw, runtime):
     try:
-        return parse_request(raw).request_id
+        return parse_request(raw, runtime).request_id
     except ProtocolError as error:
         return error.request_id

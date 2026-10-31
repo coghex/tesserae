@@ -113,7 +113,9 @@ Depends on M1-3. Tracker [#37](https://github.com/coghex/tesserae/issues/37)
 and the [demo/module delivery contract](designs/demo_modules_design.md) specify
 the working original relay scene, minimal bundled module/provider contracts,
 durable state and scoped views. Start with #38; #39 and #40 can follow
-independently, then #41 and #42. Implementation has not started.
+independently, then #41 and #42. The module contract and `dice` adapter
+(#38, [modules.md](modules.md)) are in place; persisted module state, Relay,
+views and the demo are not.
 
 - Load an explicitly selected local module and its action definitions.
 - Give the public demo a small character and a simple uncertain action.
@@ -191,4 +193,5 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   Automated checks and the separately installed Ubuntu VM's network check
   passed; see the [acceptance record](acceptance/encrypted-lan.md). M1-3 is
   complete under the agreed VM substitution. Physical-device Wi-Fi testing
-  is deferred. M1-4's original demo and minimal module loading are next.
+  is deferred. M1-4's original demo and minimal module loading are in
+  progress (#38 delivered).

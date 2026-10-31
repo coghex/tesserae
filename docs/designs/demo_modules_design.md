@@ -1,7 +1,8 @@
 # M1-4: original demo and minimal module loading
 
-Status: planned; tracker [#37](https://github.com/coghex/tesserae/issues/37). M1-3 is complete at `1afa9a7`. This document specifies the next slice;
-none of its module/game behavior is implemented yet. The relay theme and small
+Status: in progress; tracker [#37](https://github.com/coghex/tesserae/issues/37). M1-3 is complete at `1afa9a7`. DEMO-1 (#38) delivers
+the module contract and `dice` adapter ([modules.md](../modules.md)); DEMO-2
+to DEMO-5 are not implemented yet. The relay theme and small
 rule numbers are a working original example, not universal game concepts.
 
 ## Outcome
