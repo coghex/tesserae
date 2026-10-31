@@ -135,8 +135,8 @@ and the [private-module delivery contract](designs/private_module_design.md)
 split this work into eight children. The selected scene covers equipment,
 a skill check with a declared spendable resource, and a short ranged encounter.
 #50 records the exact scene and rules privately. The external package loader
-(#51) and `game create`/`serve --module-dir` (#52) are implemented; seeded
-creation (#53) and the private module are not.
+(#51), `game create`/`serve --module-dir` (#52) and public seeded creation
+(#53) are implemented; the private converter and module are not.
 
 - Load the private module/content from a configured directory outside the repo.
 - Implement a bounded rules subset with explicit recorded interpretations.

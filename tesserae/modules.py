@@ -39,6 +39,11 @@ class ArgumentError(ValueError):
         self.message = message
 
 
+class SeedError(ValueError):
+    """A seed's module state is not valid for this module. Raised by a
+    module's `validate_seed`; its message is shown to the operator."""
+
+
 class ActionRejected(Exception):
     """A fresh action the rules do not allow now, such as spending a resource
     the caller lacks. Raise it before the first draw. The host reports the
@@ -122,6 +127,12 @@ class Module:
     `requires`. `initial_state()` returns a fresh JSON object for a new game.
     `view(state, participant_id)` returns what that participant may see, or
     None for a metadata-only snapshot. Tags only describe the module.
+
+    `validate_seed(state, participant_ids)`, if given, lets a game start from
+    imported state (`tesserae game create --seed`). It is pure: it checks a
+    proposed state, including that every reference to a participant names one
+    of `participant_ids`, and raises SeedError if it is not valid. A module
+    without it refuses seeds.
     """
 
     id: str
@@ -135,6 +146,7 @@ class Module:
     tags: frozenset[str] = frozenset()
     requires_authentication: bool = False
     api_version: int = HOST_API_VERSION
+    validate_seed: Callable[[dict, frozenset[str]], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -194,6 +206,24 @@ class Runtime:
             state=_json_copy(outcome.state, "state"),
             result=_json_copy(outcome.result, "result"),
         )
+
+    def validate_seed(self, state: dict, participant_ids: frozenset[str]):
+        """Check imported state with the module's validator; raise SeedError.
+
+        A module without one refuses every seed. The validator sees a copy.
+        """
+        validate = self.module.validate_seed
+        if validate is None:
+            raise SeedError(f"Module {self.module.id!r} does not accept seeds.")
+        try:
+            validate(_json_copy(state, "seed state"), frozenset(participant_ids))
+        except SeedError:
+            raise
+        except Exception as error:  # a broken validator, not a verdict
+            raise SeedError(
+                f"Module {self.module.id!r} could not check the seed: "
+                f"{type(error).__name__}: {error}"
+            ) from error
 
     def view(self, state: dict, participant_id: str) -> dict | None:
         view = self.module.view(_json_copy(state, "state"), participant_id)

@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from tesserae import store as store_module
 from tesserae.credentials import new_token, read_token_file, write_token_file
 from tesserae.server import DEVELOPMENT_PARTICIPANT
-from tesserae.store import GameStore, StoreError
+from tesserae.store import SCHEMA_VERSION, GameStore, StoreError
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 # Created by the schema-version-1 GameStore (master at f894d84): game
@@ -149,7 +149,7 @@ class MigrationTests(StoreCase):
         store = self.open(randint=draw)
         self.assertEqual(store.game_id, V1_GAME_ID)
         self.assertEqual(store.revision(), 2)
-        self.assertEqual(self.raw("PRAGMA user_version"), [(3,)])
+        self.assertEqual(self.raw("PRAGMA user_version"), [(SCHEMA_VERSION,)])
 
         replay = store.execute(DEVELOPMENT_PARTICIPANT, request("r1", 0))
         self.assertEqual(replay["revision"], 1)
@@ -180,7 +180,7 @@ class MigrationTests(StoreCase):
 
     def test_newer_schema_is_refused_unchanged(self):
         connection = sqlite3.connect(self.path)
-        connection.execute("PRAGMA user_version = 4")
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
         connection.close()
         before = self.path.read_bytes()
         with self.assertRaisesRegex(StoreError, "newer"):

@@ -16,8 +16,9 @@ and stale-revision rejection, serialized writers, read-only access, and
 Each game is bound to one [module](modules.md) (#38) and keeps that module's
 JSON state (#39): see [Modules and state](#modules-and-state). `tesserae game
 create` makes a game bound to a chosen bundled module, and `serve` hosts it with
-per-participant views (#41). Not implemented: turn rules, inventory, or several
-games per store.
+per-participant views (#41). A game can also start from an imported seed
+([Seeded creation](#seeded-creation), #53). Not implemented: turn rules,
+inventory, or several games per store.
 The loopback-only WebSocket host (`tesserae serve`, `tesserae/server.py`)
 exposes this service. In development mode every connection uses one fixed
 participant. With `--authenticated` (#15), each connection joins with a token,
@@ -50,7 +51,7 @@ one in a single transaction, after the old schema has been validated. Either
 every schema and version change commits, or the file stays exactly at its old
 version. Upgrading from version 1 adds the participant and credential
 tables. Upgrading to version 3 adds the module binding, binding the game to
-`dice` with state `{}`. The game ID, revision, every command and its result,
+`dice` with state `{}`. Upgrading to version 4 adds the empty `seed` table. The game ID, revision, every command and its result,
 participants, credentials, and the `local-development` attribution of
 earlier history are untouched. A store
 whose schema is newer than this Tesserae understands is refused unchanged, with
@@ -236,8 +237,47 @@ switch, reset, or state upgrade.
   provider fails the same way. There is no fallback to `dice` and nothing is
   drawn.
 - **Administering.** Participant and credential commands,
-  `binding()`, `inspect_state()` and history reads need no module code. They
-  work on a game whose module this Tesserae does not have.
+  `binding()`, `inspect_state()`, `seed_provenance()` and history reads need no
+  module code. They work on a game whose module this Tesserae does not have.
+
+## Seeded creation
+
+A new game can start from imported state instead of the module's initial
+state (#53): `tesserae game create --database NEW --module ID [--module-dir DIR]
+--seed FILE`, or `GameStore.create(path, runtime, seed=read_seed(FILE))`
+(`tesserae/seed.py`). A seed is a recorded baseline, not a replay: the game
+starts at revision 0 with an empty command history.
+
+```json
+{"seed_version": 1,
+ "module": {"id": "beacon", "version": "1", "state_version": 1,
+            "providers": [{"operation": "dice.roll.v1", "provider": "builtin.dice", "version": "1"}]},
+ "participants": [{"participant_id": "p_a1a1a1a1a1a1a1a1", "name": "Alice"}],
+ "state": {"shown": ["red"], "by": {"p_a1a1a1a1a1a1a1a1": 1}},
+ "provenance": {"source": "..."}}
+```
+
+- **The host checks the envelope:** exactly these keys at each level; UTF-8
+  JSON with no duplicate keys or non-finite numbers; `seed_version` 1; a module
+  binding equal to the runtime's (ID, version, state version, and the same
+  provider choices); participant IDs of the form every participant ID has, `p_`
+  and 16 lowercase hexadecimal digits, with no repeats; valid display names. A
+  participant entry holds only an ID and a name, never a token or digest.
+- **The module checks its state** with `validate_seed(state, participant_ids)`
+  ([modules.md](modules.md#module-definition)), including that every reference
+  to a participant names a seeded one. A module without a validator refuses
+  seeds, as `dice` and `relay` do.
+- **All or nothing.** Every check runs before the file is created. The binding,
+  state, participants and provenance are then written in the same single
+  transaction as the new store. An existing destination is refused untouched,
+  and any failure removes the new file.
+- **Credentials come afterwards.** Seeded participants have no token:
+  `participant list` shows `no token`, and `tesserae participant rotate ID
+  --token-file FILE` issues each one its first token. Old tokens are never
+  imported.
+- **Provenance** is any JSON object, stored as given in the `seed` table and
+  read back with `store.seed_provenance()`. The host never interprets it.
+  Private seeds and their provenance stay out of the public repository.
 
 ## Connections and threads
 
@@ -254,7 +294,7 @@ lookups and the module's synchronous rules.
 ## Storage
 
 SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
-"TESS"). The schema version is SQLite's `user_version`, currently 3.
+"TESS"). The schema version is SQLite's `user_version`, currently 4.
 
 | Table | Since | Contents |
 |---|---|---|
@@ -263,6 +303,7 @@ SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
 | `participants` | 2 | `participant_id`, display `name`, `created_at` |
 | `credentials` | 2 | `id`, `participant_id`, token `digest`, `issued_at`, `revoked_at` (null while active; at most one active per participant) |
 | `module` | 3 | One row: `module_id`, `module_version`, `state_version`, selected `providers` JSON (`[operation, provider, version]` triples), and the module's `state` JSON |
+| `seed` | 4 | For a game created from a seed, one row: `seed_version`, the `provenance` JSON, `created_at`; otherwise empty |
 
 The `commands` table is the history. It is not an event-sourcing log, and
 SQLite is the only live authority. `local-development` appears in `commands`

@@ -72,6 +72,7 @@ dice operation and no `roll` command.
 | `requires`, `providers` | Required operation IDs and the explicit choice for each |
 | `tags` | Descriptive strings |
 | `requires_authentication` | Whether its games need authenticated participants |
+| `validate_seed(state, participant_ids)` | Optional. Checks imported state for a [seeded game](game_store.md#seeded-creation), including that every participant reference is one of `participant_ids`; raises `SeedError`. Without it, the module refuses seeds |
 
 A module definition is immutable and holds no game state, connection, or
 random source. One definition serves every game.
