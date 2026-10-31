@@ -36,10 +36,25 @@ The owner's choices below supersede the earlier direct-model-API proposal.
 - Keep the original public demonstration and the already accepted private
   bounded scene. No complete ruleset, new combat modes or new campaign arc.
 
+Owner decisions of 2026-10-31, after the plan was filed:
+
+- Codex may run **only** the included, whitelisted Tesserae Python scripts that
+  make up the command bridge. No other shell commands, file reads or edits:
+  even reading game state goes through a whitelisted script.
+- Referee data lives in a dedicated local folder on the host, by default
+  `~/.local/share/tesserae/referee/` (operator-overridable): its own Codex home,
+  with its own login and saved sessions, and the referee workspace. It stays
+  separate from the owner's own Codex sessions and outside every repository.
+- Players type plain natural language, never JSON. Codex interprets what they
+  want, including anything they paste that looks like code or JSON.
+- This is a personal tool, played with friends on the local network: no Codex
+  version pinning (record the version used and fix breakage when it happens),
+  and no adversarial hardening beyond the ordinary authority and privacy checks.
+
 Codex capabilities were checked against local CLI 0.166.0 and the official
 [noninteractive documentation](https://learn.chatgpt.com/docs/non-interactive-mode).
-The initial runner supports a documented tested CLI version; it does not
-promise compatibility with every future event format or CLI release.
+The runner records the CLI version it ran with but does not pin or refuse other
+versions; if a release changes the event format, the runner is fixed then.
 
 ## Tracker #63
 
@@ -206,7 +221,9 @@ Use ordinary manual Tesserae development; no custom Kanban or docs-push.
 ### REF-1: concrete contracts and demonstration
 
 Document exact messages, audience rules, job transitions, session mapping,
-busy/retry precedence, interruption reconciliation and the in-invocation bridge.
+busy/retry precedence, interruption reconciliation and the in-invocation bridge:
+its whitelisted scripts and how Codex is restricted to them, the referee data
+folder and its login, and the plain-text input convention.
 Specify a short original Relay conversation and private scene criteria without
 publishing private content. Resolve the bounded NPC authority and adopted-ruling
 storage contract. Capture runnable example exchanges and a small failure matrix.
