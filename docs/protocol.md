@@ -161,7 +161,11 @@ At startup the host loads the game's bound module and providers exactly
 do not match, `serve` exits 1 before listening, with no fallback to `dice`. A
 module that requires authenticated participants, such as Relay, refuses
 development mode, even on 127.0.0.1: `serve` exits 2 and starts nothing. The
-host's first line names the module, for example `module: relay 1`.
+host's first line names the module, for example `module: relay 1`. A module
+from an explicit package is loaded the same way with `serve --module-dir`
+([#52](https://github.com/coghex/tesserae/issues/52), see
+[modules.md](modules.md#creating-and-serving-an-external-game)); the protocol is
+unchanged.
 
 ## Authenticated sessions
 

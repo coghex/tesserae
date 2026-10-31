@@ -55,7 +55,9 @@ def main(argv: list[str] | None = None) -> int:
         "with --authenticated, each must join with a personal token.",
     )
     serve.add_argument(
-        "--database", required=True, help="SQLite game store; created if missing."
+        "--database",
+        required=True,
+        help="SQLite game store; created if missing, except with --module-dir.",
     )
     serve.add_argument(
         "--port", required=True, type=_port, help="TCP port; 0 picks a free one."
@@ -77,6 +79,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     serve.add_argument(
         "--tls-key", help="Its private key, unencrypted and readable only by you."
+    )
+    serve.add_argument(
+        "--module-dir",
+        help="The trusted module package this game was created with (see "
+        "docs/modules.md). Its code runs as you. The game must already exist.",
     )
     connect = commands.add_parser(
         "connect",
@@ -112,10 +119,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     game = commands.add_parser(
         "game",
-        help="Create a game bound to a bundled module (local only).",
+        help="Create a game bound to a module (local only).",
         description="Operator commands, run on the host. A game's module is "
-        "fixed when it is created. 'serve' and 'participant add' still create "
-        "a dice game when the database is missing.",
+        "fixed when it is created. 'serve' (without --module-dir) and "
+        "'participant add' still create a dice game when the database is missing.",
     )
     game_actions = game.add_subparsers(dest="action", required=True)
     create = game_actions.add_parser(
@@ -127,7 +134,14 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument(
         "--module",
         required=True,
-        help="Bundled module ID: " + ", ".join(CATALOG.module_ids()) + ".",
+        help="Module ID: bundled ("
+        + ", ".join(CATALOG.module_ids())
+        + "), or the one in --module-dir.",
+    )
+    create.add_argument(
+        "--module-dir",
+        help="A trusted module package directory (see docs/modules.md). "
+        "Its code runs as you.",
     )
     participant = commands.add_parser(
         "participant",
@@ -181,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             tls_cert=args.tls_cert,
             tls_key=args.tls_key,
+            module_dir=args.module_dir,
         )
     try:
         result = roll_expression(args.expression)

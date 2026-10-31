@@ -32,6 +32,8 @@ def _signal(action) -> Outcome:
     colour = colours[roll["total"] - 1]
     state = action.state
     state["shown"].append(colour)
+    by = state["by"]  # participant ID -> signals shown; private to each
+    by[action.participant_id] = by.get(action.participant_id, 0) + 1
     return Outcome(state, {"roll": roll, "colour": colour})
 
 
@@ -40,8 +42,11 @@ BEACON = Module(
     version="1",
     state_version=1,
     commands=(Command("beacon.signal", _validate_signal, _signal),),
-    initial_state=lambda: {"shown": []},
-    view=lambda state, participant_id: {"last": (state["shown"] or [None])[-1]},
+    initial_state=lambda: {"shown": [], "by": {}},
+    view=lambda state, participant_id: {
+        "last": (state["shown"] or [None])[-1],
+        "yours": state["by"].get(participant_id, 0),
+    },
     requires=frozenset({DICE}),
     # Complete defaults, but ignored for an external package: module.toml
     # alone selects providers, and a partial manifest is never filled from here.

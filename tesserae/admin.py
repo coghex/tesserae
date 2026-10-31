@@ -12,14 +12,16 @@ from pathlib import Path
 
 from .builtin import CATALOG
 from .credentials import new_token, write_token_file
+from .external import load_module_dir
 from .modules import ModuleError
 from .store import GameStore, StoreError
 
 
 def run_game(args) -> int:
-    """`tesserae game create`: a new game bound to one bundled module."""
+    """`tesserae game create`: a new game bound to one bundled module, or to
+    the module in an explicit package directory (`--module-dir`)."""
     try:
-        runtime = CATALOG.resolve(args.module)  # before any file is created
+        runtime = _runtime(args.module, args.module_dir)  # before any file exists
         with GameStore.create(args.database, runtime) as store:
             game_id = store.game_id
     except (ModuleError, StoreError, sqlite3.Error, OSError) as error:
@@ -29,6 +31,18 @@ def run_game(args) -> int:
     print(f"Created game {game_id} ({module.id} {module.version}) at {args.database}.")
     print("Add its participants with 'tesserae participant add'.")
     return 0
+
+
+def _runtime(module_id: str, module_dir):
+    if module_dir is None:
+        return CATALOG.resolve(module_id)
+    runtime = load_module_dir(module_dir)
+    if runtime.module.id != module_id:
+        raise ModuleError(
+            f"The package in {module_dir} is module {runtime.module.id!r}, "
+            f"not {module_id!r}."
+        )
+    return runtime
 
 
 def run(args) -> int:
