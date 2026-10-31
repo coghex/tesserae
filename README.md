@@ -59,8 +59,9 @@ the Mac host. Physical-device Wi-Fi testing is deferred. Follow the
 
 Next is [M1-4 / tracker #37](https://github.com/coghex/tesserae/issues/37):
 minimal bundled modules and an original relay-repair demo. Its
-[delivery contract](docs/designs/demo_modules_design.md) is planned; module
-loading and the demo are not implemented yet.
+[delivery contract](docs/designs/demo_modules_design.md) is in progress: the
+[module contract](docs/modules.md) and `dice` adapter are in place, but
+module games and the demo are not implemented yet.
 
 ## Working together
 

@@ -13,6 +13,8 @@ to this service rather than reimplementing any of it.
 Implemented: one SQLite store per game, the `roll` command, replay, conflict
 and stale-revision rejection, serialized writers, read-only access, and
 [participants with personal join tokens](#participants-and-credentials) (#14).
+Commands are parsed and executed through the stateless `dice` compatibility
+[module](modules.md) (#38); persisted module bindings and state are #39.
 Not implemented: turn rules, inventory, or hosting several games.
 The loopback-only WebSocket host (`tesserae serve`, `tesserae/server.py`)
 exposes this service. In development mode every connection uses one fixed
@@ -179,7 +181,9 @@ available. Checking first and writing in a later transaction is not allowed.
 For example, an inventory transfer debits one side and credits the other in
 one transaction. Whether someone may read or replay a result is a separate
 question from whether they may take a new action that uses a turn. This child
-implements no turns, inventory, or module framework.
+implements no turns or inventory. The [module contract](modules.md) (#38)
+gives executors a private state copy and `ActionRejected` for exactly this;
+the store runs them inside the guarded transaction from #39.
 
 ## Connections and threads
 

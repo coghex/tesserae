@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
+from .builtin import DICE_RUNTIME
 from .credentials import token_digest
-from .dice import roll_expression
 from .protocol import (
     ProtocolError,
     error_message,
@@ -149,6 +149,9 @@ class GameStore:
         busy_timeout: float = DEFAULT_BUSY_TIMEOUT,
     ):
         self._randint = randint
+        # Schema 2 binds every game to the stateless `dice` compatibility
+        # module; persisted module bindings and state are #39.
+        self._runtime = DICE_RUNTIME
         self._connection = sqlite3.connect(
             path, timeout=busy_timeout, isolation_level=None
         )
@@ -193,7 +196,7 @@ class GameStore:
         """
         _check_context(context)
         try:
-            request = parse_request(raw)
+            request = parse_request(raw, self._runtime)
         except ProtocolError as error:
             revision = self.session_revision(context)
             if revision is None:
@@ -224,9 +227,13 @@ class GameStore:
                     request_id=request.request_id,
                     revision=current,
                 ), False
-            result = roll_expression(
-                request.args["expression"], randint=self._randint
-            ).as_dict()
+            result = self._runtime.execute(
+                {},
+                context.participant_id,
+                request.command,
+                request.args,
+                randint=self._randint,
+            ).result
             record = CommandRecord(
                 revision=current + 1,
                 participant_id=context.participant_id,

@@ -58,9 +58,11 @@ Welcome, host to client on connection in [development mode](#host-modes):
   (2^63 − 1).
 - `command` is a string and `args` is a JSON object.
 - JSON booleans are never accepted as integers.
-- The only command is `roll`. Its `args` has exactly one field, `expression`, a
-  string validated with the existing dice rules and limits (at most 4096
-  characters, 1000 dice, and 1,000,000 sides). Validation never rolls dice.
+- Only the game's [module](modules.md) commands are accepted. Every game
+  today uses the `dice` compatibility module, whose only command is `roll`.
+  Its `args` has exactly one field, `expression`, a string validated with the
+  existing dice rules and limits (at most 4096 characters, 1000 dice, and
+  1,000,000 sides). Validation never rolls dice.
 - Malformed JSON, duplicate object keys at any depth, non-finite numbers
   (`NaN`, `Infinity`, `-Infinity`, or overflowing literals such as `1e999`),
   nesting too deep to parse, and strings that are not valid Unicode (unpaired
@@ -77,6 +79,7 @@ diagnostics only and may change; do not parse them.
 | `unsupported_version` | A well-formed request with a version other than 1 | HOST-2 |
 | `unsupported_command` | A well-formed request naming an unknown command | HOST-2 |
 | `invalid_expression` | A well-formed `roll` whose expression is invalid | HOST-2 |
+| `action_rejected` | A well-formed, current command the game's rules do not allow now; nothing changed (used from #39) | #38 |
 | `stale_revision` | `expected_revision` does not match the current state | HOST-3 |
 | `request_conflict` | The sender reused a request ID for different content | HOST-3 |
 | `internal_error` | The host failed unexpectedly or its store was busy | HOST-4 |
@@ -94,14 +97,15 @@ Checks run in this order, and the first failure decides the code:
 
 1. JSON decoding and top-level object shape.
 2. Field presence and types of every top-level field, then, when `command` is
-   `"roll"`, the shape and type of its `args`.
+   one of the game's commands, the shape and type of its `args`.
 3. Version.
 4. Command.
-5. Expression.
+5. The command's argument values, such as a `roll` expression.
 
 So any structural error is `invalid_request` even if the version or command
-is also unsupported. Note that step 2 checks `roll` argument shape before the
-version check.
+is also unsupported. Note that step 2 checks argument shape before the
+version check. A module validator's `invalid_request` errors are step 2, and
+its other codes are step 5 ([modules.md](modules.md#argument-errors-and-the-protocol)).
 
 An error's `request_id` is the request's own ID when the JSON parsed to an
 object whose `request_id` is valid, even if other fields are wrong. Otherwise

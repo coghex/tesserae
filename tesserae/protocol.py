@@ -2,7 +2,8 @@
 
 Covers commands and the authenticated-session messages layered around them.
 This module neither executes commands, stores state, verifies credentials, nor
-opens connections. See docs/protocol.md for the contract.
+opens connections. Command arguments are checked by the selected module's
+validators (docs/modules.md). See docs/protocol.md for the contract.
 """
 
 import copy
@@ -10,7 +11,9 @@ import json
 import math
 from dataclasses import dataclass, field
 
-from .dice import DiceExpressionError, RollResult, parse_expression
+from .builtin import DICE_RUNTIME
+from .dice import RollResult
+from .modules import ArgumentError, Runtime, describe_fields
 
 PROTOCOL_VERSION = 1
 MAX_REVISION = 2**63 - 1
@@ -24,6 +27,7 @@ ERROR_CODES = frozenset(
         "unsupported_version",
         "unsupported_command",
         "invalid_expression",
+        "action_rejected",
         "stale_revision",
         "request_conflict",
         "internal_error",
@@ -117,13 +121,18 @@ def is_valid_identifier(value) -> bool:
     )
 
 
-def parse_request(text: str | bytes) -> CommandRequest:
-    """Validate one JSON command request without consuming randomness."""
-    return _parse_command(_decode(text))
+def parse_request(text: str | bytes, runtime: Runtime = DICE_RUNTIME) -> CommandRequest:
+    """Validate one JSON command request without consuming randomness.
+
+    Only `runtime`'s registered commands are accepted, checked by their own
+    validators. The default is the `dice` compatibility module, whose only
+    command is `roll`.
+    """
+    return _parse_command(_decode(text), runtime)
 
 
 def parse_client_message(
-    text: str | bytes,
+    text: str | bytes, runtime: Runtime = DICE_RUNTIME
 ) -> CommandRequest | JoinRequest | SyncRequest:
     """Validate any client message in an authenticated session.
 
@@ -135,7 +144,7 @@ def parse_client_message(
         return _parse_join(data)
     if data.get("type") == "sync":
         return _parse_sync(data)
-    return _parse_command(data)
+    return _parse_command(data, runtime)
 
 
 def _decode(text: str | bytes) -> dict:
@@ -206,7 +215,7 @@ def _check_session_fields(data: dict, fields: frozenset, subject: str):
     missing = sorted(fields - data.keys())
     extra = sorted(data.keys() - fields)
     if missing or extra:
-        raise ProtocolError("invalid_request", _field_problem(missing, extra, subject))
+        raise ProtocolError("invalid_request", describe_fields(missing, extra, subject))
     if not _is_int(data["version"]):
         raise ProtocolError("invalid_request", "'version' must be an integer.")
 
@@ -218,7 +227,7 @@ def _check_session_version(data: dict):
         )
 
 
-def _parse_command(data: dict) -> CommandRequest:
+def _parse_command(data: dict, runtime: Runtime) -> CommandRequest:
     request_id = data.get("request_id")
     if not is_valid_request_id(request_id):
         request_id = None
@@ -229,7 +238,7 @@ def _parse_command(data: dict) -> CommandRequest:
     missing = sorted(_REQUEST_FIELDS - data.keys())
     extra = sorted(data.keys() - _REQUEST_FIELDS)
     if missing or extra:
-        reject("invalid_request", _field_problem(missing, extra, "Request"))
+        reject("invalid_request", describe_fields(missing, extra, "Request"))
     if not _is_int(data["version"]):
         reject("invalid_request", "'version' must be an integer.")
     if data["type"] != "command":
@@ -250,22 +259,22 @@ def _parse_command(data: dict) -> CommandRequest:
     args = data["args"]
     if not isinstance(args, dict):
         reject("invalid_request", "'args' must be a JSON object.")
-    if data["command"] == "roll":
-        missing = sorted({"expression"} - args.keys())
-        extra = sorted(args.keys() - {"expression"})
-        if missing or extra:
-            reject("invalid_request", _field_problem(missing, extra, "Roll args"))
-        if not isinstance(args["expression"], str):
-            reject("invalid_request", "'expression' must be a string.")
+    command = runtime.command(data["command"])
+    deferred = None
+    if command is not None:
+        try:
+            command.validate(args)
+        except ArgumentError as error:
+            if error.code == "invalid_request":
+                reject(error.code, error.message)
+            deferred = error  # a value error, reported after the version
 
     if data["version"] != PROTOCOL_VERSION:
         reject("unsupported_version", f"Protocol version {PROTOCOL_VERSION} only.")
-    if data["command"] != "roll":
+    if command is None:
         reject("unsupported_command", f"Unknown command {data['command']!r}.")
-    try:
-        parse_expression(args["expression"])
-    except DiceExpressionError as error:
-        reject("invalid_expression", str(error))
+    if deferred is not None:
+        reject(deferred.code, deferred.message)
 
     return CommandRequest(
         version=data["version"],
@@ -376,17 +385,6 @@ def _check_identifier(value, name: str):
 def _check_revision(value):
     if not is_valid_revision(value):
         raise ValueError(f"Invalid revision {value!r}.")
-
-
-def _field_problem(missing: list[str], extra: list[str], subject: str) -> str:
-    # Missing names come from the protocol; extra names are client input (a
-    # token pasted as a key, for example), so they are counted, never echoed.
-    parts = []
-    if missing:
-        parts.append("missing " + ", ".join(missing))
-    if extra:
-        parts.append(f"{len(extra)} unexpected field{'s' if len(extra) > 1 else ''}")
-    return f"{subject} has {'; '.join(parts)}."
 
 
 def _reject_duplicate_keys(pairs):
