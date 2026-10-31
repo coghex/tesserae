@@ -228,7 +228,10 @@ switch, reset, or state upgrade.
   must match the binding exactly. Without one, the store resolves the binding
   from the bundled catalog on first use. For an external package (`serve
   --module-dir`), the host opens the game with `GameStore.open_existing(path,
-  runtime=...)`, which never creates or initializes a file. Any mismatch
+  runtime=...)`, which never creates or initializes a file. A given runtime, or
+  `load_runtime=True` (which `serve` uses for bundled modules), is checked
+  against the binding before any schema upgrade commits or the journal mode
+  changes, so a game refused for its module is left byte-for-byte unchanged. Any mismatch
   raises `StoreError`, and an unknown module, version, state version or
   provider fails the same way. There is no fallback to `dice` and nothing is
   drawn.

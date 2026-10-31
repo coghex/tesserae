@@ -210,7 +210,10 @@ class GameStore:
     `runtime`, if given, is the already-loaded runtime to execute with; it must
     match the game's binding exactly. Without one, the binding is resolved
     from the bundled catalog the first time a command or view needs it, so
-    participant administration and operator reads never need the module.
+    participant administration and operator reads never need the module;
+    `load_runtime=True` resolves it at once instead. A given or loaded runtime
+    is checked before any upgrade commits or setting changes, so an open
+    refused for its module leaves the file unchanged.
     """
 
     def __init__(
@@ -220,11 +223,14 @@ class GameStore:
         randint: Callable[[int, int], int] | None = None,
         busy_timeout: float = DEFAULT_BUSY_TIMEOUT,
         runtime: Runtime | None = None,
+        load_runtime: bool = False,
         _new_game: Runtime | None = None,
         _existing: bool = False,
     ):
         self._randint = randint
         self._runtime = None
+        self._wanted_runtime = runtime
+        self._load_runtime = load_runtime
         self._new_game = _new_game
         self._existing = _existing
         if _existing:
@@ -235,14 +241,13 @@ class GameStore:
         )
         try:
             self._initialize()
-            # Persistent settings change only once the file is known to be ours.
+            # Persistent settings change only once the file is known to be
+            # ours, and its runtime (if wanted now) is known to fit.
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA synchronous = FULL")
             self.game_id = self._connection.execute(
                 "SELECT game_id FROM game"
             ).fetchone()[0]
-            if runtime is not None:
-                self._runtime = self._checked(runtime)
         except BaseException:
             self._connection.close()
             raise
@@ -605,6 +610,7 @@ class GameStore:
                 and not self._is_empty()
                 and self._validate() == SCHEMA_VERSION
             ):
+                self._settle_runtime()
                 return
         except sqlite3.DatabaseError as error:
             raise StoreError(f"Not a Tesserae game store: {error}") from error
@@ -617,6 +623,7 @@ class GameStore:
             else:
                 version = self._validate()
             if version == SCHEMA_VERSION:
+                self._settle_runtime()
                 return
             for target in range(version + 1, SCHEMA_VERSION + 1):
                 for statement in _MIGRATIONS[target]:
@@ -631,6 +638,17 @@ class GameStore:
                     _binding_row(runtime, runtime.initial_state()),
                 )
             self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            # Before the upgrade commits: a refusal rolls it back.
+            self._settle_runtime()
+
+    def _settle_runtime(self):
+        """Check the wanted runtime against the binding, or with `load_runtime`
+        resolve it from the bundled catalog: before any migration commits or
+        persistent setting changes, so a refused open leaves the file as it was."""
+        if self._wanted_runtime is not None:
+            self._runtime = self._checked(self._wanted_runtime)
+        elif self._load_runtime:
+            self._loaded_runtime()
 
     def _create(self):
         # Not executescript(): it would commit the open transaction.

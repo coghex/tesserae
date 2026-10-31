@@ -95,7 +95,7 @@ class GameHost:
         # process's commits are announced; other writers are not observed.
         self._sessions: set[_Session] = set()
         if runtime is None:
-            opened = GameStore(self.database)
+            opened = GameStore(self.database, load_runtime=True)
         else:
             opened = GameStore.open_existing(self.database, runtime=runtime)
         with opened as store:

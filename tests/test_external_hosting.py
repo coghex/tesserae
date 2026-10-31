@@ -9,10 +9,12 @@ import json
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from tesserae.store import GameStore
@@ -38,6 +40,14 @@ def tesserae(*args):
         [sys.executable, "-m", "tesserae", *map(str, args)],
         capture_output=True, text=True, timeout=30,
     )  # fmt: skip
+
+
+def rollback_journal(path: Path):
+    """Switch a game to DELETE journaling, as an older or hand-made file may be:
+    any refused open that set WAL again would change its bytes."""
+    with closing(sqlite3.connect(path)) as database:
+        mode = database.execute("PRAGMA journal_mode = DELETE").fetchone()
+    assert mode == ("delete",), mode
 
 
 def fingerprint(path: Path):
@@ -181,6 +191,8 @@ class RefusalTests(ExternalHostingCase):
             ).returncode,
             0,
         )
+        old = self.root / "schema1.sqlite3"  # a dice store from before modules
+        shutil.copy(BEACON.parents[1] / "store_v1.sqlite3", old)
         variants = {
             "other module": self.variant("other", rules=[('id="beacon"', 'id="lantern"')]),
             "other version": self.variant("v2", rules=[('version="1"', 'version="2"')]),
@@ -197,9 +209,11 @@ class RefusalTests(ExternalHostingCase):
             ("other provider", self.database, variants["other provider"], "beacon.steady"),
             ("bad manifest", self.database, variants["bad manifest"], "manifest schema 2"),
             ("a dice game", dice, self.package, "uses module dice 1"),
+            ("an older dice store", old, self.package, "uses module dice 1"),
         ]  # fmt: skip
         for name, database, package, message in cases:
             with self.subTest(name):
+                rollback_journal(database)
                 before = fingerprint(database)
                 self.assertRefused(self.serve(database, package), message)
                 self.assertEqual(fingerprint(database), before)
