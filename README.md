@@ -65,12 +65,14 @@ minimal bundled modules and an original relay-repair demo: the
 with per-player views. Two players can follow the
 [Relay demo runbook](docs/relay-demo.md); the
 [demo acceptance](docs/acceptance/relay-demo.md) records live runs, one with
-a player on the Ubuntu VM. Next is [M1-5 / tracker #49](https://github.com/coghex/tesserae/issues/49),
-a private module loaded from outside the repository. Its
-[delivery contract](docs/designs/private_module_design.md) is in progress: the
-[external package loader](docs/modules.md#external-packages) (#51) is
-implemented, `game create`/`serve` take its `--module-dir` (#52), and a game
-can start from an [imported seed](docs/game_store.md#seeded-creation) (#53).
+a player on the Ubuntu VM. [M1-5 / tracker #49](https://github.com/coghex/tesserae/issues/49)
+loaded a private module from outside the repository. `game create` and `serve`
+take a trusted package with `--module-dir` (#51, #52), and a game can start from
+an [imported seed](docs/game_store.md#seeded-creation) (#53); the
+[external module runbook](docs/external-modules.md) walks through it with the
+original Beacon example. The private module itself stays private; its
+[sanitized acceptance](docs/acceptance/private-module.md) records the combined
+run. Next is M1-6, the AI referee.
 
 ## Working together
 

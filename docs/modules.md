@@ -205,6 +205,9 @@ The protocol and the CLI client know nothing about a package's fields.
 
 ### Creating and serving an external game
 
+The [external module runbook](external-modules.md) walks an operator through
+these steps, including a seed and first tokens, with the Beacon example.
+
 ```sh
 tesserae game create --database game.sqlite3 --module beacon --module-dir path/to/beacon
 tesserae participant add --database game.sqlite3 --name Alice --token-file alice.token
