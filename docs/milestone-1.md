@@ -197,5 +197,6 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   complete under the agreed VM substitution. Physical-device Wi-Fi testing
   is deferred.
 - M1-4's original demo and minimal module loading (#37) are complete
-  (#38–#42 delivered). Two real CLI players passed the Relay demo; see the
-  [acceptance record](acceptance/relay-demo.md). M1-5 is next.
+  (#38–#42 delivered). Two real CLI players passed the Relay demo, one of
+  them on the Ubuntu VM; see the [acceptance record](acceptance/relay-demo.md).
+  M1-5 is next.

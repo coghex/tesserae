@@ -1,11 +1,11 @@
 # M1-4 Relay demo acceptance
 
 Tracker [#37](https://github.com/coghex/tesserae/issues/37): the combined demo
-passed. The automated checks and one live walkthrough with the installed CLI
-are recorded below. The walkthrough ran both players on one Mac over loopback.
-The Ubuntu VM from M1-3 was not used for this record (see
-[Not covered](#not-covered)). This completes M1-4's mechanical demo only: no
-AI referee, private adaptation or browser client is claimed.
+passed. The automated checks and two live walkthroughs with the installed CLI
+are recorded below: one with both players on one Mac over loopback, and one
+with Alice on the Mac and Bob on the Ubuntu VM from M1-3 over authenticated
+TLS. This completes M1-4's mechanical demo only: no AI referee, private
+adaptation or browser client is claimed.
 
 | Child | Delivered by |
 |---|---|
@@ -31,10 +31,12 @@ Actions runs repeat them on Python 3.11 on Ubuntu.
 | No fallback | Unknown or mismatched module/provider bindings fail before listening and change nothing; Relay in development mode exits 2 (`test_module_host`, `test_relay_demo`). |
 | Existing behavior | The dice, credential, TLS, streaming and session tests pass unchanged, apart from one race test that now patches the read joins use. `dice` snapshots stay metadata only. |
 
-## Live walkthrough
+## Live walkthroughs
 
-Run on 2026-10-31 at application code `dc30da6` (the #41 change; #42 adds
-only tests and documentation).
+Both ran on 2026-10-31 at application code `dc30da6` (the #41 change; #42
+adds only tests and documentation). Live dice were kept as rolled.
+
+### Loopback
 
 | | |
 |---|---|
@@ -60,13 +62,37 @@ repository. The observations below are sanitized.
 | Configuration errors | `serve` without `--authenticated` exited 2 with `requires --authenticated`, starting nothing. |
 | Cleanup | Both tokens revoked with `participant revoke`; the temporary directory was removed. |
 
+### Mac and Ubuntu VM
+
+Alice played on the Mac and Bob on the Ubuntu VM, each through a real
+`connect` over authenticated TLS. The owner approved a non-loopback test
+listener for this run. The guest's commands ran over SSH with the VM-specific
+management key and pinned host key from M1-3.
+
+| | Mac host and Alice | Ubuntu guest and Bob |
+|---|---|---|
+| OS | macOS 26.7.1, Apple Silicon | Ubuntu Server 26.10, aarch64 |
+| Python | 3.14.8, websockets 17.4, OpenSSL 3.6.5 | 3.14.8, websockets 17.4, OpenSSL 4.0.3 |
+| Installation | A fresh venv outside the checkout, non-editable install of `dc30da6` | A fresh public clone of the #41 branch at `dc30da6`, its own venv, non-editable install |
+| Network | `serve --authenticated` with a test certificate, bound to the UTM Shared Network bridge address only (not the Mac's Wi-Fi address), port 0; Alice joined at the same address with `--ca-file` | UTM Shared Network (NAT); connects to the bridge address with `--ca-file` |
+| Network changes | None: no firewall, router or port-forwarding changes | None |
+| Files transferred | The public certificate and Bob's token, by SCP. Their SHA-256 matched on the guest, the token was mode 0600, and the Mac's copy of it was then deleted | Kept outside the checkout |
+
+| Step | Observed |
+|---|---|
+| Join | Same game ID, different participant IDs, revision 0, the Relay module and `character: null` on both sides. |
+| Enlist | Alice's Wren committed revision 1. Bob, on the VM, received only the four-field notification; his sync showed `character: null`. Bob's Odo committed revision 2. |
+| Simultaneous repairs | Both sent a repair at revision 2 back to back. Alice's committed: a live 5, total 6 against 5, success, effort 3 → 2, relay restored at revision 3. Bob's got `stale_revision` with nothing rolled or spent. Both syncs showed revision 3, the relay restored, and only their own worker (efforts 2 and 3). |
+| Restart and replay | Both clients exited 0; the host exited 0 on SIGINT, restarted, and both rejoined at revision 3. Alice's original enlist and repair returned identical results, and a fresh enlist was `action_rejected`. From the VM, Bob's losing repair stayed `stale_revision` and his original enlist returned its identical result. |
+| Final state | The database held revision 3, three commands, efforts 2 and 3, and the relay restored, as the players saw. |
+| Privacy | No token, referee note or traceback in any host, client or SSH output. Neither player's output had the other's worker, participant ID or the worker map. |
+| Cleanup | Both tokens revoked. The guest's token, certificate copy, clone and venv were removed, and so was the Mac's temporary directory. The VM stays running. |
+
 ## Not covered
 
-- **Second operating system.** The tracker prefers one player on the Ubuntu VM
-  used for M1-3. That needs a non-loopback test listener, which the owner
-  starts or approves for the run; it was not done here. A VM run can be added
-  to this record. M1-3's deferred physical-device Wi-Fi check is not a gate for
-  M1-4.
-- **A live failed check.** Live dice gave a success on the first repair. The
-  failure branch and an exhausted worker are covered by fixed draws in the
-  automated checks.
+- **Physical second computer.** As in M1-3, the Ubuntu VM stands in for a
+  friend's computer. Physical-device Wi-Fi testing stays deferred and is not a
+  gate for M1-4.
+- **A live failed check.** Both walkthroughs rolled a 5 on the first repair,
+  a success. The failure branch and an exhausted worker are covered by fixed
+  draws in the automated checks.

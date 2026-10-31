@@ -64,8 +64,9 @@ minimal bundled modules and an original relay-repair demo: the
 (`tesserae game create`), [Relay rules](docs/relay.md), and hosting module games
 with per-player views. Two players can follow the
 [Relay demo runbook](docs/relay-demo.md); the
-[demo acceptance](docs/acceptance/relay-demo.md) records a live run. Next is
-M1-5, a private module loaded from outside the repository.
+[demo acceptance](docs/acceptance/relay-demo.md) records live runs, one with
+a player on the Ubuntu VM. Next is M1-5, a private module loaded from outside
+the repository.
 
 ## Working together
 
