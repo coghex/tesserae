@@ -4,10 +4,12 @@ This is the reference for encrypted LAN play, tracker
 [#25](https://github.com/coghex/tesserae/issues/25). The policy and SSL
 contexts live in `tesserae/transport.py`
 ([#26](https://github.com/coghex/tesserae/issues/26)). The host flags
-([#27](https://github.com/coghex/tesserae/issues/27)) and client flags
-([#28](https://github.com/coghex/tesserae/issues/28)) below are **planned**:
-`tesserae serve` and `tesserae connect` do not accept them yet. Today the
-application still listens only on loopback.
+(`--host`, `--tls-cert`, `--tls-key`) are implemented in `tesserae serve`
+([#27](https://github.com/coghex/tesserae/issues/27)). The client flag
+(`--ca-file`) and the plaintext-destination rule for `tesserae connect` are
+**planned** ([#28](https://github.com/coghex/tesserae/issues/28)). Until then
+the client can reach a TLS host only if the system already trusts its
+certificate, which a self-signed one is not.
 
 ## What is allowed
 
@@ -25,7 +27,11 @@ Host (`tesserae serve`):
 
 `--host` takes exactly one IPv4 address. `0.0.0.0` (every interface),
 multicast addresses, and `255.255.255.255` are refused. So are hostnames and
-IPv6 for now. Nothing falls back to another address, port, or mode.
+IPv6 for now. Nothing falls back to another address, port, or mode. Refused combinations
+exit with status 2 before the database is opened. An unreadable or
+mismatched certificate or key, or an address this computer does not have,
+exits with status 1. The readiness line names the bound address and port
+with the right scheme (`wss://` with TLS), and says whether TLS is on.
 
 Client (`tesserae connect`):
 

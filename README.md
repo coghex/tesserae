@@ -275,6 +275,25 @@ authenticated host by hand. Send `{"version": 1, "type": "join", "token":
 do that on your own machine. Development mode, without `--authenticated`, is
 unchanged.
 
+## Encrypted hosting
+
+An authenticated host can also use TLS, which is required to listen on
+anything but this computer. Make a certificate and key with the recipe in
+[docs/tls.md](docs/tls.md), keeping both outside this repository, then:
+
+```sh
+python3 -m tesserae serve --database ~/tesserae-dev.sqlite3 --port 8790 \
+    --authenticated --tls-cert ~/tesserae-host/host.crt --tls-key ~/tesserae-host/host.key \
+    --host 192.168.1.50
+```
+
+`--host` takes one IPv4 address of this computer; leave it out to stay on
+127.0.0.1. The host then listens on `wss://192.168.1.50:8790/`. Plaintext or
+unauthenticated settings for any address but loopback are refused before
+anything starts. Connecting from another computer needs the client's
+`--ca-file` option ([#28](https://github.com/coghex/tesserae/issues/28)),
+which is not available yet.
+
 ## License
 
 The public project uses the [MIT license](LICENSE). Private content is maintained
