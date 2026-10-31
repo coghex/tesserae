@@ -81,7 +81,8 @@ class GameHost:
         self._ssl = ssl_context
         self._randint = randint
         # Messages are parsed with the game's own commands, so a command the
-        # store would accept is never refused first. Only `dice` until #41.
+        # store would accept is never refused first. Stores refuse a game
+        # bound to anything else. Only `dice` until #41.
         self._runtime = DICE_RUNTIME
         self._join_timeout = join_timeout
         self._write_timeout = write_timeout
@@ -311,7 +312,7 @@ class GameHost:
         return await asyncio.get_running_loop().run_in_executor(self._executor, work)
 
     def _open(self) -> GameStore:
-        return GameStore(self.database, randint=self._randint)
+        return GameStore(self.database, randint=self._randint, runtime=self._runtime)
 
 
 _UNCHECKED = object()

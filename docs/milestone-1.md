@@ -114,8 +114,9 @@ and the [demo/module delivery contract](designs/demo_modules_design.md) specify
 the working original relay scene, minimal bundled module/provider contracts,
 durable state and scoped views. Start with #38; #39 and #40 can follow
 independently, then #41 and #42. The module contract and `dice` adapter
-(#38, [modules.md](modules.md)) and the [Relay module](relay.md) (#40) are in
-place; persisted module state, hosted views and the demo are not.
+(#38, [modules.md](modules.md)), persisted module state with `game create`
+(#39), and the [Relay module](relay.md) (#40) are in place. Hosted views and
+the combined demo remain #41 and #42.
 
 - Load an explicitly selected local module and its action definitions.
 - Give the public demo a small character and a simple uncertain action.

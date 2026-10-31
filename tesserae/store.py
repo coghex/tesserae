@@ -2,10 +2,12 @@
 
 Transport-independent: no sockets, terminal formatting, or model calls. One
 GameStore owns one SQLite connection and must be used only by the thread that
-created it. See docs/game_store.md for the execution boundary.
+created it. Each game is bound to one module, whose state it keeps. See
+docs/game_store.md for the execution boundary.
 """
 
 import json
+import os
 import secrets
 import sqlite3
 import unicodedata
@@ -13,10 +15,12 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
-from .builtin import DICE_RUNTIME
+from .builtin import CATALOG, DICE_RUNTIME
 from .credentials import token_digest
+from .modules import ActionRejected, ModuleError, ProviderChoice, Runtime
 from .protocol import (
     ProtocolError,
     error_message,
@@ -26,7 +30,7 @@ from .protocol import (
 )
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_BUSY_TIMEOUT = 5.0
 PARTICIPANT_ID_PREFIX = "p_"
 MAX_NAME_LENGTH = 100
@@ -41,13 +45,22 @@ _V1_COLUMNS = {
         "result",
     ],
 }
+_V2_COLUMNS = {
+    **_V1_COLUMNS,
+    "participants": ["participant_id", "name", "created_at"],
+    "credentials": ["id", "participant_id", "digest", "issued_at", "revoked_at"],
+}
+_BINDING_COLUMNS = [
+    "module_id",
+    "module_version",
+    "state_version",
+    "providers",
+    "state",
+]
 _COLUMNS = {
     1: _V1_COLUMNS,
-    2: {
-        **_V1_COLUMNS,
-        "participants": ["participant_id", "name", "created_at"],
-        "credentials": ["id", "participant_id", "digest", "issued_at", "revoked_at"],
-    },
+    2: _V2_COLUMNS,
+    3: {**_V2_COLUMNS, "module": ["singleton", *_BINDING_COLUMNS]},
 }
 
 # Version 1 tables. A new store creates these, then applies every migration.
@@ -68,7 +81,19 @@ CREATE TABLE commands (
 );
 """
 
-# Statements that upgrade a store to each version. Existing data is untouched.
+
+def _binding_row(runtime: Runtime, state: dict) -> tuple:
+    return (
+        runtime.module.id,
+        runtime.module.version,
+        runtime.module.state_version,
+        json.dumps([[c.operation, c.provider, c.version] for c in runtime.selection]),
+        json.dumps(state, sort_keys=True),
+    )
+
+
+# Statements, or (statement, parameters), that upgrade a store to each version.
+# Existing data is untouched.
 _MIGRATIONS = {
     2: [
         """CREATE TABLE participants (
@@ -85,6 +110,22 @@ _MIGRATIONS = {
         )""",
         """CREATE UNIQUE INDEX one_active_credential
             ON credentials (participant_id) WHERE revoked_at IS NULL""",
+    ],
+    3: [
+        """CREATE TABLE module (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            module_id TEXT NOT NULL,
+            module_version TEXT NOT NULL,
+            state_version INTEGER NOT NULL,
+            providers TEXT NOT NULL,
+            state TEXT NOT NULL
+        )""",
+        # Every older game is a `dice` game, and a new store starts as one.
+        (
+            "INSERT INTO module (singleton, " + ", ".join(_BINDING_COLUMNS) + ") "
+            "VALUES (1, ?, ?, ?, ?, ?)",
+            _binding_row(DICE_RUNTIME, DICE_RUNTIME.initial_state()),
+        ),
     ],
 }
 
@@ -129,6 +170,28 @@ class ParticipantRecord:
 
 
 @dataclass(frozen=True)
+class ModuleBinding:
+    """The module a game was created with. It never changes."""
+
+    module_id: str
+    version: str
+    state_version: int
+    providers: tuple[ProviderChoice, ...]
+
+
+@dataclass(frozen=True)
+class ParticipantView:
+    """One participant's view, read with the revision it belongs to.
+
+    `view` is the module's projection for that participant, or None when the
+    module shows only metadata (as `dice` does).
+    """
+
+    revision: int
+    view: dict | None
+
+
+@dataclass(frozen=True)
 class CommandRecord:
     revision: int
     participant_id: str
@@ -141,17 +204,26 @@ class CommandRecord:
 
 
 class GameStore:
+    """Opens an existing game, or creates a `dice` game in a missing file.
+
+    `runtime`, if given, is the already-loaded runtime to execute with; it must
+    match the game's binding exactly. Without one, the binding is resolved
+    from the bundled catalog the first time a command or view needs it, so
+    participant administration and operator reads never need the module.
+    """
+
     def __init__(
         self,
         path,
         *,
         randint: Callable[[int, int], int] | None = None,
         busy_timeout: float = DEFAULT_BUSY_TIMEOUT,
+        runtime: Runtime | None = None,
+        _new_game: Runtime | None = None,
     ):
         self._randint = randint
-        # Schema 2 binds every game to the stateless `dice` compatibility
-        # module; persisted module bindings and state are #39.
-        self._runtime = DICE_RUNTIME
+        self._runtime = None
+        self._new_game = _new_game
         self._connection = sqlite3.connect(
             path, timeout=busy_timeout, isolation_level=None
         )
@@ -163,8 +235,29 @@ class GameStore:
             self.game_id = self._connection.execute(
                 "SELECT game_id FROM game"
             ).fetchone()[0]
+            if runtime is not None:
+                self._runtime = self._checked(runtime)
         except BaseException:
             self._connection.close()
+            raise
+
+    @classmethod
+    def create(cls, path, runtime: Runtime, **options) -> "GameStore":
+        """Create a new game bound to `runtime`, at revision 0, in a new file.
+
+        Refuses any existing path. The binding and the module's initial state
+        are written in the same transaction as the rest of the new store.
+        """
+        path = Path(path)
+        try:
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        except FileExistsError:
+            raise StoreError(f"Refusing to replace existing file {path}.") from None
+        try:
+            return cls(path, runtime=runtime, _new_game=runtime, **options)
+        except BaseException:
+            for name in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+                name.unlink(missing_ok=True)
             raise
 
     def __enter__(self):
@@ -195,8 +288,9 @@ class GameStore:
         requests, invalid input, and revoked sessions are all False.
         """
         _check_context(context)
+        runtime = self._loaded_runtime()
         try:
-            request = parse_request(raw, self._runtime)
+            request = parse_request(raw, runtime)
         except ProtocolError as error:
             revision = self.session_revision(context)
             if revision is None:
@@ -227,20 +321,30 @@ class GameStore:
                     request_id=request.request_id,
                     revision=current,
                 ), False
-            result = self._runtime.execute(
-                {},
-                context.participant_id,
-                request.command,
-                request.args,
-                randint=self._randint,
-            ).result
+            # Only now, with replay and staleness settled, do the rules run.
+            try:
+                outcome = runtime.execute(
+                    self._state(),
+                    context.participant_id,
+                    request.command,
+                    request.args,
+                    randint=self._randint,
+                )
+            except ActionRejected as rejection:
+                return error_message(
+                    "action_rejected",
+                    rejection.message,
+                    request_id=request.request_id,
+                    revision=current,
+                ), False
             record = CommandRecord(
                 revision=current + 1,
                 participant_id=context.participant_id,
                 request_id=request.request_id,
                 content=content,
-                result=result,
+                result=outcome.result,
             )
+            self._write_state(outcome.state)
             self._insert_record(record)
             self._advance_revision(record.revision)
         return record.to_message(), True
@@ -264,6 +368,45 @@ class GameStore:
             (context.credential_id, context.participant_id),
         ).fetchone()
         return None if row is None else row[0]
+
+    def participant_view(self, context: ParticipantContext) -> ParticipantView | None:
+        """The caller's view and its revision, or None if revoked.
+
+        The credential check, revision and state come from one statement, so
+        they describe the same committed state. Never draws or writes.
+        """
+        _check_context(context)
+        runtime = self._loaded_runtime()
+        query = "SELECT revision, state FROM game, module"
+        parameters = ()
+        if context.credential_id is not None:
+            query += (
+                " WHERE EXISTS (SELECT 1 FROM credentials"
+                " WHERE id = ? AND participant_id = ? AND revoked_at IS NULL)"
+            )
+            parameters = (context.credential_id, context.participant_id)
+        row = self._connection.execute(query, parameters).fetchone()
+        if row is None:
+            return None
+        return ParticipantView(
+            row[0], runtime.view(json.loads(row[1]), context.participant_id)
+        )
+
+    def binding(self) -> ModuleBinding:
+        """The game's module binding; needs no module code."""
+        module_id, version, state_version, providers = self._connection.execute(
+            "SELECT module_id, module_version, state_version, providers FROM module"
+        ).fetchone()
+        return ModuleBinding(
+            module_id,
+            version,
+            state_version,
+            tuple(ProviderChoice(*choice) for choice in json.loads(providers)),
+        )
+
+    def inspect_state(self) -> dict:
+        """Operator/test inspection of the complete module state."""
+        return self._state()
 
     def lookup(self, context: ParticipantContext, request_id: str):
         """The caller's own recorded command, or None."""
@@ -375,6 +518,49 @@ class GameStore:
             (now, participant_id),
         ).rowcount
 
+    def _loaded_runtime(self) -> Runtime:
+        if self._runtime is None:
+            binding = self.binding()
+            try:
+                runtime = CATALOG.resolve(
+                    binding.module_id,
+                    version=binding.version,
+                    providers=binding.providers,
+                )
+            except ModuleError as error:
+                raise StoreError(f"Cannot run this game: {error}") from None
+            self._runtime = self._checked(runtime)
+        return self._runtime
+
+    def _checked(self, runtime: Runtime) -> Runtime:
+        """`runtime`, if it is exactly the game's binding; never a substitute."""
+        binding = self.binding()
+        loaded = ModuleBinding(
+            runtime.module.id,
+            runtime.module.version,
+            runtime.module.state_version,
+            runtime.selection,
+        )
+        if loaded != binding:
+            raise StoreError(
+                f"This game uses module {binding.module_id} {binding.version} "
+                f"(state {binding.state_version}, providers "
+                f"{_describe(binding.providers)}), not {loaded.module_id} "
+                f"{loaded.version} (state {loaded.state_version}, providers "
+                f"{_describe(loaded.providers)})."
+            )
+        return runtime
+
+    def _state(self) -> dict:
+        return json.loads(
+            self._connection.execute("SELECT state FROM module").fetchone()[0]
+        )
+
+    def _write_state(self, state: dict):
+        self._connection.execute(
+            "UPDATE module SET state = ?", (json.dumps(state, sort_keys=True),)
+        )
+
     def _initialize(self):
         """Validate an existing store, or create one in an empty database.
 
@@ -383,7 +569,11 @@ class GameStore:
         validation, so an upgrade either completes or leaves nothing behind.
         """
         try:
-            if not self._is_empty() and self._validate() == SCHEMA_VERSION:
+            if (
+                self._new_game is None
+                and not self._is_empty()
+                and self._validate() == SCHEMA_VERSION
+            ):
                 return
         except sqlite3.DatabaseError as error:
             raise StoreError(f"Not a Tesserae game store: {error}") from error
@@ -391,13 +581,24 @@ class GameStore:
             if self._is_empty():
                 self._create()
                 version = 1
+            elif self._new_game is not None:
+                raise StoreError("A new game needs an empty file.")
             else:
                 version = self._validate()
             if version == SCHEMA_VERSION:
                 return
             for target in range(version + 1, SCHEMA_VERSION + 1):
                 for statement in _MIGRATIONS[target]:
-                    self._connection.execute(statement)
+                    if isinstance(statement, str):
+                        statement = (statement,)
+                    self._connection.execute(*statement)
+            if self._new_game is not None:
+                runtime = self._new_game
+                self._connection.execute(
+                    "UPDATE module SET "
+                    + ", ".join(f"{column} = ?" for column in _BINDING_COLUMNS),
+                    _binding_row(runtime, runtime.initial_state()),
+                )
             self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _create(self):
@@ -447,6 +648,12 @@ class GameStore:
                 raise StoreError(f"Tesserae store table {table!r} is damaged.")
         if self._connection.execute("SELECT count(*) FROM game").fetchone()[0] != 1:
             raise StoreError("Tesserae store must hold exactly one game.")
+        if (
+            version >= 3
+            and self._connection.execute("SELECT count(*) FROM module").fetchone()[0]
+            != 1
+        ):
+            raise StoreError("Tesserae store must hold exactly one module binding.")
         return version
 
     @contextmanager
@@ -506,6 +713,13 @@ class GameStore:
 
     def _advance_revision(self, revision: int):
         self._connection.execute("UPDATE game SET revision = ?", (revision,))
+
+
+def _describe(providers) -> str:
+    return (
+        ", ".join(f"{c.operation}={c.provider} {c.version}" for c in providers)
+        or "none"
+    )
 
 
 def _check_name(name):

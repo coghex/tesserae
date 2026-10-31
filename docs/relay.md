@@ -8,8 +8,9 @@ check, through the [module contract](modules.md). Its theme and numbers
 belong to this module alone. The host has no worker, effort, repair or check
 rules.
 
-The module is registered in the bundled catalog. Creating and hosting a Relay
-game come later: #39 adds `game create`, and #41 adds hosting with views.
+The module is registered in the bundled catalog. `game create --database
+NEW.sqlite3 --module relay` creates a bound Relay game (#39). Hosting it
+with player views follows in #41; `serve` currently refuses non-`dice` games.
 
 ## Binding
 
