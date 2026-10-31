@@ -130,13 +130,15 @@ Do not add a plugin marketplace, dependency solver, or general override framewor
 
 ### M1-5. Add the private module and extract the first reusable features
 
-Depends on M1-4. Planned tracker [#49](https://github.com/coghex/tesserae/issues/49)
+Depends on M1-4. Tracker [#49](https://github.com/coghex/tesserae/issues/49)
 and the [private-module delivery contract](designs/private_module_design.md)
-split this work into eight children. The selected scene covers equipment,
-a skill check with a declared spendable resource, and a short ranged encounter.
-#50 records the exact scene and rules privately. The external package loader
-(#51), `game create`/`serve --module-dir` (#52) and public seeded creation
-(#53) are implemented; the private converter and module are not.
+split this work into eight children, all delivered. The selected scene covers
+equipment, a skill check with a declared spendable resource, and a short ranged
+encounter. The public support is the external package loader (#51), `game
+create`/`serve --module-dir` (#52) and seeded creation (#53); the
+specification, converter and module (#50, #53-#56) are private. The combined
+workflow passed: see the [acceptance record](acceptance/private-module.md) and
+the [external module runbook](external-modules.md). M1-6 is next.
 
 - Load the private module/content from a configured directory outside the repo.
 - Implement a bounded rules subset with explicit recorded interpretations.
