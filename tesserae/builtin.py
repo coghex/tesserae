@@ -1,7 +1,9 @@
-"""The bundled catalog: the `builtin.dice` provider and the `dice` module.
+"""The bundled catalog: the `builtin.dice` provider and the `dice` and
+`relay` modules.
 
 `dice` is the compatibility module for games without one: its `roll`
-command behaves exactly as the original bootstrap command did.
+command behaves exactly as the original bootstrap command did. `relay` is
+the original demo (tesserae/relay.py).
 """
 
 from .dice import DiceExpressionError, parse_expression, roll_expression
@@ -16,6 +18,7 @@ from .modules import (
     Runtime,
     exact_fields,
 )
+from .relay import RELAY_MODULE
 
 DICE_OPERATION = "dice.roll.v1"
 
@@ -59,5 +62,5 @@ DICE_MODULE = Module(
     tags=frozenset({"dice"}),
 )
 
-CATALOG = Catalog(modules=[DICE_MODULE], providers=[DICE_PROVIDER])
+CATALOG = Catalog(modules=[DICE_MODULE, RELAY_MODULE], providers=[DICE_PROVIDER])
 DICE_RUNTIME: Runtime = CATALOG.resolve("dice")

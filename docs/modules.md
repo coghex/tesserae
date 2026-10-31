@@ -10,13 +10,13 @@ identity, persistence, replay and revisions. This is the contract from
 ## Status
 
 Implemented: the contract, the bundled catalog, the `builtin.dice` provider,
-and the `dice` compatibility module. The protocol parser, the game store and
+the `dice` compatibility module, and the original [Relay](relay.md) module
+(#40). The protocol parser, the game store and
 the host all dispatch `roll` through it, with unchanged behavior.
 
 Not implemented yet:
 - persisted module bindings, module state, `action_rejected` handling in the
   store, and `game create` (#39);
-- the Relay module (#40);
 - host snapshots with views (#41).
 
 Every game today is a `dice` game, and there are no module options on the
@@ -133,6 +133,10 @@ requires `dice.roll.v1` from `builtin.dice` 1, and has one command, `roll`:
 
 Its view is None, so its snapshots stay metadata-only. `tesserae roll` and
 `roll_expression` remain plain dice utilities outside any module.
+
+`relay` version 1 is the original demo module, with two commands:
+`relay.enlist` and `relay.repair`. It requires `dice.roll.v1` from
+`builtin.dice` 1, and authenticated participants. See [relay.md](relay.md).
 
 ## Example
 

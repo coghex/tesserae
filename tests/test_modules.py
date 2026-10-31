@@ -159,7 +159,7 @@ class ProviderSelectionTests(unittest.TestCase):
         loaded = ProviderChoice("dice.roll.v1", "fixture.loaded", "1")
         providers = [DICE_PROVIDER, LOADED, OTHER_OPERATION]
         cases = [
-            ("unknown module", lambda: CATALOG.resolve("relay"), "No bundled module"),
+            ("unknown module", lambda: CATALOG.resolve("chess"), "No bundled module"),
             ("module version", lambda: CATALOG.resolve("dice", version="2"), "version 1, not 2"),
             ("host API", lambda: Catalog([needs_dice(api_version=2)], providers).resolve("draws"),
              "host API 2"),
