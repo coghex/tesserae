@@ -89,11 +89,12 @@ credentials (#14) are merged, documented in
 host (#15), snapshots and notifications (#16), and streaming `tesserae connect`
 CLI (#17) are merged. The localhost portion of M1-3 is complete: tracker #12's
 [combined acceptance](acceptance/localhost-multiplayer.md) passed on master at
-`a5f0a80`. LAN access for a friend on another computer is planned under tracker
-[#25](https://github.com/coghex/tesserae/issues/25), with the owner selecting
-encrypted connections. The [LAN delivery design](designs/encrypted_lan_design.md)
-splits configuration/certificate setup (#26), the host (#27), the client (#28),
-and combined actual-device acceptance (#29). These are planned, not implemented.
+`a5f0a80`. Encrypted LAN access, tracker
+[#25](https://github.com/coghex/tesserae/issues/25), is implemented: TLS setup
+(#26), the host (#27), and the client (#28) are merged. The combined checks and
+[two-computer runbook](lan-runbook.md) (#29) are in review. The
+[acceptance record](acceptance/encrypted-lan.md) has the automated evidence and
+awaits a real second-computer check before M1-3 is complete.
 
 - Maintain a duplex connection: send stdin while displaying incoming messages.
 - Keep stdout machine-readable in pipe mode and diagnostics on stderr.
@@ -179,6 +180,7 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   contract (#13) and persisted participants with personal tokens (#14) are
   merged, as are authenticated loopback hosting (#15) and shared revision
   notifications (#16) and the streaming CLI (#17). Combined acceptance passed;
-  see the linked record above. LAN access for a friend on another computer is
-  planned under tracker #25. Its encrypted host/client and real two-computer
-  acceptance complete the remaining LAN portion of M1-3.
+  see the linked record above.
+- Encrypted LAN play (#25) is implemented and tested automatically (#26–#28
+  merged, #29 in review). M1-3 completes when a friend on a separate computer
+  has followed the [runbook](lan-runbook.md) and the result is recorded.

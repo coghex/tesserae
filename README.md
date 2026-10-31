@@ -306,10 +306,11 @@ sending anything. If either fails, it stops with "cannot trust ..." and
 exit status 1, and the host never sees the token. Without `--ca-file`,
 `wss://` trusts only the system's certificate authorities, which do not know
 a self-signed certificate. Plaintext `ws://` is refused for anything but this
-computer (a loopback address or `localhost`), before connecting. Full
-two-computer setup steps come with
-[#29](https://github.com/coghex/tesserae/issues/29); see
-[docs/tls.md](docs/tls.md).
+computer (a loopback address or `localhost`), before connecting.
+
+For the whole procedure across two computers, including installing Tesserae on
+the friend's computer, which files go where, firewall notes, and a checklist,
+follow the [LAN runbook](docs/lan-runbook.md).
 
 ## License
 
