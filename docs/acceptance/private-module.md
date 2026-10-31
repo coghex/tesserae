@@ -57,22 +57,27 @@ the GitHub Actions run (Python 3.11 on Ubuntu) pass at each PR's head.
   - Two simultaneous resource-spending checks from one revision gave one result
     and one `stale_revision`; the resource was spent once. A request with an
     old revision was refused as stale.
-  - The check failed on its live roll, so the opponent started close. The
-    encounter ran two rounds: an armor-stopped hit on the player, then a
-    critical hit, a failed stun save and a fatal head hit on the opponent.
-  - The host was stopped and restarted mid-encounter; the last committed
-    request, resent unchanged, returned its identical result, and the stored
-    state, history and revision were unchanged.
+  - The check succeeded on its live roll, so the opponent started at the far
+    end of the lane. In round 1 the opponent missed.
+  - At the start of round 2, with combat active (checked before and after),
+    the host was stopped and restarted. The last committed request, resent
+    unchanged, returned its identical result, and the stored state, history
+    and revision were unchanged. Play then continued on the restarted host.
+  - In round 2 the player hit twice, the second time against a stunned target
+    at +4; the opponent recovered and, wounded, retreated. In round 3 the
+    player missed twice at long range, and the opponent escaped.
   - At the end, the displayed sheet equalled the stored one; ammunition and
     the declared resource reconciled exactly; the stored derived values equalled
     a recomputation; the displayed distance and active actor matched the
     stored positions and turn; there was one history entry per revision. No
     token appeared in any output, the second player's output held none of the
     first player's details or rolls, and there was no traceback.
-  - A first live run stopped at a check in the acceptance script itself, which
-    wrongly treated a public character ID as private; the script was corrected
-    and the whole run repeated from a fresh seed and game.
-- **Cleanup.** Both runs' tokens were revoked and the token files deleted.
+  - Two earlier live runs are not the accepted run. The first stopped at a
+    check in the acceptance script itself, which wrongly treated a public
+    character ID as private. In the second, the restart came after the fight
+    had already ended, not during it. The script was corrected each time, and
+    the whole run repeated from a fresh seed and game.
+- **Cleanup.** Every run's tokens were revoked and the token files deleted.
 
 ## Limits
 
