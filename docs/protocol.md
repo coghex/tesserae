@@ -79,7 +79,7 @@ diagnostics only and may change; do not parse them.
 | `unsupported_version` | A well-formed request with a version other than 1 | HOST-2 |
 | `unsupported_command` | A well-formed request naming an unknown command | HOST-2 |
 | `invalid_expression` | A well-formed `roll` whose expression is invalid | HOST-2 |
-| `action_rejected` | A well-formed, current command the game's rules do not allow now; nothing changed (used from #39) | #38 |
+| `action_rejected` | A well-formed, current command the game's rules do not allow now; nothing changed | #38, #39 |
 | `stale_revision` | `expected_revision` does not match the current state | HOST-3 |
 | `request_conflict` | The sender reused a request ID for different content | HOST-3 |
 | `internal_error` | The host failed unexpectedly or its store was busy | HOST-4 |
