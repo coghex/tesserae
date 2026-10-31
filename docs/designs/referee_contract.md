@@ -126,10 +126,20 @@ kernel releases only when every holder has exited:
 - Before starting a job, the host opens `run/<game_id>.lock` and takes an
   exclusive `flock` on it, then starts Codex in a new process group with that
   file descriptor inherited (`pass_fds`). The lock is held while the host *or*
-  the Codex process tree still holds it. The host writes the job ID, the process
-  group ID and its own run ID into the file, for operators.
-- After Codex exits normally, the host closes its own descriptor; the lock is
-  free again.
+  the Codex process tree still holds it. The lock decides *whether* anything
+  from a job may be alive; it never says *which* process that is.
+- **The lock file's record.** The host rewrites the file's JSON contents, under
+  the lock, at each stage, so it never describes an earlier job:
+  1. `{"state": "starting", "job_id", "host_run"}` before spawning (no process
+     yet);
+  2. `{"state": "running", "job_id", "host_run", "pgid", "pid",
+     "started_at", "command"}` right after spawning, where `pid` (= `pgid`) is
+     the Codex process, `started_at` its start time as `ps -o lstart= -p PID`
+     reports it, and `command` its executable path;
+  3. `{"state": "ended", "job_id"}` after the process exits, before the host
+     closes its descriptor.
+- After Codex exits normally, the host writes `ended` and closes its own
+  descriptor; the lock is free again.
 - **At host startup**, for a job still marked `running`, the host tries the lock
   without blocking:
   - Acquired: nothing from that job is alive. The job becomes `interrupted`
@@ -141,9 +151,21 @@ kernel releases only when every holder has exited:
   a job token is valid only for the run that issued it. An orphaned Codex's
   bridge calls are refused (its socket is gone, and its token is stale), so it
   can change nothing more and soon stops.
-- `tesserae referee stop --database DB` (operator) sends SIGTERM, then SIGKILL,
-  to the process group recorded in the lock file, but only while that lock is
-  still held, which shows the group is the job's and not a reused ID.
+- **`tesserae referee stop --database DB`** (operator) stops a job's Codex:
+  - **With the host running** (the usual case), it asks the host over its local
+    socket, and the host stops the process group of the child it supervises
+    (its own `Popen` object): SIGTERM, then SIGKILL after 10 s. The host knows
+    its child; no recorded number is trusted.
+  - **With no host running** (an orphan after a crash), it reads the record and
+    signals only if *all* of these hold: the lock is still held, the record is
+    `running`, a process `pid` exists, it leads process group `pgid`, its
+    current start time equals `started_at`, and its executable equals
+    `command`. Any mismatch or missing field means the job's process cannot be
+    identified: `stop` changes nothing and says why (the operator can wait, or
+    stop the process by hand after checking it).
+  - Stop during startup (record `starting`) refuses: there is no process to
+    identify yet; retry in a moment. Stop after the process exited (record
+    `ended`, or the lock is free) reports that nothing is running.
 - No new job starts until the lock is free: there is never a second Codex
   process for a game.
 
@@ -317,14 +339,22 @@ Host to client:
 | `{"type": "accepted", "request_id", "job_id", "seq"}` | Reply to a new `say` |
 | `{"type": "error", "request_id", "code": "referee_busy", "message", "job": {"state", "for"}}` | Reply while another job runs |
 | `{"type": "error", "code": "referee_mode", ...}` | Reply to a raw gameplay `command` in referee mode |
-| `{"type": "referee_status", "state": "idle" or "busy", "choices": [{"participant_id", "name", "question"}], "last_seq", "your_last_input": {"request_id", "text", "private", "job_id", "job_state"} or null}` | Reply to `referee_status` |
+| `{"type": "referee_status", "state": "idle" or "busy", "choices": [{"question"}], "last_seq", "your_last_input": {"request_id", "text", "private", "job_id", "job_state"} or null}` | Reply to `referee_status`: the caller's referee projection (below) |
 | `{"type": "messages", "messages": [...]}` | Reply to `messages`: the caller's own audience only |
 | `{"type": "message", "seq", "from": {"kind": "referee"} or {"kind": "player", "name"}, "audience": "table" or "private", "text"}` | Unsolicited, to each recipient as it is stored |
 | `{"type": "referee", "state": "busy" or "idle"}` | Unsolicited, to everyone, when a job starts or ends |
 
-The snapshot gains `"referee": {"state", "choices", "last_seq",
-"your_last_input"}` in referee mode, with only the choices addressed to the
-viewer. A retry of a `say` gets the same `accepted`, plus any stored reply
+**The referee projection.** `referee_status`, the join snapshot and every sync
+snapshot carry the same recipient-scoped object, `"referee": {"state",
+"choices", "last_seq", "your_last_input"}`:
+
+- `choices` lists only the pending choice addressed to the viewer (at most one),
+  never another participant's, so a privately asked question cannot reach
+  anyone else through status or a snapshot.
+- `your_last_input` is always the viewer's own.
+- `state` and `last_seq` are table information.
+
+Only the referee (through `get_context`) sees the full list of pending choices. A retry of a `say` gets the same `accepted`, plus any stored reply
 messages. Sync and joins never wait for a job.
 
 ### Audience
@@ -451,7 +481,10 @@ only `referee_context` (the scene, the rules text, both workers) and
    stored. Bob's earlier, accepted input (step 6), resent with its request ID,
    returns its recorded reply without a job. Bob's refused input, sent again
    after the game is idle, is a fresh acceptance and starts a job.
-9. Recovery: Alice's client exits right after an input is accepted and before
+9. Privacy of choices: the referee privately asks Alice a choice. Bob's
+   `/status`, join snapshot and sync show no choice and none of its question;
+   Alice's show hers.
+10. Recovery: Alice's client exits right after an input is accepted and before
    its reply arrives. A new client shows her last input and its state from
    `referee_status`; `/retry` resends it with the same request ID and gets the
    recorded reply, with no second job or action.
