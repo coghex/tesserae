@@ -38,8 +38,9 @@ combat, inventory, or turn model.
 - The initial standalone Python dice CLI had ten tests. Live SQLite storage,
   authenticated localhost sessions and the streaming client are now implemented,
   with 77 tests at tracker #12's acceptance. A small catalog of bundled modules
-  is in place for M1-4. External module loading, browser integration and model
-  integration are not implemented yet.
+  is in place for M1-4. External module loading and bounded private validation
+  completed in M1-5 through PR #62. Browser and model integration remain later
+  work; the next slice is the resumable Codex referee described below.
 
 ## Agreed direction
 
@@ -255,6 +256,22 @@ close #29/#25. Physical-device Wi-Fi isolation, device firewalls and independent
 physical-link behavior remain deferred coverage. Record that limitation wherever
 acceptance is claimed; the VM result does not establish physical-device coverage.
 
+### D-22. Resumable Codex referee, with busy input rejection
+
+For M1-6, the owner selected `codex exec` rather than a direct model-provider
+API integration. Each invocation exits; a later invocation resumes the game's
+saved Codex conversation by its explicit session ID. Keep one referee
+conversation and one active job per game. Tesserae's durable game records remain
+authoritative independently of Codex history.
+
+Initially give the referee the complete context for the agreed bounded scene.
+Custom selective context loading is a deferred stretch goal. Player-specific
+privacy still applies. While the referee is busy, reject new player input;
+input queues and steering are deferred. Read-only inspection and recovery
+remain responsive. The
+[M1-6 tracker draft](designs/codex_referee_design.md) records the delivery
+proposal and engineering contracts still to specify before implementation.
+
 ## Proposed implementation boundaries
 
 These are proposals to refine as implementation proceeds, not additional signed-off
@@ -375,9 +392,9 @@ proof that every rule implementation is correct.
 
 ## Open questions
 
-- **Q-1. Conversation host:** keep conversation in an existing assistant with
-  Tesserae alongside it, or embed the conversation and model calls in the app?
-  Defer model integration until this is chosen; do not block shared commands.
+- **Q-1. Conversation host:** resolved for M1-6 by D-22: Tesserae launches
+  `codex exec` and later resumes the saved session by explicit ID. No persistent
+  Codex process or direct model-provider API integration in this slice.
 - **Q-2. Persistence:** resolved by D-10: SQLite on the host, JSON import/export.
 - **Q-3. First complete loop:** select the exact original demo scene and the bounded
   private-game mechanics used to validate it. Do not promise full game coverage.
@@ -387,9 +404,10 @@ proof that every rule implementation is correct.
   code/docs in the same branch/PR; do not use `docs-push` or a separate docs lane.
 - **Q-6. Public release:** select a license and review the public tree and tracked
   history before publication. No publishing is authorized by this design alone.
-- **Q-7. Referee pacing:** when do several players' messages become committed
-  actions, and when should the AI referee respond? Do not equate every incoming
-  text message with advancing time or assume all games have combat-style turns.
+- **Q-7. Referee pacing:** initially one active job per game; reject new player
+  input while busy, with queuing deferred (D-22). Questions and clarification
+  do not inherently advance fictional time. The draft's REF-1 child specifies
+  exact job, pending-input and action boundaries before implementation.
 - **Q-8. Transport selection:** resolved by D-16 for `websockets`.
   `prompt_toolkit` remains optional; the server-first order is settled by D-12.
 - **Q-9. Joining and recovery:** resolved for localhost by

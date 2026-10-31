@@ -154,8 +154,13 @@ large generic abstraction just to make that module small.
 
 ### M1-6. Connect the chosen AI-referee workflow and play end to end
 
-Depends on M1-5. Resolve design Q-1 and player/referee pacing Q-7 before the
-corresponding model integration work.
+Depends on M1-5. The owner selected resumable `codex exec` invocations, one
+referee conversation per game, and rejection of new input while busy. This
+resolves the initial direction for Q-1/Q-7; direct API integration, queuing
+and custom selective context loading are deferred. The
+[M1-6 tracker draft](designs/codex_referee_design.md) proposes the concrete
+contracts and dependency-ordered children; no runtime is implemented by that
+planning document.
 
 - Use the shared command surface from the chosen conversation host.
 - Preserve player control, declared stakes before rolling, and recorded rulings.
@@ -207,4 +212,6 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
 - M1-4's original demo and minimal module loading (#37) are complete
   (#38–#42 delivered). Two real CLI players passed the Relay demo, one of
   them on the Ubuntu VM; see the [acceptance record](acceptance/relay-demo.md).
-  M1-5 is next.
+  M1-5 then completed through tracker #49 and PR #62, including private
+  acceptance and the external-module runbook. M1-6 is next; its initial
+  referee direction and draft delivery plan are linked above.
