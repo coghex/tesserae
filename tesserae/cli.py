@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 
+from .builtin import CATALOG
 from .dice import DiceExpressionError, RollResult, roll_expression
 
 
@@ -109,6 +110,25 @@ def main(argv: list[str] | None = None) -> int:
         default=10.0,
         help="Seconds to wait for outstanding replies after stdin ends (default 10).",
     )
+    game = commands.add_parser(
+        "game",
+        help="Create a game bound to a bundled module (local only).",
+        description="Operator commands, run on the host. A game's module is "
+        "fixed when it is created. 'serve' and 'participant add' still create "
+        "a dice game when the database is missing.",
+    )
+    game_actions = game.add_subparsers(dest="action", required=True)
+    create = game_actions.add_parser(
+        "create", help="Create a new game at revision 0, then add participants."
+    )
+    create.add_argument(
+        "--database", required=True, help="New SQLite file; must not exist yet."
+    )
+    create.add_argument(
+        "--module",
+        required=True,
+        help="Bundled module ID: " + ", ".join(CATALOG.module_ids()) + ".",
+    )
     participant = commands.add_parser(
         "participant",
         help="Manage this game's participants and their join tokens (local only).",
@@ -147,6 +167,10 @@ def main(argv: list[str] | None = None) -> int:
         from .admin import run
 
         return run(args)
+    if args.command == "game":
+        from .admin import run_game
+
+        return run_game(args)
     if args.command == "serve":
         from .server import run_foreground
 

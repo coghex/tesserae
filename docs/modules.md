@@ -13,14 +13,16 @@ Implemented: the contract, the bundled catalog, the `builtin.dice` provider,
 and the `dice` compatibility module. The protocol parser, the game store and
 the host all dispatch `roll` through it, with unchanged behavior.
 
+The [game store](game_store.md#modules-and-state) persists each game's
+binding and module state, and runs commands with `action_rejected` handling.
+`tesserae game create` makes a game bound to a bundled module (#39).
+
 Not implemented yet:
-- persisted module bindings, module state, `action_rejected` handling in the
-  store, and `game create` (#39);
 - the Relay module (#40);
 - host snapshots with views (#41).
 
-Every game today is a `dice` game, and there are no module options on the
-command line.
+`serve` still hosts only `dice` games. It refuses a game bound to another
+module until #41.
 
 ## Catalog and selection
 
@@ -90,11 +92,11 @@ random source. One definition serves every game.
 
 The runtime copies state, results, and views through JSON, so no module
 keeps a reference to stored data. A non-object or non-JSON value raises
-`TypeError`. From #39, the store will:
-- report `ActionRejected` as the `action_rejected` error, committing nothing
+`TypeError`. The store:
+- reports `ActionRejected` as the `action_rejected` error, committing nothing
   and using no revision or request ID;
-- treat any other exception as a failure, rolling back and reporting
-  `internal_error`.
+- treats any other exception as a failure, rolling back everything (the host
+  reports `internal_error`).
 
 ### Argument errors and the protocol
 

@@ -1,4 +1,4 @@
-"""Local operator commands for participants and their join tokens.
+"""Local operator commands: creating games, and participants with their tokens.
 
 Run on the host machine against the game's database file; there is no network
 administration. A new token goes only to the token file the operator names.
@@ -10,8 +10,25 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from .builtin import CATALOG
 from .credentials import new_token, write_token_file
+from .modules import ModuleError
 from .store import GameStore, StoreError
+
+
+def run_game(args) -> int:
+    """`tesserae game create`: a new game bound to one bundled module."""
+    try:
+        runtime = CATALOG.resolve(args.module)  # before any file is created
+        with GameStore.create(args.database, runtime) as store:
+            game_id = store.game_id
+    except (ModuleError, StoreError, sqlite3.Error, OSError) as error:
+        print(f"tesserae game create: {error}", file=sys.stderr)
+        return 1
+    module = runtime.module
+    print(f"Created game {game_id} ({module.id} {module.version}) at {args.database}.")
+    print("Add its participants with 'tesserae participant add'.")
+    return 0
 
 
 def run(args) -> int:

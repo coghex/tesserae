@@ -149,7 +149,7 @@ class MigrationTests(StoreCase):
         store = self.open(randint=draw)
         self.assertEqual(store.game_id, V1_GAME_ID)
         self.assertEqual(store.revision(), 2)
-        self.assertEqual(self.raw("PRAGMA user_version"), [(2,)])
+        self.assertEqual(self.raw("PRAGMA user_version"), [(3,)])
 
         replay = store.execute(DEVELOPMENT_PARTICIPANT, request("r1", 0))
         self.assertEqual(replay["revision"], 1)
@@ -180,7 +180,7 @@ class MigrationTests(StoreCase):
 
     def test_newer_schema_is_refused_unchanged(self):
         connection = sqlite3.connect(self.path)
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute("PRAGMA user_version = 4")
         connection.close()
         before = self.path.read_bytes()
         with self.assertRaisesRegex(StoreError, "newer"):
