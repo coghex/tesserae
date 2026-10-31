@@ -226,7 +226,9 @@ switch, reset, or state upgrade.
   runtime. `tesserae serve` loads it once at startup with `store.runtime()`,
   then passes each worker's `GameStore(path, runtime=...)` that runtime, which
   must match the binding exactly. Without one, the store resolves the binding
-  from the bundled catalog on first use. Any mismatch
+  from the bundled catalog on first use. For an external package (`serve
+  --module-dir`), the host opens the game with `GameStore.open_existing(path,
+  runtime=...)`, which never creates or initializes a file. Any mismatch
   raises `StoreError`, and an unknown module, version, state version or
   provider fails the same way. There is no fallback to `dice` and nothing is
   drawn.

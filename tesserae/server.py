@@ -23,6 +23,8 @@ from pathlib import Path
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
+from .external import load_module_dir
+from .modules import ModuleError
 from .protocol import (
     JOIN_TIMEOUT_SECONDS,
     JoinRequest,
@@ -77,7 +79,11 @@ class GameHost:
         randint=None,
         join_timeout: float = JOIN_TIMEOUT_SECONDS,
         write_timeout: float = WRITE_TIMEOUT_SECONDS,
+        runtime=None,
     ):
+        """`runtime`, if given, is an externally loaded module's runtime
+        (tesserae.external). The game must then already exist and be bound to
+        exactly that runtime; without one, the bundled catalog is used."""
         self.database = Path(database).resolve()
         self.authenticated = authenticated
         self.host = host
@@ -88,7 +94,11 @@ class GameHost:
         # Joined connections, subscribed to revision notifications. Only this
         # process's commits are announced; other writers are not observed.
         self._sessions: set[_Session] = set()
-        with GameStore(self.database) as store:
+        if runtime is None:
+            opened = GameStore(self.database)
+        else:
+            opened = GameStore.open_existing(self.database, runtime=runtime)
+        with opened as store:
             self.game_id = store.game_id
             # Exactly the game's bound module and providers, or StoreError:
             # never a fallback. Messages are parsed with its commands, and
@@ -432,11 +442,14 @@ def run_foreground(
     host: str = HOST,
     tls_cert=None,
     tls_key=None,
+    module_dir=None,
 ) -> int:
     """The `tesserae serve` command: run until Ctrl-C, then exit cleanly.
 
     The address and security settings are checked together before anything
     is opened; an unsafe or incomplete combination never starts a listener.
+    With `module_dir`, its package is loaded once, before the game is opened,
+    and the game must already exist bound to it.
     """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
@@ -449,12 +462,19 @@ def run_foreground(
         context = server_context(tls_cert, tls_key) if transport.tls else None
     except TransportConfigError as error:
         return _fail(str(error))
+    runtime = None
+    if module_dir is not None:
+        try:
+            runtime = load_module_dir(module_dir)
+        except ModuleError as error:
+            return _fail(f"cannot load the module package: {error}")
     try:
         game = GameHost(
             database,
             authenticated=authenticated,
             host=transport.host,
             ssl_context=context,
+            runtime=runtime,
         )
     except HostConfigError as error:
         return _fail(f"{error}; nothing was started", code=2)

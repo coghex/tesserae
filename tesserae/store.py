@@ -204,7 +204,8 @@ class CommandRecord:
 
 
 class GameStore:
-    """Opens an existing game, or creates a `dice` game in a missing file.
+    """Opens an existing game, or creates a `dice` game in a missing file
+    (`open_existing` never creates one; `create` makes a bound game).
 
     `runtime`, if given, is the already-loaded runtime to execute with; it must
     match the game's binding exactly. Without one, the binding is resolved
@@ -220,12 +221,17 @@ class GameStore:
         busy_timeout: float = DEFAULT_BUSY_TIMEOUT,
         runtime: Runtime | None = None,
         _new_game: Runtime | None = None,
+        _existing: bool = False,
     ):
         self._randint = randint
         self._runtime = None
         self._new_game = _new_game
+        self._existing = _existing
+        if _existing:
+            # mode=rw: SQLite opens the file but will never create it.
+            path = Path(path).resolve().as_uri() + "?mode=rw"
         self._connection = sqlite3.connect(
-            path, timeout=busy_timeout, isolation_level=None
+            path, timeout=busy_timeout, isolation_level=None, uri=_existing
         )
         try:
             self._initialize()
@@ -259,6 +265,18 @@ class GameStore:
             for name in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
                 name.unlink(missing_ok=True)
             raise
+
+    @classmethod
+    def open_existing(cls, path, **options) -> "GameStore":
+        """Open a game that already exists, never creating one.
+
+        A missing path, a directory or an empty file is a StoreError, and no
+        file is created or initialized; a file that is not a game store is
+        refused unchanged, as always.
+        """
+        if not Path(path).is_file():
+            raise StoreError(f"No game store at {path}.")
+        return cls(path, _existing=True, **options)
 
     def __enter__(self):
         return self
@@ -393,8 +411,9 @@ class GameStore:
         )
 
     def runtime(self) -> Runtime:
-        """The game's runtime, resolved from the bundled catalog and checked
-        against its binding. Raises StoreError if it cannot be loaded exactly."""
+        """The game's runtime: the one given when the store was opened, or
+        else resolved from the bundled catalog, and always checked against its
+        binding. Raises StoreError if it cannot be loaded exactly."""
         return self._loaded_runtime()
 
     def binding(self) -> ModuleBinding:
@@ -533,6 +552,11 @@ class GameStore:
                     providers=binding.providers,
                 )
             except ModuleError as error:
+                if binding.module_id not in CATALOG.module_ids():
+                    raise StoreError(
+                        f"This game uses module {binding.module_id!r}, which is not "
+                        "bundled; load its package explicitly (--module-dir)."
+                    ) from None
                 raise StoreError(f"Cannot run this game: {error}") from None
             self._runtime = self._checked(runtime)
         return self._runtime
@@ -574,6 +598,8 @@ class GameStore:
         validation, so an upgrade either completes or leaves nothing behind.
         """
         try:
+            if self._existing and self._is_empty():
+                raise StoreError("This file is empty, not a game store.")
             if (
                 self._new_game is None
                 and not self._is_empty()

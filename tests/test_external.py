@@ -89,7 +89,12 @@ class LoadingTests(ExternalCase):
             randint=lambda low, high: 2,
         )  # fmt: skip
         self.assertEqual(outcome.result["colour"], "green")  # signals.json, entry 2
-        self.assertEqual(runtime.view(outcome.state, "p1"), {"last": "green"})
+        self.assertEqual(
+            runtime.view(outcome.state, "p1"), {"last": "green", "yours": 1}
+        )
+        self.assertEqual(
+            runtime.view(outcome.state, "p2"), {"last": "green", "yours": 0}
+        )
 
     def test_manifest_selects_an_external_provider(self):
         low = {"randint": lambda low, high: low}
@@ -98,9 +103,9 @@ class LoadingTests(ExternalCase):
         self.assertEqual(steady.selection[0].provider, "beacon.steady")
         self.assertEqual(
             [
-                runtime.execute({"shown": []}, "p1", "beacon.signal", {}, **low).result[
-                    "colour"
-                ]
+                runtime.execute(
+                    runtime.initial_state(), "p1", "beacon.signal", {}, **low
+                ).result["colour"]
                 for runtime in (bundled, steady)
             ],
             ["red", "white"],  # the same draws; the selected provider decides
