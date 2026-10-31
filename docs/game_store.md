@@ -51,7 +51,8 @@ one in a single transaction, after the old schema has been validated. Either
 every schema and version change commits, or the file stays exactly at its old
 version. Upgrading from version 1 adds the participant and credential
 tables. Upgrading to version 3 adds the module binding, binding the game to
-`dice` with state `{}`. Upgrading to version 4 adds the empty `seed` table. The game ID, revision, every command and its result,
+`dice` with state `{}`. Upgrading to version 4 adds the empty `seed` table, and
+to version 5 the empty referee tables. The game ID, revision, every command and its result,
 participants, credentials, and the `local-development` attribution of
 earlier history are untouched. A store
 whose schema is newer than this Tesserae understands is refused unchanged, with
@@ -294,7 +295,7 @@ lookups and the module's synchronous rules.
 ## Storage
 
 SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
-"TESS"). The schema version is SQLite's `user_version`, currently 4.
+"TESS"). The schema version is SQLite's `user_version`, currently 5.
 
 | Table | Since | Contents |
 |---|---|---|
@@ -304,6 +305,7 @@ SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
 | `credentials` | 2 | `id`, `participant_id`, token `digest`, `issued_at`, `revoked_at` (null while active; at most one active per participant) |
 | `module` | 3 | One row: `module_id`, `module_version`, `state_version`, selected `providers` JSON (`[operation, provider, version]` triples), and the module's `state` JSON |
 | `seed` | 4 | For a game created from a seed, one row: `seed_version`, the `provenance` JSON, `created_at`; otherwise empty |
+| `referee`, `referee_sessions`, `referee_inputs`, `referee_jobs`, `referee_steps`, `referee_choices`, `referee_messages`, `referee_rulings` | 5 | The AI referee's mode, Codex sessions, accepted input, jobs (at most one `running`, enforced by a unique index), journaled tool steps, pending choices, conversation and rulings; empty until `tesserae referee enable`. See [referee_contract.md](designs/referee_contract.md#5-store) and `tesserae/referee/store.py` |
 
 The `commands` table is the history. It is not an event-sourcing log, and
 SQLite is the only live authority. `local-development` appears in `commands`

@@ -31,7 +31,7 @@ from .protocol import (
 )
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SEED_VERSION = 1  # the seed file format (tesserae/seed.py)
 DEFAULT_BUSY_TIMEOUT = 5.0
 PARTICIPANT_ID_PREFIX = "p_"
@@ -69,6 +69,25 @@ _COLUMNS[4] = {
     **_COLUMNS[3],
     "seed": ["singleton", "seed_version", "provenance", "created_at"],
 }
+_COLUMNS[5] = {
+    **_COLUMNS[4],
+    "referee": ["singleton", "enabled", "session_id", "state"],
+    "referee_sessions": ["session_id", "started_at", "ended_at", "ended_reason"],
+    "referee_inputs": [
+        "id", "participant_id", "request_id", "text", "private", "received_at",
+    ],
+    "referee_jobs": [
+        "job_id", "input_id", "state", "host_run", "revision_at_start",
+        "started_at", "ended_at", "error", "narrated",
+    ],
+    "referee_steps": [
+        "job_id", "step_id", "kind", "context", "command", "args", "request_id",
+        "status", "result", "narrated",
+    ],
+    "referee_choices": ["participant_id", "question", "asked_in_job", "asked_at"],
+    "referee_messages": ["seq", "job_id", "sender", "audience", "text", "created_at"],
+    "referee_rulings": ["id", "job_id", "text", "scope", "created_at"],
+}  # fmt: skip
 
 # Version 1 tables. A new store creates these, then applies every migration.
 _SCHEMA = """
@@ -140,6 +159,81 @@ _MIGRATIONS = {
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
             seed_version INTEGER NOT NULL,
             provenance TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+    ],
+    # The AI referee's conversation, jobs and tool steps (M1-6, #65); see
+    # docs/designs/referee_contract.md. Empty until referee mode is enabled.
+    5: [
+        """CREATE TABLE referee (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+            session_id TEXT,
+            state TEXT NOT NULL CHECK (state IN ('ok', 'needs_rebuild'))
+        )""",
+        """CREATE TABLE referee_sessions (
+            session_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            ended_reason TEXT
+        )""",
+        """CREATE TABLE referee_inputs (
+            id INTEGER PRIMARY KEY,
+            participant_id TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            private INTEGER NOT NULL CHECK (private IN (0, 1)),
+            received_at TEXT NOT NULL,
+            UNIQUE (participant_id, request_id)
+        )""",
+        """CREATE TABLE referee_jobs (
+            job_id TEXT PRIMARY KEY,
+            input_id INTEGER NOT NULL UNIQUE REFERENCES referee_inputs (id),
+            state TEXT NOT NULL
+                CHECK (state IN ('running', 'completed', 'failed', 'interrupted')),
+            host_run TEXT,
+            revision_at_start INTEGER NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            error TEXT,
+            narrated INTEGER NOT NULL DEFAULT 0 CHECK (narrated IN (0, 1))
+        )""",
+        # The database itself allows only one running job per game.
+        """CREATE UNIQUE INDEX one_running_job ON referee_jobs (state)
+            WHERE state = 'running'""",
+        """CREATE TABLE referee_steps (
+            job_id TEXT NOT NULL REFERENCES referee_jobs (job_id),
+            step_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('act', 'referee_act')),
+            context TEXT NOT NULL,
+            command TEXT NOT NULL,
+            args TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN ('intended', 'committed', 'refused', 'not_committed')),
+            result TEXT,
+            narrated INTEGER NOT NULL DEFAULT 0 CHECK (narrated IN (0, 1)),
+            PRIMARY KEY (job_id, step_id)
+        )""",
+        """CREATE TABLE referee_choices (
+            participant_id TEXT PRIMARY KEY,
+            question TEXT NOT NULL,
+            asked_in_job TEXT NOT NULL,
+            asked_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE referee_messages (
+            seq INTEGER PRIMARY KEY,
+            job_id TEXT,
+            sender TEXT NOT NULL,
+            audience TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE referee_rulings (
+            id INTEGER PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            scope TEXT NOT NULL,
             created_at TEXT NOT NULL
         )""",
     ],
@@ -456,6 +550,29 @@ class GameStore:
             state_version,
             tuple(ProviderChoice(*choice) for choice in json.loads(providers)),
         )
+
+    @contextmanager
+    def transaction(self):
+        """A serialized write transaction on this store's connection, for
+        companion stores in this package (tesserae.referee). Yields the
+        connection; commits on success and rolls back on any error."""
+        with self._write():
+            yield self._connection
+
+    @contextmanager
+    def snapshot(self):
+        """A read transaction: every read inside sees one committed state,
+        even if another connection commits meanwhile (WAL). For companion
+        stores' multi-read views."""
+        self._connection.execute("BEGIN")
+        try:
+            yield self._connection
+        finally:
+            self._connection.execute("COMMIT")
+
+    def query(self, sql: str, parameters: tuple = ()) -> list[tuple]:
+        """Rows from a read-only query, for companion stores in this package."""
+        return self._connection.execute(sql, parameters).fetchall()
 
     def seed_provenance(self) -> dict | None:
         """The provenance recorded when this game was created from a seed, or

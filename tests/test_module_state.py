@@ -282,8 +282,13 @@ class LegacyGameTests(StoreCase):
             store.execute(context, dice_request("r1", 0))
             snapshot = (store.game_id, store.inspect_history())
         connection = sqlite3.connect(self.path)
+        # Every table added after schema 2 goes, as the previous release had none.
+        later = sorted(
+            set(store_module._COLUMNS[SCHEMA_VERSION]) - set(store_module._COLUMNS[2])
+        )
         connection.executescript(
-            "DROP TABLE seed; DROP TABLE module; PRAGMA user_version = 2;"
+            "".join(f"DROP TABLE {table};" for table in later)
+            + "PRAGMA user_version = 2;"
         )
         connection.close()
         return token, participant, snapshot

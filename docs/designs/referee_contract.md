@@ -1,8 +1,10 @@
 # M1-6 referee contract (REF-1)
 
 Status: specification for [#64](https://github.com/coghex/tesserae/issues/64)
-under tracker [#63](https://github.com/coghex/tesserae/issues/63). Nothing here
-is implemented yet. It turns the [M1-6 delivery plan](codex_referee_design.md)
+under tracker [#63](https://github.com/coghex/tesserae/issues/63). Implemented
+so far: the store (section 5, with the step journal of section 6 and the reply
+validation and audiences of section 7) in `tesserae/referee/store.py` (#65), and
+`tesserae referee enable`. The runner, bridge, host wiring and CLI are not. It turns the [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
 records how the CLI shows conversation (owner decision O-1).
 
@@ -249,6 +251,9 @@ players' conversation:
 
 One transaction:
 
+0. The sender's credential must still be active, checked inside the write lock
+   as gameplay commands do; otherwise `session_revoked`, with no replay and no
+   new job.
 1. If (participant, request ID) already exists: same text and privacy → return
    that input's job state and, if finished, its reply; different → refuse with
    `request_conflict`. An exact retry never starts a run, busy or not.
@@ -296,7 +301,8 @@ These are the only tools, and the only way Codex sees or changes the game.
   `{"ok": true, "result": {...}}` or `{"ok": false, "error": {"code": "...",
   "message": "..."}}`. The host runs mutations in its normal worker path, so
   other players still get their revision notifications.
-- **Step identity.** `step_id` is chosen by Codex, 1 to 64 characters, and is
+- **Step identity.** `step_id` is chosen by Codex, 1 to 64 characters with no
+  whitespace (so the mapped request ID is always valid), and is
   unique within the job across `act` and `referee_act`. The host maps it to the
   request ID `ref:<job_id>:<step_id>` in the acting context's namespace, so the
   store's existing exact replay applies within a context. The `referee_steps`
@@ -345,7 +351,8 @@ Host to client:
 | `{"type": "referee", "state": "busy" or "idle"}` | Unsolicited, to everyone, when a job starts or ends |
 
 **The referee projection.** `referee_status`, the join snapshot and every sync
-snapshot carry the same recipient-scoped object, `"referee": {"state",
+snapshot carry the same recipient-scoped object, read from one committed state
+(one read transaction), `"referee": {"state",
 "choices", "last_seq", "your_last_input"}`:
 
 - `choices` lists only the pending choice addressed to the viewer (at most one),
@@ -374,7 +381,7 @@ messages. Sync and joins never wait for a job.
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["messages", "choices"],
+  "required": ["messages", "choices", "narrated"],
   "properties": {
     "messages": {"type": "array", "minItems": 1, "maxItems": 8, "items": {
       "type": "object", "additionalProperties": false, "required": ["audience", "text"],
@@ -387,14 +394,22 @@ messages. Sync and joins never wait for a job.
         "ask": {"type": "array", "maxItems": 4, "items": {
           "type": "object", "additionalProperties": false, "required": ["participant_id", "question"],
           "properties": {"participant_id": {"type": "string"}, "question": {"type": "string", "maxLength": 1000}}}},
-        "resolve": {"type": "array", "maxItems": 4, "items": {"type": "string"}}}}
+        "resolve": {"type": "array", "maxItems": 4, "items": {"type": "string"}}}},
+    "narrated": {"type": "array", "maxItems": 16, "items": {
+      "type": "object", "additionalProperties": false, "required": ["job_id", "step_id"],
+      "properties": {"job_id": {"type": "string"}, "step_id": {"type": "string"}}}}
   }
 }
 ```
 
 `sender` means "privately to this job's sender". `choices.ask` sets or replaces
 pending choices and `choices.resolve` ends them (section 5); both may be empty,
-and empty changes nothing. The host checks every named participant exists. A
+and empty changes nothing. The host checks every named participant exists.
+`narrated` lists the earlier, unnarrated results (from `get_context`) that this
+reply tells their players about; a reply always narrates its own job's steps.
+Each listed step's sender must be able to see at least one of the reply's
+messages, or the reply is refused: a result is only acknowledged once it can
+have reached its player, and anything not listed stays waiting. A
 reply that does not parse or validate fails the job (`malformed_reply`), and
 nothing from it is published.
 

@@ -175,6 +175,17 @@ def main(argv: list[str] | None = None) -> int:
         action.add_argument(
             "--database", required=True, help="The game's SQLite store."
         )
+    referee = commands.add_parser(
+        "referee",
+        help="Manage a game's AI referee (local only).",
+        description="Operator commands for the M1-6 AI referee; see "
+        "docs/designs/referee_contract.md.",
+    )
+    referee_actions = referee.add_subparsers(dest="action", required=True)
+    enable = referee_actions.add_parser(
+        "enable", help="Turn referee mode on for a game. It stays on."
+    )
+    enable.add_argument("--database", required=True, help="The game's SQLite store.")
     args = parser.parse_args(argv)
     if args.command == "connect":
         from .client import run
@@ -186,6 +197,10 @@ def main(argv: list[str] | None = None) -> int:
         from .admin import run
 
         return run(args)
+    if args.command == "referee":
+        from .admin import run_referee
+
+        return run_referee(args)
     if args.command == "game":
         from .admin import run_game
 
