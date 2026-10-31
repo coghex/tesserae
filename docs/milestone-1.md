@@ -158,9 +158,10 @@ Depends on M1-5. The owner selected resumable `codex exec` invocations, one
 referee conversation per game, and rejection of new input while busy. This
 resolves the initial direction for Q-1/Q-7; direct API integration, queuing
 and custom selective context loading are deferred. The
-[M1-6 tracker draft](designs/codex_referee_design.md) proposes the concrete
-contracts and dependency-ordered children; no runtime is implemented by that
-planning document.
+[M1-6 delivery plan](designs/codex_referee_design.md) records tracker
+[#63](https://github.com/coghex/tesserae/issues/63) and children #64–#71, starting
+with the concrete contracts. No runtime is implemented by that planning
+document.
 
 - Use the shared command surface from the chosen conversation host.
 - Preserve player control, declared stakes before rolling, and recorded rulings.

@@ -272,8 +272,9 @@ remain responsive. The owner also selected a host-controlled command bridge
 within each invocation: all player gameplay goes through Codex. Unmarked
 conversation broadcasts to the table; private routing is explicitly marked.
 The
-[M1-6 tracker draft](designs/codex_referee_design.md) records the delivery
-proposal and engineering contracts still to specify before implementation.
+[M1-6 delivery plan](designs/codex_referee_design.md) records tracker
+[#63](https://github.com/coghex/tesserae/issues/63), its filed children and the
+engineering contracts the first child specifies before implementation.
 
 ## Proposed implementation boundaries
 

@@ -1,7 +1,8 @@
 # M1-6: resumable Codex referee through the server and CLI
 
-Status: draft tracker and children; no issues filed and no runtime implemented
-by this document. Baseline: M1-5 completed through PR #62 at `dec450f`.
+Status: planned; tracker [#63](https://github.com/coghex/tesserae/issues/63)
+and children #64–#71 are filed. This document implements no runtime. Baseline:
+M1-5 completed through PR #62 at `dec450f`.
 The owner's choices below supersede the earlier direct-model-API proposal.
 
 ## Accepted direction
@@ -40,7 +41,7 @@ Codex capabilities were checked against local CLI 0.166.0 and the official
 The initial runner supports a documented tested CLI version; it does not
 promise compatibility with every future event format or CLI release.
 
-## Tracker draft
+## Tracker #63
 
 Title: **M1-6: play through a resumable Codex referee**
 
@@ -186,21 +187,21 @@ and recipients before publishing. A schema checks routing/structure, not the
 truth or secrecy of arbitrary generated prose: use original secrecy fixtures
 and manual acceptance to test narrative disclosure as well as state projection.
 
-## Draft children and dependency order
+## Children and dependency order
 
-All statuses are **proposed**. Numbers are assigned only when issues are filed.
+All children are **filed and open**; no implementation is claimed.
 Use ordinary manual Tesserae development; no custom Kanban or docs-push.
 
 | Key | Deliverable | Depends on |
 |---|---|---|
-| REF-1 | Specify referee input, job, tool and delivery contracts | Accepted direction |
-| REF-2 | Persist referee jobs/conversation and enforce one active job | REF-1 |
-| REF-3 | Run and resume supervised Codex subprocesses | REF-1 |
-| REF-4 | Expose module context and authorized referee action execution | REF-1, REF-2 |
-| REF-5 | Carry referee submissions, busy/status and replies over host/CLI | REF-1, REF-2 |
-| REF-6 | Orchestrate the original playable referee loop and recovery | REF-2, REF-3, REF-4, REF-5 |
-| REF-7 | Adapt the bounded private scene for referee-controlled play | REF-6 |
-| REF-8 | Verify both complete workflows and publish the runbook | REF-7 |
+| [#64](https://github.com/coghex/tesserae/issues/64) / REF-1 | Specify referee input, job, tool and delivery contracts | Accepted direction |
+| [#65](https://github.com/coghex/tesserae/issues/65) / REF-2 | Persist referee jobs/conversation and enforce one active job | #64 (REF-1) |
+| [#66](https://github.com/coghex/tesserae/issues/66) / REF-3 | Run and resume supervised Codex subprocesses | #64 (REF-1) |
+| [#67](https://github.com/coghex/tesserae/issues/67) / REF-4 | Expose module context and authorized referee action execution | #64 (REF-1), #65 (REF-2) |
+| [#68](https://github.com/coghex/tesserae/issues/68) / REF-5 | Carry referee submissions, busy/status and replies over host/CLI | #64 (REF-1), #65 (REF-2) |
+| [#69](https://github.com/coghex/tesserae/issues/69) / REF-6 | Orchestrate the original playable referee loop and recovery | #65 (REF-2), #66 (REF-3), #67 (REF-4), #68 (REF-5) |
+| [#70](https://github.com/coghex/tesserae/issues/70) / REF-7 | Adapt the bounded private scene for referee-controlled play | #69 (REF-6) |
+| [#71](https://github.com/coghex/tesserae/issues/71) / REF-8 | Verify both complete workflows and publish the runbook | #70 (REF-7) |
 
 ### REF-1: concrete contracts and demonstration
 
@@ -252,8 +253,7 @@ connections to prove simultaneous submit and reconnect behavior.
 Connect the store, runner, context/actions and delivery for the agreed Relay
 conversation. Use real supported module commands, pending player declarations
 and recorded outcomes through Codex and its command bridge. Follow the specified
-interruption/rebuild path and
-publish completed replies once. Scripted referee tests cover questions without
+interruption/rebuild path and publish completed replies once. Scripted referee tests cover questions without
 time advancement, unauthorized action attempts, missing choices, malformed
 output and failures around a committed tool step. One real Codex walkthrough
 proves the original loop before private adaptation begins.
