@@ -1,9 +1,10 @@
 # M1-5: external private module and a bounded encounter
 
 Status: in progress; tracker [#49](https://github.com/coghex/tesserae/issues/49).
-M1-4 is delivered at `b205b9a`. The external package loader (#51) is
-implemented ([modules.md](../modules.md#external-packages)); `game create`/`serve`
-wiring and the private adaptation are not.
+M1-4 is delivered at `b205b9a`. The external package loader (#51) and its use
+by `game create`/`serve` (#52) are implemented
+([modules.md](../modules.md#external-packages)); seeded creation and the private
+adaptation are not.
 
 ## Outcome and accepted scope
 
@@ -164,7 +165,7 @@ original fixtures; M1-5 makes no claim that tags activate features.
 |---|---|---|---|
 | [#50](https://github.com/coghex/tesserae/issues/50) / PRIVATE-1 | Private scene, rule inventory and interpretation specification | Owner's accepted bounded scene | Planned |
 | [#51](https://github.com/coghex/tesserae/issues/51) / PRIVATE-2 | Trusted external package/manifest loader and provider selection | Existing module contract | Implemented |
-| [#52](https://github.com/coghex/tesserae/issues/52) / PRIVATE-3 | External runtime in create/serve and restart checks | PRIVATE-2 | Planned |
+| [#52](https://github.com/coghex/tesserae/issues/52) / PRIVATE-3 | External runtime in create/serve and restart checks | PRIVATE-2 | Implemented |
 | [#53](https://github.com/coghex/tesserae/issues/53) / PRIVATE-4 | Atomic seeded creation and private pilot converter | PRIVATE-1, PRIVATE-3 | Planned |
 | [#54](https://github.com/coghex/tesserae/issues/54) / PRIVATE-5 | Private character/equipment commands and projections | PRIVATE-4 | Planned |
 | [#55](https://github.com/coghex/tesserae/issues/55) / PRIVATE-6 | Selected skill check and explicit resource spending | PRIVATE-5 | Planned |

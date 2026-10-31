@@ -242,7 +242,9 @@ class ModuleGameTests(StoreCase):
             lambda: store.execute(self.alice, bump_request("r1", 0)),
             lambda: store.participant_view(self.alice),
         ):
-            with self.assertRaisesRegex(StoreError, "No bundled module 'tally'"):
+            with self.assertRaisesRegex(
+                StoreError, "module 'tally', which is not bundled"
+            ):
                 attempt()
         draw.assert_not_called()
         self.assertEqual((store.revision(), store.inspect_history()), (0, []))

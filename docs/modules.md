@@ -19,8 +19,8 @@ binding and module state, and runs commands with `action_rejected` handling.
 `tesserae game create` makes a game bound to a bundled module (#39).
 
 `tesserae.external.load_module_dir` loads one trusted module package from an
-explicit directory ([External packages](#external-packages), #51). `game
-create` and `serve` do not use it yet (#52).
+explicit directory ([External packages](#external-packages), #51), and
+`game create` and `serve` take that directory as `--module-dir` (#52).
 
 `serve` loads the game's bound runtime once at startup, refusing an unknown or
 mismatched binding before it listens, and sends each joined participant the
@@ -201,6 +201,29 @@ version = "1"
   package's own code becomes `ModuleError`, with the original as its cause.
 
 The protocol and the CLI client know nothing about a package's fields.
+
+### Creating and serving an external game
+
+```sh
+tesserae game create --database game.sqlite3 --module beacon --module-dir path/to/beacon
+tesserae participant add --database game.sqlite3 --name Alice --token-file alice.token
+tesserae serve --authenticated --database game.sqlite3 --port 8790 --module-dir path/to/beacon
+```
+
+- `game create --module-dir` loads the package before creating anything, and
+  `--module` must name the package's module. Otherwise nothing is created.
+- `serve --module-dir` loads the package once, before opening the game, and
+  then needs an existing game: a missing path or an empty file is refused, and
+  nothing is created (without `--module-dir`, `serve` still creates a `dice`
+  game in a missing file). The game must be bound to exactly that package's
+  module, version, state version and provider choices; any difference, a
+  package that fails to load, or no `--module-dir` for a game whose module is
+  not bundled, exits 1 before listening and leaves the game unchanged.
+- The database stores only the binding, never a path or code. Restart with the
+  same `--module-dir`; to change code, change the version and make a new game.
+- `participant` commands and raw inspection (`GameStore.binding()`,
+  `inspect_state()`, `inspect_history()`) never load the package. Players need
+  only Tesserae, the certificate and their token; their client never loads it.
 
 ## Example
 
