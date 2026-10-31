@@ -11,7 +11,7 @@ rules.
 The module is registered in the bundled catalog. `game create --database
 NEW.sqlite3 --module relay` creates a bound Relay game (#39), and `serve
 --authenticated` hosts it, sending each player their view on join and sync
-(#41). The combined two-player walkthrough is #42.
+(#41). The [demo runbook](relay-demo.md) walks two players through a game.
 
 ## Binding
 

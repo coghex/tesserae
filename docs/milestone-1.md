@@ -116,7 +116,8 @@ durable state and scoped views. Start with #38; #39 and #40 can follow
 independently, then #41 and #42. The module contract and `dice` adapter
 (#38, [modules.md](modules.md)), persisted module state with `game create`
 (#39), the [Relay module](relay.md) (#40), and hosting module games with
-per-player views (#41) are in place. The combined demo remains #42.
+per-player views (#41) are in place. The combined two-player demo passed (#42):
+see the [runbook](relay-demo.md) and [acceptance record](acceptance/relay-demo.md).
 
 - Load an explicitly selected local module and its action definitions.
 - Give the public demo a small character and a simple uncertain action.
@@ -194,5 +195,8 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   Automated checks and the separately installed Ubuntu VM's network check
   passed; see the [acceptance record](acceptance/encrypted-lan.md). M1-3 is
   complete under the agreed VM substitution. Physical-device Wi-Fi testing
-  is deferred. M1-4's original demo and minimal module loading are in
-  progress (#38 delivered).
+  is deferred.
+- M1-4's original demo and minimal module loading (#37) are complete
+  (#38–#42 delivered). Two real CLI players passed the Relay demo, one of
+  them on the Ubuntu VM; see the [acceptance record](acceptance/relay-demo.md).
+  M1-5 is next.

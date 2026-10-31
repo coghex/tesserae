@@ -49,7 +49,8 @@ This standalone utility does not load a game, update a campaign, or persist roll
 Use the foreground host below for recorded game actions.
 There are no built-in critical, fumble, success, or damage rules.
 
-No web UI, model integration, or complete game module has been implemented yet.
+No web UI or model integration has been implemented yet. The only game module
+is the small original [Relay demo](docs/relay-demo.md).
 Authenticated participant joining and the streaming CLI support localhost and
 explicit encrypted LAN connections. The [localhost acceptance](docs/acceptance/localhost-multiplayer.md)
 covers tracker #12. The [encrypted-network acceptance](docs/acceptance/encrypted-lan.md)
@@ -57,12 +58,15 @@ covers tracker #25, including an independently installed Ubuntu VM connecting to
 the Mac host. Physical-device Wi-Fi testing is deferred. Follow the
 [LAN runbook](docs/lan-runbook.md) to connect another client.
 
-Next is [M1-4 / tracker #37](https://github.com/coghex/tesserae/issues/37):
-minimal bundled modules and an original relay-repair demo. Its
-[delivery contract](docs/designs/demo_modules_design.md) is in progress: the
+[M1-4 / tracker #37](https://github.com/coghex/tesserae/issues/37) added
+minimal bundled modules and an original relay-repair demo: the
 [module contract](docs/modules.md), `dice` adapter, persisted module state
 (`tesserae game create`), [Relay rules](docs/relay.md), and hosting module games
-with per-player views are in place. The combined two-player demo is not done yet.
+with per-player views. Two players can follow the
+[Relay demo runbook](docs/relay-demo.md); the
+[demo acceptance](docs/acceptance/relay-demo.md) records live runs, one with
+a player on the Ubuntu VM. Next is M1-5, a private module loaded from outside
+the repository.
 
 ## Working together
 
