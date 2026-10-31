@@ -109,7 +109,11 @@ owner-selected VM verification; physical-device Wi-Fi coverage is deferred.
 
 ### M1-4. Introduce the original demo and minimal module loading
 
-Depends on M1-3.
+Depends on M1-3. Tracker [#37](https://github.com/coghex/tesserae/issues/37)
+and the [demo/module delivery contract](designs/demo_modules_design.md) specify
+the working original relay scene, minimal bundled module/provider contracts,
+durable state and scoped views. Start with #38; #39 and #40 can follow
+independently, then #41 and #42. Implementation has not started.
 
 - Load an explicitly selected local module and its action definitions.
 - Give the public demo a small character and a simple uncertain action.
