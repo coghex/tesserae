@@ -57,6 +57,11 @@ covers tracker #25, including an independently installed Ubuntu VM connecting to
 the Mac host. Physical-device Wi-Fi testing is deferred. Follow the
 [LAN runbook](docs/lan-runbook.md) to connect another client.
 
+Next is [M1-4 / tracker #37](https://github.com/coghex/tesserae/issues/37):
+minimal bundled modules and an original relay-repair demo. Its
+[delivery contract](docs/designs/demo_modules_design.md) is planned; module
+loading and the demo are not implemented yet.
+
 ## Working together
 
 This is a casual hobby project with manual review and standing owner authorization
