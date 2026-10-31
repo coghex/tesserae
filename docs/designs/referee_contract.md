@@ -4,7 +4,7 @@ Status: specification for [#64](https://github.com/coghex/tesserae/issues/64)
 under tracker [#63](https://github.com/coghex/tesserae/issues/63). Nothing here
 is implemented yet. It turns the [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
-lists the one product choice still open.
+records how the CLI shows conversation (owner decision O-1).
 
 Tested against `codex-cli 0.166.0` on macOS (arm64). The runner records the
 version it ran with; it does not pin or refuse other versions.
@@ -376,20 +376,31 @@ only `referee_context` (the scene, the rules text, both workers) and
 - The approved mechanics, bindings and fixed-draw tests stay; only the
   opponent's decision-maker changes.
 
-## 12. Open product choice
+## 12. The CLI in referee mode (REF-5)
 
-- **O-1. How the CLI prints conversation.** Input is plain text (below). For
-  output, either keep JSON lines on stdout, or print `message` events as
-  readable lines such as `[table] Referee: ...` and `[private] Referee: ...`.
-  Recommendation: readable lines in referee mode, with `--json` keeping JSON
-  lines for scripts and tests. The owner decides before REF-5.
+This is a human-friendly interface (owner decision O-1, 2026-10-31).
 
-The input convention (REF-5), in referee mode: each stdin line is a `say` with
-a client-generated request ID. Lines starting with `/` are plumbing:
-`/private TEXT`, `/status`, `/sync`, `/history`, `/retry` (resend the last
-unanswered input unchanged). `//TEXT` sends text that starts with `/`. Anything
-else, including text that looks like JSON or code, is sent as the player's
-words.
+**Input.** Each stdin line is a `say` with a client-generated request ID. Lines
+starting with `/` are plumbing: `/private TEXT`, `/status`, `/sync`,
+`/history`, `/retry` (resend the last unanswered input unchanged). `//TEXT`
+sends text that starts with `/`. Anything else, including text that looks like
+JSON or code, is sent as the player's words.
+
+**Output.** Readable lines on stdout, not JSON:
+
+```text
+[table] Alice: Can Wren fix the relay?
+[table] Referee: Wren can try: 1d6 plus repair 1, needing 5. It costs one effort either way. Try now?
+[private] Referee: From where you stand you can see Wren's tools, nothing more.
+[waiting for Alice]
+[busy] The referee is still answering Bob. Try again when it finishes.
+[status] idle; waiting for Alice; last message 6
+```
+
+Messages show their audience and sender; status, busy, awaiting and errors get
+short bracketed lines; `/sync` prints a short summary of the player's own view.
+Diagnostics stay on stderr. `connect --json` keeps the JSON-line stream (and
+sends input as `say` messages the same way) for scripts and tests.
 
 ## 13. Feasibility evidence (2026-10-31)
 
