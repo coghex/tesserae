@@ -37,8 +37,9 @@ combat, inventory, or turn model.
   and source materials must remain unchanged during bootstrap work.
 - The initial standalone Python dice CLI had ten tests. Live SQLite storage,
   authenticated localhost sessions and the streaming client are now implemented,
-  with 77 tests at tracker #12's acceptance. Module loading, browser integration
-  and model integration are not implemented yet.
+  with 77 tests at tracker #12's acceptance. A small catalog of bundled modules
+  is in place for M1-4. External module loading, browser integration and model
+  integration are not implemented yet.
 
 ## Agreed direction
 

@@ -15,8 +15,9 @@ and stale-revision rejection, serialized writers, read-only access, and
 [participants with personal join tokens](#participants-and-credentials) (#14).
 Each game is bound to one [module](modules.md) (#38) and keeps that module's
 JSON state (#39): see [Modules and state](#modules-and-state). `tesserae game
-create` makes a game bound to a chosen bundled module. Not implemented: hosting
-non-`dice` games (#41), turn rules, inventory, or several games per store.
+create` makes a game bound to a chosen bundled module, and `serve` hosts it with
+per-participant views (#41). Not implemented: turn rules, inventory, or several
+games per store.
 The loopback-only WebSocket host (`tesserae serve`, `tesserae/server.py`)
 exposes this service. In development mode every connection uses one fixed
 participant. With `--authenticated` (#15), each connection joins with a token,
@@ -222,9 +223,10 @@ switch, reset, or state upgrade.
   resolves the bundled module before creating anything. Add participants
   afterwards with `tesserae participant add`.
 - **Running.** Executing a command or reading a view needs the game's
-  runtime. A host passes `GameStore(path, runtime=...)` an already-loaded
-  runtime, which must match the binding exactly. Without one, the store
-  resolves the binding from the bundled catalog on first use. Any mismatch
+  runtime. `tesserae serve` loads it once at startup with `store.runtime()`,
+  then passes each worker's `GameStore(path, runtime=...)` that runtime, which
+  must match the binding exactly. Without one, the store resolves the binding
+  from the bundled catalog on first use. Any mismatch
   raises `StoreError`, and an unknown module, version, state version or
   provider fails the same way. There is no fallback to `dice` and nothing is
   drawn.

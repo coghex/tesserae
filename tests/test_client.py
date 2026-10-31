@@ -31,6 +31,15 @@ def roll(request_id, expected_revision, expression="1d20"):
     )
 
 
+FAKE_SNAPSHOT = {"version": 1, "type": "snapshot", "game_id": "g",
+                 "participant_id": "p_fake", "revision": 0}  # fmt: skip
+MODULE_SNAPSHOT = {
+    **FAKE_SNAPSHOT,
+    "module": {"id": "fixture", "version": "1", "state_version": 1},
+    "view": {"anything": ["the", "module", "chose"], "nested": {"x": None}},
+}
+
+
 class Process:
     """A subprocess whose stdout lines can be read with a timeout."""
 
@@ -141,6 +150,19 @@ class ClientCase(unittest.TestCase):
         for token in self.tokens.values():
             self.assertNotIn(token, "".join(client.stdout) + client.stderr)
         self.assertNotIn("Traceback", client.stderr)
+
+    def fake_host(self, behavior, greet=True, snapshot=None):
+        def handler(connection):
+            if not greet:
+                return behavior(connection)
+            json.loads(connection.recv())  # the join
+            connection.send(json.dumps(snapshot or FAKE_SNAPSHOT))
+            behavior(connection)
+
+        server = sync_serve(handler, "127.0.0.1", 0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return f"ws://127.0.0.1:{server.socket.getsockname()[1]}/"
 
     def history(self):
         with GameStore(self.database) as store:
@@ -279,27 +301,65 @@ class FailureTests(ClientCase):
         self.assertCleanOutput(waiting)
 
 
+class ModuleSnapshotTests(ClientCase):
+    def test_module_views_are_printed_unchanged(self):
+        later = {**MODULE_SNAPSHOT, "revision": 2, "view": {"other": True}}
+
+        def answer_sync(connection):
+            connection.recv()
+            connection.send(json.dumps(later))
+            for _ in connection:
+                pass
+
+        uri = self.fake_host(answer_sync, snapshot=MODULE_SNAPSHOT)
+        client = self.connect("alice", uri=uri)
+        self.assertEqual(client.message(), MODULE_SNAPSHOT)
+        client.send('{"version": 1, "type": "sync"}')
+        self.assertEqual(client.message(), later)
+        self.assertEqual(client.finish(), 0)
+        self.assertCleanOutput(client)
+
+    def test_malformed_module_snapshots_are_refused(self):
+        module = MODULE_SNAPSHOT["module"]
+        joins = {
+            "module without a view": {**FAKE_SNAPSHOT, "module": module},
+            "view without a module": {**FAKE_SNAPSHOT, "view": {}},
+            "view not an object": {**MODULE_SNAPSHOT, "view": ["x"]},
+            "module missing a field": {
+                **MODULE_SNAPSHOT, "module": {"id": "fixture", "version": "1"}},
+            "state_version a boolean": {
+                **MODULE_SNAPSHOT, "module": {**module, "state_version": True}},
+        }  # fmt: skip
+        for description, snapshot in joins.items():
+            with self.subTest(description):
+                client = self.connect(
+                    "alice", uri=self.fake_host(lambda c: None, snapshot=snapshot)
+                )
+                client.send(roll("r1", 0))  # must never be sent
+                self.assertEqual(client.finish(), 1)
+                self.assertIn("not a valid snapshot", client.stderr)
+
+        def answer_with_another_module(connection):
+            connection.recv()
+            connection.send(
+                json.dumps({**MODULE_SNAPSHOT, "module": {**module, "id": "x"}})
+            )
+            for _ in connection:
+                pass
+
+        client = self.connect(
+            "alice",
+            uri=self.fake_host(answer_with_another_module, snapshot=MODULE_SNAPSHOT),
+        )
+        client.message()
+        client.send('{"version": 1, "type": "sync"}')
+        self.assertEqual(client.wait(), 3)
+        self.assertIn("does not match this session", client.stderr)
+
+
 class UnansweredRequestTests(ClientCase):
     """A host that never answers is not something the real host does; these
     check that the client's bounded drain reports it rather than hanging."""
-
-    def fake_host(self, behavior, greet=True):
-        def handler(connection):
-            if not greet:
-                return behavior(connection)
-            json.loads(connection.recv())  # the join
-            connection.send(
-                json.dumps(
-                    {"version": 1, "type": "snapshot", "game_id": "g",
-                     "participant_id": "p_fake", "revision": 0}
-                )
-            )  # fmt: skip
-            behavior(connection)
-
-        server = sync_serve(handler, "127.0.0.1", 0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.shutdown)
-        return f"ws://127.0.0.1:{server.socket.getsockname()[1]}/"
 
     def test_drain_timeout_names_the_uncertain_requests(self):
         def ignore_everything(connection):

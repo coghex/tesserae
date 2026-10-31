@@ -58,8 +58,10 @@ Welcome, host to client on connection in [development mode](#host-modes):
   (2^63 − 1).
 - `command` is a string and `args` is a JSON object.
 - JSON booleans are never accepted as integers.
-- Only the game's [module](modules.md) commands are accepted. Every game
-  today uses the `dice` compatibility module, whose only command is `roll`.
+- Only the game's [module](modules.md) commands are accepted. A game created
+  by `serve` or `participant add` uses the `dice` compatibility module, whose
+  only command is `roll`. A [Relay](relay.md) game has only `relay.enlist` and
+  `relay.repair`; `roll` there is `unsupported_command`.
   Its `args` has exactly one field, `expression`, a string validated with the
   existing dice rules and limits (at most 4096 characters, 1000 dice, and
   1,000,000 sides). Validation never rolls dice.
@@ -154,6 +156,13 @@ See [tls.md](tls.md). The messages are the same with or without TLS.
   connections receive shared `revision` notifications
   ([#16](https://github.com/coghex/tesserae/issues/16)).
 
+At startup the host loads the game's bound module and providers exactly
+([#41](https://github.com/coghex/tesserae/issues/41)). If they are unknown or
+do not match, `serve` exits 1 before listening, with no fallback to `dice`. A
+module that requires authenticated participants, such as Relay, refuses
+development mode, even on 127.0.0.1: `serve` exits 2 and starts nothing. The
+host's first line names the module, for example `module: relay 1`.
+
 ## Authenticated sessions
 
 ### Messages
@@ -165,11 +174,22 @@ Join, client to host. It must be the first message:
 ```
 
 Snapshot, host to client. It is the reply to a successful join and to every
-sync, and is the recipient's whole metadata view:
+sync, and is the recipient's whole view. In a `dice` game it is metadata only:
 
 ```json
 {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37",
  "participant_id": "p_7h3k9q2m", "revision": 4}
+```
+
+A game whose module projects views, such as [Relay](relay.md#what-players-see),
+adds the module's identity and this participant's `view`:
+
+```json
+{"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37",
+ "participant_id": "p_7h3k9q2m", "revision": 4,
+ "module": {"id": "relay", "version": "1", "state_version": 1},
+ "view": {"scene": {"id": "relay_station", "restored": false, "...": "..."},
+          "character": null, "commands": ["relay.enlist"], "rules": {"...": "..."}}}
 ```
 
 Sync, client to host. It asks for a fresh snapshot and is read-only:
@@ -199,9 +219,15 @@ unchanged, and no message carries a client-asserted identity or role.
 - Structure and types are checked first (`invalid_request`), then the version
   (`unsupported_version`). The same strict JSON rules apply as for commands.
   Any other `type` is judged as a command, so its errors are unchanged.
-- `snapshot` contains only `game_id`, the recipient's own `participant_id`, and
+- `snapshot` contains `game_id`, the recipient's own `participant_id`, and
   the current mechanical `revision`. It has no roster, history, dice results,
-  credentials, or operator view. It is a metadata view, not a game schema.
+  credentials, or operator view.
+- A module game's snapshot also has both `module` (exactly `id`, `version` and
+  `state_version`) and `view`, a JSON object; a `dice` snapshot has neither.
+  The module builds `view` for that participant from the game state at
+  `revision`, read in the same transaction as the credential check. It is
+  never the complete stored state. The view's fields belong to the module;
+  the protocol fixes only that it is an object.
 - `revision` contains only `game_id` and the new `revision`. It never names a
   participant, request ID, expression, or result.
 - `game_id` and `participant_id` are opaque strings of 1 to 128 characters
@@ -245,7 +271,8 @@ metadata is deliberately visible to all participants in this first slice.
 
 **Notifications.** After a fresh command commits, the host sends `revision` to
 every joined connection, including the requester's. The requester's
-notification may arrive before or after its `result`. Replays, rejected
+notification may arrive before or after its `result`. A notification never
+carries a view: to see what changed, send a `sync`. Replays, rejected
 requests, failures, joins, syncs, and credential changes never produce a
 notification, because they do not change the revision.
 
@@ -259,6 +286,12 @@ notification, because they do not change the revision.
 - **No gap at join.** The host subscribes a connection to notifications before
   reading the snapshot it sends. A commit that races a join is therefore covered
   either by the snapshot or by a later notification. The same holds for a sync.
+- **A view keeps its revision.** The host holds back that connection's
+  notifications from just before it reads a snapshot until it has sent it, so
+  a snapshot never follows a notification newer than its own revision. It
+  never relabels a view with a revision it was not read at. A commit that lands
+  while the snapshot is read is announced right after it. Other connections
+  are not held up, and no database transaction is open during the send.
 - **Slow clients.** Pending notifications for one connection collapse to the
   newest revision, so there is no unbounded queue. Announcing a commit never
   waits for any connection. If one message to a connection cannot be written
@@ -387,7 +420,9 @@ the join is sent. See [tls.md](tls.md).
   newline. Operator commands create it with user-only permissions. Keep it
   outside the repository. The token never appears on a command line or in a URL.
 - The client joins automatically. With `--game-id`, it exits nonzero if the
-  snapshot names another game, before sending any input. It refuses a URI
+  snapshot names another game, before sending any input. A snapshot must have
+  both `module` and `view` or neither; the client checks only their shape and
+  prints the view unchanged. It has no game rules or local state. It refuses a URI
   that carries a query, fragment, or credentials, without echoing it.
 - Stdout is one JSON message per line: the snapshot, every reply, and every
   notification. Diagnostics go to stderr. The token is never printed.
@@ -398,7 +433,8 @@ the join is sent. See [tls.md](tls.md).
   well-formed version 1 reply to that line:
   - a `command` gets its own `result` (same `request_id`, a revision, and a
     result object);
-  - a `sync` gets this session's `snapshot` (same game and participant);
+  - a `sync` gets this session's `snapshot` (same game, participant and
+    module);
   - any line can get an `error` with a code and a message.
 
   Anything else is a protocol failure, for example a snapshot answering a

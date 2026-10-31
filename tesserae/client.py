@@ -145,7 +145,7 @@ class _Client:
             raise _Failure(f"the host refused to join: {message.get('code')}")
         if message.get("type") != "snapshot" or not _is_snapshot(message):
             raise _Failure("the host's first reply was not a valid snapshot")
-        self.view = (message["game_id"], message["participant_id"])
+        self.session = _session_of(message)
         if self.game_id is not None and message.get("game_id") != self.game_id:
             raise _Failure(
                 f"the host serves game {message.get('game_id')}, not {self.game_id}; "
@@ -200,7 +200,7 @@ class _Client:
                     continue
                 if not self.unanswered:
                     raise _Failure("the host sent a reply to nothing")
-                _check_reply(message, self.unanswered[0], self.view)
+                _check_reply(message, self.unanswered[0], self.session)
                 _print(message)
                 self.unanswered.popleft()
                 self.replied.set()
@@ -303,7 +303,7 @@ def _print(message: dict):
     print(json.dumps(message), flush=True)
 
 
-def _check_reply(message: dict, sent: str, view: tuple):
+def _check_reply(message: dict, sent: str, session: tuple):
     """Raise unless `message` is a well-formed reply to the line `sent`.
 
     A command is answered by its own result or an error, a sync by this
@@ -327,10 +327,7 @@ def _check_reply(message: dict, sent: str, view: tuple):
         ):
             raise _Failure("the host sent a result that does not answer the request")
     elif kind == "sync" and message.get("type") == "snapshot":
-        if not (
-            _is_snapshot(message)
-            and (message["game_id"], message["participant_id"]) == view
-        ):
+        if not (_is_snapshot(message) and _session_of(message) == session):
             raise _Failure("the host sent a snapshot that does not match this session")
     else:
         raise _Failure(
@@ -351,11 +348,38 @@ def _is_error(message: dict) -> bool:
 
 
 def _is_snapshot(message: dict) -> bool:
+    """The metadata fields, plus either both `module` and `view` or neither.
+
+    Only the shape is checked. The view belongs to the module and is printed
+    unchanged; the client has no game rules.
+    """
+    if "module" in message or "view" in message:
+        module = message.get("module")
+        if not (
+            isinstance(module, dict)
+            and set(module) == {"id", "version", "state_version"}
+            and isinstance(module["id"], str)
+            and isinstance(module["version"], str)
+            and _is_revision(module["state_version"])
+            and isinstance(message.get("view"), dict)
+        ):
+            return False
     return (
         message.get("version") == 1
         and isinstance(message.get("game_id"), str)
         and isinstance(message.get("participant_id"), str)
         and _is_revision(message.get("revision"))
+    )
+
+
+def _session_of(snapshot: dict) -> tuple:
+    """What every snapshot on one connection shares: its game, participant
+    and module."""
+    module = snapshot.get("module")
+    return (
+        snapshot["game_id"],
+        snapshot["participant_id"],
+        None if module is None else tuple(sorted(module.items())),
     )
 
 
