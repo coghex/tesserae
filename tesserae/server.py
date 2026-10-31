@@ -38,8 +38,9 @@ from .protocol import (
     welcome_message,
 )
 from .store import GameStore, ParticipantContext, StoreBusy, StoreError
+from .transport import TransportConfigError, check_server, server_context
 
-HOST = "127.0.0.1"
+HOST = "127.0.0.1"  # the default; see tesserae.transport for what else is allowed
 DEVELOPMENT_PARTICIPANT = ParticipantContext("local-development")
 WORKER_THREADS = 8
 SESSION_CLOSE_CODE = 1008  # policy violation: the session cannot continue
@@ -67,12 +68,16 @@ class GameHost:
         database,
         *,
         authenticated: bool = False,
+        host: str = HOST,
+        ssl_context=None,
         randint=None,
         join_timeout: float = JOIN_TIMEOUT_SECONDS,
         write_timeout: float = WRITE_TIMEOUT_SECONDS,
     ):
         self.database = Path(database).resolve()
         self.authenticated = authenticated
+        self.host = host
+        self._ssl = ssl_context
         self._randint = randint
         self._join_timeout = join_timeout
         self._write_timeout = write_timeout
@@ -88,10 +93,11 @@ class GameHost:
     async def run(self, port: int, stop: asyncio.Future, on_ready=None):
         """Serve until `stop` completes, then close connections and the store."""
         try:
-            async with serve(self._handle, HOST, port) as server:
+            async with serve(self._handle, self.host, port, ssl=self._ssl) as server:
                 address, bound_port = server.sockets[0].getsockname()[:2]
+                scheme = "ws" if self._ssl is None else "wss"
                 if on_ready is not None:
-                    on_ready(f"ws://{address}:{bound_port}/")
+                    on_ready(f"{scheme}://{address}:{bound_port}/")
                 await stop
         finally:
             # Finish in-flight store calls: each commits or rolls back whole.
@@ -369,11 +375,38 @@ class _Session:
             self.connection.transport.abort()
 
 
-def run_foreground(database: str, port: int, *, authenticated: bool = False) -> int:
-    """The `tesserae serve` command: run until Ctrl-C, then exit cleanly."""
+def run_foreground(
+    database: str,
+    port: int,
+    *,
+    authenticated: bool = False,
+    host: str = HOST,
+    tls_cert=None,
+    tls_key=None,
+) -> int:
+    """The `tesserae serve` command: run until Ctrl-C, then exit cleanly.
+
+    The address and security settings are checked together before anything
+    is opened; an unsafe or incomplete combination never starts a listener.
+    """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
-        host = GameHost(database, authenticated=authenticated)
+        transport = check_server(
+            host, authenticated=authenticated, tls_cert=tls_cert, tls_key=tls_key
+        )
+    except TransportConfigError as error:
+        return _fail(str(error), code=2)
+    try:
+        context = server_context(tls_cert, tls_key) if transport.tls else None
+    except TransportConfigError as error:
+        return _fail(str(error))
+    try:
+        game = GameHost(
+            database,
+            authenticated=authenticated,
+            host=transport.host,
+            ssl_context=context,
+        )
     except (StoreError, sqlite3.Error, OSError) as error:
         return _fail(f"cannot open database {database}: {error}")
 
@@ -382,9 +415,10 @@ def run_foreground(database: str, port: int, *, authenticated: bool = False) -> 
             who = "mode: authenticated, join with a personal token"
         else:
             who = f"participant: {DEVELOPMENT_PARTICIPANT.participant_id}"
+        encryption = "TLS" if transport.tls else "no encryption, this computer only"
         print(
             f"Tesserae {'authenticated' if authenticated else 'development'} host "
-            f"listening on {uri} (database: {host.database}, {who}). "
+            f"listening on {uri} (database: {game.database}, {who}, {encryption}). "
             "Press Ctrl-C to stop.",
             flush=True,
         )
@@ -396,19 +430,21 @@ def run_foreground(database: str, port: int, *, authenticated: bool = False) -> 
             loop.add_signal_handler(
                 signum, lambda: stop.done() or stop.set_result(None)
             )
-        await host.run(port, stop, on_ready=ready)
+        await game.run(port, stop, on_ready=ready)
 
     try:
         asyncio.run(main())
     except OSError as error:
-        return _fail(f"cannot listen on {HOST}:{port}: {error.strerror or error}")
+        return _fail(
+            f"cannot listen on {transport.host}:{port}: {error.strerror or error}"
+        )
     print("Tesserae host stopped.", flush=True)
     return 0
 
 
-def _fail(message: str) -> int:
+def _fail(message: str, code: int = 1) -> int:
     print(f"tesserae serve: {message}", file=sys.stderr)
-    return 1
+    return code
 
 
 def _request_id(raw):

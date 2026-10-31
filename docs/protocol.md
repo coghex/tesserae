@@ -132,9 +132,11 @@ order and failure behavior.
 
 ## Host modes
 
-A host serves one persisted game. Choosing the endpoint chooses the game. Both
-modes listen only on 127.0.0.1, and there is no automatic fallback from one to
-the other.
+A host serves one persisted game. Choosing the endpoint chooses the game.
+There is no automatic fallback from one mode to the other. Both listen on
+127.0.0.1 by default. Authenticated mode can also use TLS (`wss://`), and only
+authenticated TLS may listen on another address of this computer (`--host`).
+See [tls.md](tls.md). The messages are the same with or without TLS.
 
 - **Development mode** is the existing `tesserae serve --database PATH --port
   PORT`. Every connection acts as the fixed participant `local-development`.

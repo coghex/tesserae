@@ -48,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     serve = commands.add_parser(
         "serve",
         help="Run a loopback-only game host in the foreground.",
-        description="Serve one game over WebSocket on 127.0.0.1 until Ctrl-C. "
+        description="Serve one game over WebSocket until Ctrl-C, on 127.0.0.1 "
+        "unless --host says otherwise (which requires authenticated TLS). "
         "By default every connection acts as one fixed development participant; "
         "with --authenticated, each must join with a personal token.",
     )
@@ -63,6 +64,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Require each connection to join with a token from "
         "'tesserae participant'. There is no fallback to development mode.",
+    )
+    serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="One IPv4 address of this computer to listen on (default 127.0.0.1). "
+        "Any other address needs --authenticated, --tls-cert, and --tls-key.",
+    )
+    serve.add_argument(
+        "--tls-cert", help="Certificate to present, for wss://. See docs/tls.md."
+    )
+    serve.add_argument(
+        "--tls-key", help="Its private key, unencrypted and readable only by you."
     )
     connect = commands.add_parser(
         "connect",
@@ -127,7 +140,12 @@ def main(argv: list[str] | None = None) -> int:
         from .server import run_foreground
 
         return run_foreground(
-            args.database, args.port, authenticated=args.authenticated
+            args.database,
+            args.port,
+            authenticated=args.authenticated,
+            host=args.host,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
         )
     try:
         result = roll_expression(args.expression)
