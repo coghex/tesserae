@@ -4,8 +4,9 @@ Status: in progress; tracker [#25](https://github.com/coghex/tesserae/issues/25)
 LAN-1 (#26) is merged: the transport policy and TLS context helpers
 (`tesserae/transport.py`) and the operator reference with the certificate
 recipe ([docs/tls.md](../tls.md)). LAN-2 (#27), the `serve --host --tls-cert
---tls-key` listener, is in review. LAN-3 (#28, client trust) and LAN-4 (#29,
-combined and two-computer verification) are planned.
+--tls-key` listener, is merged. LAN-3 (#28), `connect --ca-file` and the
+plaintext-destination rule, is in review. LAN-4 (#29, combined and
+two-computer verification) is planned.
 
 The owner selected encrypted LAN connections after tracker #12 completed the
 localhost flow. This finishes the remaining network portion of M1-3: a friend

@@ -6,10 +6,8 @@ contexts live in `tesserae/transport.py`
 ([#26](https://github.com/coghex/tesserae/issues/26)). The host flags
 (`--host`, `--tls-cert`, `--tls-key`) are implemented in `tesserae serve`
 ([#27](https://github.com/coghex/tesserae/issues/27)). The client flag
-(`--ca-file`) and the plaintext-destination rule for `tesserae connect` are
-**planned** ([#28](https://github.com/coghex/tesserae/issues/28)). Until then
-the client can reach a TLS host only if the system already trusts its
-certificate, which a self-signed one is not.
+(`--ca-file`) and the plaintext-destination rule are implemented in
+`tesserae connect` ([#28](https://github.com/coghex/tesserae/issues/28)).
 
 ## What is allowed
 
@@ -42,6 +40,16 @@ Client (`tesserae connect`):
 | `ws://` to a loopback IP or exactly `localhost` | none | Plaintext on this computer (unchanged) |
 | `ws://` to anything else | | Refused before connecting, so the token is never sent in the clear |
 | `ws://` | a file | Refused: a trust file needs `wss://` |
+
+When the certificate cannot be verified, `tesserae connect` stops before
+sending anything and exits 1. Common messages:
+
+| Message | Usual cause |
+|---|---|
+| `cannot trust ...: self-signed certificate` (or similar) | `--ca-file` is missing, or is not this host's certificate |
+| `cannot trust ...: IP address mismatch` / `Hostname mismatch` | The URI uses an address or name the certificate does not list |
+| `cannot connect ... securely: the connection was reset` | The host is not running with `--tls-cert` and `--tls-key` |
+| `Cannot read the trust file ...` / `does not contain a PEM certificate` | The `--ca-file` path is wrong, or is not a certificate |
 
 Hostnames are never resolved to decide whether `ws://` is local.
 `ws://gamehost.local/` is refused even if it points at this computer; use

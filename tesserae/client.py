@@ -11,16 +11,17 @@ import asyncio
 import json
 import os
 import signal
+import ssl
 import stat
 import sys
 import threading
 from collections import deque
-from urllib.parse import urlsplit
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
 
 from .credentials import read_token_file
+from .transport import TransportConfigError, check_client
 
 DRAIN_TIMEOUT_SECONDS = 10.0
 JOIN_REPLY_TIMEOUT_SECONDS = 10.0
@@ -34,17 +35,27 @@ class _Failure(Exception):
     """Stop with a diagnostic; never includes the token."""
 
 
-def run(uri: str, token_file, game_id=None, drain_timeout=DRAIN_TIMEOUT_SECONDS):
+def run(
+    uri: str,
+    token_file,
+    game_id=None,
+    drain_timeout=DRAIN_TIMEOUT_SECONDS,
+    ca_file=None,
+):
+    """Check the destination and trust first: plaintext to another computer is
+    refused before anything is read, sent, or contacted."""
     try:
-        _check_uri(uri)
+        ssl_context = check_client(uri, ca_file)
         token = _read_token(token_file)
-    except _Failure as failure:
+    except (_Failure, TransportConfigError) as failure:
         return _diagnose(str(failure), EXIT_FAILED)
-    return asyncio.run(_Client(uri, token, game_id, drain_timeout).main())
+    client = _Client(uri, token, game_id, drain_timeout, ssl_context)
+    return asyncio.run(client.main())
 
 
 class _Client:
-    def __init__(self, uri, token, game_id, drain_timeout):
+    def __init__(self, uri, token, game_id, drain_timeout, ssl_context=None):
+        self.ssl_context = ssl_context
         self.uri = uri
         self.token = token
         self.game_id = game_id
@@ -57,9 +68,30 @@ class _Client:
         self.interrupted = loop.create_future()
         for signum in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(signum, self._interrupt)
+        options = {"open_timeout": JOIN_REPLY_TIMEOUT_SECONDS, "proxy": None}
+        if self.ssl_context is not None:
+            options["ssl"] = self.ssl_context
         try:
-            connection = await self._first(
-                connect(self.uri, open_timeout=JOIN_REPLY_TIMEOUT_SECONDS, proxy=None)
+            # TLS, including certificate and name checks, completes before the
+            # join is sent, so a host that fails them never sees the token.
+            connection = await self._first(connect(self.uri, **options))
+        except ssl.SSLCertVerificationError as error:
+            return _diagnose(
+                f"cannot trust {self.uri}: {error.verify_message or 'verification failed'}. "
+                "Check that --ca-file is this host's certificate and that the URI "
+                "uses an address or name the certificate lists. Nothing was sent",
+                EXIT_FAILED,
+            )
+        except (ssl.SSLError, ConnectionResetError) as error:
+            # A host without TLS usually just drops the TLS handshake.
+            if self.ssl_context is None:
+                return _diagnose(f"cannot connect to {self.uri}: {_reason(error)}", 1)
+            reason = getattr(error, "reason", None) or "the connection was reset"
+            return _diagnose(
+                f"cannot connect to {self.uri} securely: "
+                f"{reason.replace('_', ' ').lower()}. "
+                "Is the host running with --tls-cert and --tls-key? Nothing was sent",
+                EXIT_FAILED,
             )
         except (OSError, InvalidHandshake, InvalidURI, TimeoutError) as error:
             return _diagnose(f"cannot connect to {self.uri}: {_reason(error)}", 1)
@@ -344,23 +376,6 @@ def _start_stdin_reader(loop, lines: asyncio.Queue):
         deliver(None)
 
     threading.Thread(target=read, name="tesserae-stdin", daemon=True).start()
-
-
-def _check_uri(uri: str):
-    shape = "the host URI must look like ws://127.0.0.1:PORT/"
-    try:
-        parts = urlsplit(uri)
-        parts.port  # validates the port
-    except ValueError:
-        raise _Failure(shape) from None
-    if parts.scheme not in ("ws", "wss") or not parts.hostname:
-        raise _Failure(shape)
-    if parts.query or parts.fragment or parts.username or parts.password:
-        # Do not echo it: it might be carrying a secret.
-        raise _Failure(
-            "the host URI must not carry a query, fragment, or credentials; "
-            "the token comes only from --token-file"
-        )
 
 
 def _read_token(path) -> str:

@@ -371,8 +371,13 @@ The thin client ([#17](https://github.com/coghex/tesserae/issues/17),
 `tesserae/client.py`) is:
 
 ```sh
-python3 -m tesserae connect ws://127.0.0.1:PORT/ --token-file PATH [--game-id ID]
+python3 -m tesserae connect URI --token-file PATH [--game-id ID] [--ca-file CERT]
 ```
+
+`URI` is `wss://HOST:PORT/` for an encrypted host, verified against `--ca-file`
+or the system's trusted authorities. It can be `ws://` only for this computer
+(a loopback address or `localhost`). Certificate and name checks finish before
+the join is sent. See [tls.md](tls.md).
 
 - The token file holds the token alone, as UTF-8 text with an optional trailing
   newline. Operator commands create it with user-only permissions. Keep it

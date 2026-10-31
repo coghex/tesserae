@@ -87,12 +87,21 @@ def main(argv: list[str] | None = None) -> int:
         "could not start or the host ended the session, 3 when some requests "
         "got no reply (resend them unchanged), 130 on Ctrl-C.",
     )
-    connect.add_argument("uri", help="The host's address, e.g. ws://127.0.0.1:8790/.")
+    connect.add_argument(
+        "uri",
+        help="The host's address: wss://HOST:PORT/, or ws://127.0.0.1:PORT/ "
+        "on this computer only.",
+    )
     connect.add_argument(
         "--token-file", required=True, help="File holding your personal join token."
     )
     connect.add_argument(
         "--game-id", help="Refuse to send anything unless the host serves this game."
+    )
+    connect.add_argument(
+        "--ca-file",
+        help="The host's certificate to trust, for wss:// (see docs/tls.md). "
+        "Without it, wss:// uses the system's trusted authorities.",
     )
     connect.add_argument(
         "--drain-timeout",
@@ -131,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "connect":
         from .client import run
 
-        return run(args.uri, args.token_file, args.game_id, args.drain_timeout)
+        return run(
+            args.uri, args.token_file, args.game_id, args.drain_timeout, args.ca_file
+        )
     if args.command == "participant":
         from .admin import run
 

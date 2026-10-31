@@ -290,9 +290,26 @@ python3 -m tesserae serve --database ~/tesserae-dev.sqlite3 --port 8790 \
 `--host` takes one IPv4 address of this computer; leave it out to stay on
 127.0.0.1. The host then listens on `wss://192.168.1.50:8790/`. Plaintext or
 unauthenticated settings for any address but loopback are refused before
-anything starts. Connecting from another computer needs the client's
-`--ca-file` option ([#28](https://github.com/coghex/tesserae/issues/28)),
-which is not available yet.
+anything starts.
+
+Give each player the public `host.crt` and their own token file. They connect
+with `wss://`, telling the client to trust that certificate:
+
+```sh
+python3 -m tesserae connect wss://192.168.1.50:8790/ \
+    --token-file ~/alice.token --ca-file ~/host.crt
+```
+
+The address or name in the URI must be one the certificate lists in its
+`subjectAltName`. The client checks the certificate and the name before
+sending anything. If either fails, it stops with "cannot trust ..." and
+exit status 1, and the host never sees the token. Without `--ca-file`,
+`wss://` trusts only the system's certificate authorities, which do not know
+a self-signed certificate. Plaintext `ws://` is refused for anything but this
+computer (a loopback address or `localhost`), before connecting. Full
+two-computer setup steps come with
+[#29](https://github.com/coghex/tesserae/issues/29); see
+[docs/tls.md](docs/tls.md).
 
 ## License
 
