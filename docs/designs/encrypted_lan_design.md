@@ -1,15 +1,18 @@
 # Encrypted LAN delivery design
 
-Status: in progress; tracker [#25](https://github.com/coghex/tesserae/issues/25).
+Status: accepted for M1-3; tracker [#25](https://github.com/coghex/tesserae/issues/25).
+The owner chose a full Ubuntu VM when a second physical computer was unavailable;
+the passed Mac-host/Ubuntu-guest result is recorded below. Physical-device
+Wi-Fi coverage is deferred.
 LAN-1 (#26) is merged: the transport policy and TLS context helpers
 (`tesserae/transport.py`) and the operator reference with the certificate
 recipe ([docs/tls.md](../tls.md)). LAN-2 (#27), the `serve --host --tls-cert
 --tls-key` listener, is merged. LAN-3 (#28), `connect --ca-file` and the
 plaintext-destination rule, is merged. It also never follows handshake
-redirects. LAN-4 (#29) is in review: the combined encrypted test, the
-[two-computer runbook](../lan-runbook.md), and the
-[acceptance record](../acceptance/encrypted-lan.md), whose real second-computer
-check is still pending.
+redirects. LAN-4 (#29) delivered the combined encrypted test and
+[runbook](../lan-runbook.md) in PR #35. The
+[acceptance record](../acceptance/encrypted-lan.md#vm-network-check) contains the
+successful separately installed VM check at `632fb7e`.
 
 The owner selected encrypted LAN connections after tracker #12 completed the
 localhost flow. This finishes the remaining network portion of M1-3: a friend
@@ -32,12 +35,13 @@ those mechanisms and the version-1 protocol/schema-2 store.
 | [#26](https://github.com/coghex/tesserae/issues/26), LAN-1 | TLS configuration helpers and certificate setup contract | None | Small–medium |
 | [#27](https://github.com/coghex/tesserae/issues/27), LAN-2 | Explicit authenticated TLS host listener | #26 | Medium |
 | [#28](https://github.com/coghex/tesserae/issues/28), LAN-3 | Verified client trust and plaintext destination policy | #26 | Medium |
-| [#29](https://github.com/coghex/tesserae/issues/29), LAN-4 | Combined tests, runbook and actual two-computer proof | #27, #28 | Medium, including manual verification |
+| [#29](https://github.com/coghex/tesserae/issues/29), LAN-4 | Combined tests, runbook and accepted VM network proof | #27, #28 | Medium, including network verification |
 
 Start with #26. Afterward #27 and #28 have independent implementation boundaries;
 each can use a library peer for its own tests. #29 verifies the combined stack.
-Each child links its concrete requirements and acceptance conditions; tracker
-#25 remains open until all combined acceptance is satisfied.
+Each child links its concrete requirements and acceptance conditions. The
+combined acceptance is satisfied by the automated checks and the owner-selected
+full-VM network check; the original physical-device gate is superseded below.
 
 ## Transport and configuration
 
@@ -54,7 +58,7 @@ strictness consistent without claiming every TLS-stack default is identical.
 See the [Python 3.13 change](https://docs.python.org/3.13/whatsnew/3.13.html#ssl).
 Do not implement cryptography.
 
-Planned commands, using placeholder paths and address:
+Implemented commands, using placeholder paths and address:
 
 ```sh
 python3 -m tesserae serve --database GAME.sqlite3 --port 8790 --host 192.168.1.50 --authenticated --tls-cert host.crt --tls-key host.key
@@ -136,8 +140,10 @@ proxy bypass remain. `--game-id`, streaming, EOF and uncertainty behavior remain
 - #28 threads client trust configuration through `connect` and its entry point,
   checks plaintext destination policy, and tests rejection before application
   credentials/input are sent.
-- #29 runs the real processes together and records the separate-computer result.
-  It does not replace that observation with an automated loopback demonstration.
+- #29 runs the real processes together and records the separately installed
+  client result. The owner-selected Ubuntu VM has its own OS/network stack and
+  connects to the Mac's non-loopback endpoint; this exceeds loopback subprocess
+  coverage while leaving physical-device Wi-Fi behavior deferred.
 
 ## Acceptance and closure
 
@@ -150,15 +156,18 @@ The combined encrypted check demonstrates separate identities, private replies,
 passive updates, a concurrent stale request, restart/replay without duplicates
 and the retained localhost procedures. Ruff/unittest/CI stay green.
 
-Final acceptance also requires a genuinely separate computer to join over LAN,
-see permitted updates, make an action, reconnect/replay and reject an old token
-after rotation/revocation. Record platform/software versions and sanitized
-observations. Live addresses, credentials and keys are not public evidence.
+The original acceptance required a second physical computer. After the owner
+could not find one, they selected a full Ubuntu VM in UTM as the network test
+environment. That supersedes the physical-device gate for #29/#25 and M1-3;
+physical-device Wi-Fi/firewall behavior is explicitly deferred.
 
-If a second computer/operator is unavailable, #29 can publish its tests/runbook,
-but #29 and #25 stay open with manual acceptance pending. A partial-delivery PR
-must omit `Closes #29`. Close the tracker only once both automated and actual
-device evidence are recorded.
+The VM check passed installation, separate participant identities, private
+results, idle updates, conflicting actions, reconnect and host-restart replay,
+transport refusals, rotation and revocation. The final database held exactly
+three actions at revision 3. Platform/software versions and sanitized outcomes
+are in the [acceptance record](../acceptance/encrypted-lan.md#vm-network-check).
+The automated and accepted VM checks permit closure of #29 and #25. Live
+addresses, credentials, keys and raw logs stay outside the public repository.
 
 LAN setup may require an operator's normal OS network configuration. This
 tracker does not authorize automatic firewall/router changes, port forwarding,

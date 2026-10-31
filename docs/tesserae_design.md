@@ -9,7 +9,10 @@ reconciled without rewriting either history. A foreground, loopback-only
 development host with SQLite persistence exists (tracker #1); authenticated
 participants and the streaming CLI are complete for localhost under tracker #12.
 Its [combined acceptance](acceptance/localhost-multiplayer.md) passed on master
-at `a5f0a80`; LAN access remains the next multiplayer step.
+at `a5f0a80`. Encrypted LAN transport is implemented and accepted for M1-3,
+including a separately installed Ubuntu VM connecting to the Mac host; see the
+[network acceptance](acceptance/encrypted-lan.md). Physical-device Wi-Fi
+coverage is deferred under D-21.
 
 ## Purpose and experience
 
@@ -219,12 +222,12 @@ current repository links must use `master`.
 
 After tracker #12 closed, the owner selected encrypted connections for the first
 LAN version. Tracker [#25](https://github.com/coghex/tesserae/issues/25) and the
-[LAN delivery design](designs/encrypted_lan_design.md) describe the proposed
-implementation: explicit authenticated listener, certificate-verified `wss`,
-personal tokens, retained localhost defaults and an actual second-computer check.
-Children #26–#29 are planned. No LAN runtime behavior is implemented by this
-planning work. Public hosting, router automation, browser and game modules remain
-outside this tracker.
+[LAN delivery design](designs/encrypted_lan_design.md) describe the implemented
+explicit authenticated listener, certificate-verified `wss`, personal tokens
+and retained localhost defaults. Children #26–#29 are delivered, with combined
+checks and the owner-selected full-VM network acceptance recorded at `632fb7e`.
+D-21 supersedes the original physical second-computer gate. Public hosting,
+router automation, browser and game modules remain outside this tracker.
 
 ### D-20. Browser work is beyond Milestone 1
 
@@ -236,6 +239,20 @@ Preserve [browser-client-notes.md](browser-client-notes.md) for the later browse
 milestone: the same personal token/join protocol can be reused, while browser
 certificate trust needs its own operator/user experience. This does not add
 browser serving or system certificate changes to the active LAN tracker.
+
+### D-21. Accept a full VM for M1-3 network verification
+
+A second physical computer was unavailable, so the owner chose Ubuntu in UTM
+and authorized the installation and network test. The guest uses its own OS,
+network interface, public checkout and Python venv. Real `connect` processes
+inside it reach the Mac's explicit non-loopback TLS listener with a supplied
+certificate and personal token. The [recorded result](acceptance/encrypted-lan.md#vm-network-check)
+passed the runbook's multiplayer, recovery and credential checks.
+
+Accept this VM result with the existing automated checks to complete M1-3 and
+close #29/#25. Physical-device Wi-Fi isolation, device firewalls and independent
+physical-link behavior remain deferred coverage. Record that limitation wherever
+acceptance is claimed; the VM result does not establish physical-device coverage.
 
 ## Proposed implementation boundaries
 
@@ -382,8 +399,9 @@ proof that every rule implementation is correct.
     operator commands into user-only token files. A token travels only in a
     first `join` message, never in a URL or command. Names are labels, not
     authority.
-  - Authenticated mode is an explicit `--authenticated` serve option, still on
-    127.0.0.1 only. The fixed-identity development mode is unchanged, and
+  - Authenticated mode is an explicit `--authenticated` serve option, on
+    127.0.0.1 by default. Explicit non-loopback binding requires TLS and
+    authentication (D-19). Fixed-identity development mode remains loopback-only;
     neither mode falls back to the other.
   - Joining has a 10-second timeout and happens once per connection. Nothing
     about the game is disclosed before success, and every credential failure
@@ -403,11 +421,11 @@ proof that every rule implementation is correct.
     command unchanged. There is no event log, automatic resubmission, or
     rewritten `expected_revision`.
 
-  Still open beyond localhost: LAN binding/transport for a friend on another
-  computer, now planned under tracker #25 and D-19. Participants and credentials
-  (#14) are merged, as are the authenticated host (#15), snapshots and notifications
-  (#16), and the `tesserae connect` CLI (#17). Tracker #12's localhost scope
-  passed combined acceptance; the linked record above preserves the evidence.
+  Participants and credentials (#14), the authenticated host (#15), snapshots
+  and notifications (#16), and `tesserae connect` (#17) are merged. Tracker #12's
+  localhost scope passed combined acceptance. Explicit encrypted LAN transport
+  (#25) is also implemented and accepted under D-19/D-21; the linked acceptance
+  records preserve the evidence and deferred physical-device coverage.
 
 ## Technical references for the transport proposal
 

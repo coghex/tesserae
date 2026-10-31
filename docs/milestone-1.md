@@ -22,7 +22,9 @@ before calling the milestone complete.
 
 Acceptance includes two distinct player clients connected to the same host, with
 consistent saved state and correctly separated private information. Demonstrate
-a friend joining from another computer once the LAN join/identity flow exists.
+a separately installed client joining over the network. The owner accepted
+an Ubuntu VM for M1-3's network verification; physical-device Wi-Fi testing
+is deferred in the [acceptance record](acceptance/encrypted-lan.md).
 
 ## Should the CLI come first?
 
@@ -79,7 +81,7 @@ show startup/error logs and shut down cleanly with Ctrl-C.
   command can reuse the existing dice evaluator and persist its result/history.
 - Do not implicitly launch the server from a client or install a background service.
 
-### M1-3. Connect a thin CLI and prove several clients
+### M1-3. Connect a thin CLI and prove several clients — implemented and verified
 
 Depends on M1-2. The localhost portion is tracker
 [#12](https://github.com/coghex/tesserae/issues/12). Its session contract (#13)
@@ -91,10 +93,10 @@ CLI (#17) are merged. The localhost portion of M1-3 is complete: tracker #12's
 [combined acceptance](acceptance/localhost-multiplayer.md) passed on master at
 `a5f0a80`. Encrypted LAN access, tracker
 [#25](https://github.com/coghex/tesserae/issues/25), is implemented: TLS setup
-(#26), the host (#27), and the client (#28) are merged. The combined checks and
-[two-computer runbook](lan-runbook.md) (#29) are in review. The
-[acceptance record](acceptance/encrypted-lan.md) has the automated evidence and
-awaits a real second-computer check before M1-3 is complete.
+(#26), the host (#27), the client (#28), and combined checks/runbook (#29)
+are merged. The [acceptance record](acceptance/encrypted-lan.md) includes the
+passed Mac-host/Ubuntu-VM flow at `632fb7e`. M1-3 is complete under the
+owner-selected VM verification; physical-device Wi-Fi coverage is deferred.
 
 - Maintain a duplex connection: send stdin while displaying incoming messages.
 - Keep stdout machine-readable in pipe mode and diagnostics on stderr.
@@ -181,6 +183,8 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   merged, as are authenticated loopback hosting (#15) and shared revision
   notifications (#16) and the streaming CLI (#17). Combined acceptance passed;
   see the linked record above.
-- Encrypted LAN play (#25) is implemented and tested automatically (#26–#28
-  merged, #29 in review). M1-3 completes when a friend on a separate computer
-  has followed the [runbook](lan-runbook.md) and the result is recorded.
+- Encrypted LAN play (#25) is implemented and verified (#26–#29 delivered).
+  Automated checks and the separately installed Ubuntu VM's network check
+  passed; see the [acceptance record](acceptance/encrypted-lan.md). M1-3 is
+  complete under the agreed VM substitution. Physical-device Wi-Fi testing
+  is deferred. M1-4's original demo and minimal module loading are next.

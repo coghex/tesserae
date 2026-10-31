@@ -7,6 +7,14 @@ not change either computer's firewall, router, or services; any network
 settings below are steps you take yourself. Background and the certificate
 recipe are in [tls.md](tls.md).
 
+For M1-3 acceptance, the owner chose a full Ubuntu VM in UTM when a second
+physical computer was unavailable. That [recorded check](acceptance/encrypted-lan.md#vm-network-check)
+uses the same installation and player steps, with the guest connecting over
+UTM Shared Network to the Mac host's non-loopback address. Give the guest only
+its certificate copy and personal token; it uses its own checkout and venv.
+Physical-device Wi-Fi testing is deferred and remains useful before first
+play with friends on separate hardware.
+
 Addresses, paths, and names below are placeholders. `192.168.1.50` stands for
 the host's LAN address. Live databases, keys, and tokens stay outside the
 repository.
@@ -21,8 +29,9 @@ repository.
 | Host player's token (`alice.token`) | Yes | No |
 | Friend's token (`bob.token`) | Briefly, then deleted after handing it over | Yes, mode 0600, outside the checkout |
 
-The friend needs nothing else. There are no SSH keys and no system-wide
-certificate installation, and the friend does not need the `openssl` command.
+For game joining, the friend needs nothing else. Game authentication uses no
+SSH keys or system-wide certificate installation, and the friend does not
+need the `openssl` command.
 `--ca-file` trusts the one certificate explicitly.
 
 ## 1. Install Tesserae on both computers
@@ -165,7 +174,7 @@ Work through these together and note what you see:
 6. **Revocation.** `participant revoke` likewise stops the current token.
 
 Record the results in
-[acceptance/encrypted-lan.md](acceptance/encrypted-lan.md#two-computer-check).
+[acceptance/encrypted-lan.md](acceptance/encrypted-lan.md#vm-network-check).
 
 ## When something goes wrong
 
