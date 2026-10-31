@@ -1,0 +1,8 @@
+# The manifest for the Beacon example package (manifest schema 1).
+schema_version = 1
+entry_point = "rules:bundle"
+
+[[providers]]
+operation = "dice.roll.v1"
+provider = "builtin.dice"
+version = "1"

@@ -3,7 +3,8 @@
 A module defines its commands, its JSON state and what each participant may
 see of it. The host owns transport, identity, persistence, replay and
 revisions; a module owns its fields and its rules. Modules come from an
-explicit in-process catalog; nothing is discovered or imported from a path.
+explicit in-process catalog. The only code from a path is one package the
+operator names explicitly (tesserae/external.py); nothing is discovered.
 See docs/modules.md for the contract.
 """
 
@@ -211,6 +212,16 @@ class Catalog:
 
     def module_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._modules))
+
+    def extended(
+        self, modules: Iterable[Module] = (), providers: Iterable[Provider] = ()
+    ) -> "Catalog":
+        """A new catalog with these added. An ID already here is a duplicate,
+        never a replacement."""
+        return Catalog(
+            [*self._modules.values(), *modules],
+            [*self._providers.values(), *providers],
+        )
 
     def resolve(
         self,
