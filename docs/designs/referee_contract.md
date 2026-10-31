@@ -576,6 +576,14 @@ section 3 settings and a one-tool stub bridge:
 The probes say nothing about crash recovery, the step journal or client
 reconnects; those are specified above and tested by REF-2 to REF-5.
 
+REF-3's real probe (2026-10-31, `codex-cli 0.166.0`, through `CodexRun` with
+the referee folder set up by `tesserae referee setup` and logged in): a first
+run captured session `01a1937b-…` from `thread.started` and returned a valid
+reply; a second run resumed that session by ID and recalled a word given only
+in the first. The session file was saved in the referee's own Codex home, not
+`~/.codex`. With the bridge module not yet present (#67), runs that call no
+tool were unaffected.
+
 ## 14. An illustrative exchange
 
 This shows the shapes only; it is not a recorded run.
