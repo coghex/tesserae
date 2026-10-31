@@ -134,8 +134,8 @@ Depends on M1-4. Planned tracker [#49](https://github.com/coghex/tesserae/issues
 and the [private-module delivery contract](designs/private_module_design.md)
 split this work into eight children. The selected scene covers equipment,
 a skill check with a declared spendable resource, and a short ranged encounter.
-#50 records the exact scene and rules privately; #51 can independently begin
-external package loading. No M1-5 implementation is claimed yet.
+#50 records the exact scene and rules privately. The external package loader
+(#51) is implemented; host wiring (#52) and the private module are not.
 
 - Load the private module/content from a configured directory outside the repo.
 - Implement a bounded rules subset with explicit recorded interpretations.

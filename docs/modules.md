@@ -18,6 +18,10 @@ The [game store](game_store.md#modules-and-state) persists each game's
 binding and module state, and runs commands with `action_rejected` handling.
 `tesserae game create` makes a game bound to a bundled module (#39).
 
+`tesserae.external.load_module_dir` loads one trusted module package from an
+explicit directory ([External packages](#external-packages), #51). `game
+create` and `serve` do not use it yet (#52).
+
 `serve` loads the game's bound runtime once at startup, refusing an unknown or
 mismatched binding before it listens, and sends each joined participant the
 module's view of the game in join and sync snapshots (#41,
@@ -26,10 +30,13 @@ only, since `dice` has no view.
 
 ## Catalog and selection
 
-`Catalog(modules, providers)` is an explicit list. Nothing is discovered,
-scanned, or imported from a path, and nothing comes from a network message.
+`Catalog(modules, providers)` is an explicit list. Nothing is discovered or
+scanned, nothing comes from a network message, and code is imported from a
+path only for an [external package](#external-packages) the operator names.
 Duplicate module IDs, provider IDs, or command names within a module raise
-`ModuleError` when the catalog is built.
+`ModuleError` when the catalog is built. `catalog.extended(modules, providers)`
+returns a new catalog with more added, under the same rule: an existing ID is a
+duplicate, never a replacement.
 
 `catalog.resolve(module_id, version=None, providers=None)` returns a
 `Runtime`, or raises `ModuleError` before anything runs. By default it uses
@@ -139,6 +146,61 @@ Its view is None, so its snapshots stay metadata-only. `tesserae roll` and
 `relay` version 1 is the original demo module, with two commands:
 `relay.enlist` and `relay.repair`. It requires `dice.roll.v1` from
 `builtin.dice` 1, and authenticated participants. See [relay.md](relay.md).
+
+## External packages
+
+A module can also live outside Tesserae, in a directory the host operator names
+(#51). `tesserae.external.load_module_dir(directory)` loads it and returns a
+`Runtime`, or raises `ModuleError` before any game command runs. Loading executes the
+package's Python as the host user: it is trusted code, not a sandbox. Load once
+and share the runtime; there is no reloading. The original example is
+`tests/fixtures/modules/beacon/`.
+
+A package is a directory with `__init__.py` and a `module.toml`:
+
+```text
+beacon/
+  __init__.py
+  module.toml
+  rules.py        # the entry point
+  signals.py      # a helper, imported as `from . import signals`
+  signals.json    # data, read with importlib.resources
+```
+
+```toml
+schema_version = 1
+entry_point = "rules:bundle"
+
+[[providers]]
+operation = "dice.roll.v1"
+provider = "builtin.dice"
+version = "1"
+```
+
+- `schema_version` is 1. `entry_point` is `module:function`, with the module's
+  dotted name relative to the package. `providers` lists one choice for every
+  operation the module requires, and nothing else; a module with no
+  requirements has `providers = []`. All three keys are required, and no others
+  are allowed.
+- The function takes no arguments and returns
+  `tesserae.external.Bundle(module, providers=())`: the package's one `Module`
+  and any `Provider`s it adds.
+- The manifest alone selects providers. The module's own `providers` field is
+  ignored, and never fills a gap: a manifest that misses a required operation
+  is refused even when the Python defaults are complete. A choice may name a
+  bundled provider or one from the bundle, such as Beacon's `beacon.steady`,
+  which also supplies `dice.roll.v1`.
+- The module and its providers join the bundled catalog. An ID already there,
+  such as module `relay` or provider `builtin.dice`, is a duplicate and is
+  refused; nothing is replaced. The usual `resolve` checks then apply: host API
+  version, and every provider's operation and version.
+- The package is imported under a private package name of its own. Relative
+  imports and package data work; the working directory and `sys.path` are not
+  changed, and a file in the package cannot shadow an installed module. If
+  loading fails, nothing from the package stays imported. An exception from the
+  package's own code becomes `ModuleError`, with the original as its cause.
+
+The protocol and the CLI client know nothing about a package's fields.
 
 ## Example
 
