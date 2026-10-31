@@ -56,6 +56,21 @@ def _runtime(module_id: str, module_dir):
     return runtime
 
 
+def run_referee(args) -> int:
+    """`tesserae referee enable`: turn the AI referee on for an existing game.
+    It stays on; players' gameplay then goes through the referee."""
+    from .referee.store import RefereeStore
+
+    try:
+        with _existing(args.database) as store:
+            RefereeStore(store).enable()
+    except (StoreError, sqlite3.Error, OSError) as error:
+        print(f"tesserae referee {args.action}: {error}", file=sys.stderr)
+        return 1
+    print(f"Referee mode is on for {args.database}.")
+    return 0
+
+
 def run(args) -> int:
     try:
         return _COMMANDS[args.action](args)
