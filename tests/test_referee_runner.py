@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -41,19 +42,20 @@ class RunnerCase(unittest.TestCase):
     def mode(self, mode, **more):
         self.env.update(FAKE_CODEX_MODE=mode, **more)
 
-    def run_job(
-        self, prompt="Hello", session_id=None, timeout=10.0, job_id="j-1", sessions=None
-    ):
+    def run_job(self, prompt="Hello", session_id=None, timeout=10.0, job_id="j-1", sessions=None,
+                on_session=None, codex=CODEX):  # fmt: skip
         lock = JobLock(self.folder.lock_path(GAME))
         self.assertTrue(lock.try_acquire())
         self.addCleanup(lock.release)
         run = CodexRun(self.folder, game_id=GAME, job_id=job_id, host_run="run-1", lock=lock,
-                       codex=CODEX, timeout=timeout)  # fmt: skip
+                       codex=codex, timeout=timeout, grace=0.5)  # fmt: skip
+        if sessions is not None:
+            on_session = sessions.append
         saved = os.environ.copy()
         os.environ.update(self.env)
         try:
             run.start(prompt, session_id=session_id, token="secret-token-1",
-                      on_session=(sessions.append if sessions is not None else None))  # fmt: skip
+                      on_session=on_session)  # fmt: skip
         finally:
             os.environ.clear()
             os.environ.update(saved)
@@ -269,6 +271,116 @@ class FailureTests(RunnerCase):
         result = run.wait()
         self.assertEqual((result.outcome, result.error), ("interrupted", "shutdown"))
         self.assertEqual(JobLock.read(self.folder.lock_path(GAME))["state"], "ended")
+
+
+class ReviewRegressionTests(RunnerCase):
+    """The review of 18b2625 (R76-1 to R76-4)."""
+
+    def wait_for(self, path: Path):
+        deadline = time.monotonic() + 10
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(path.exists())
+
+    def stubborn(self, child_file: Path) -> int:
+        self.wait_for(child_file)
+        child = int(child_file.read_text())
+        self.addCleanup(lambda: alive(child) and os.kill(child, signal.SIGKILL))
+        return child
+
+    def test_a_timeout_also_stops_a_helper_that_ignores_sigterm(self):  # R76-1
+        child_file = self.tmp / "child"
+        self.mode("stubborn_child", FAKE_CODEX_CHILD=str(child_file))
+        result = self.run_job(timeout=2.0)
+        child = self.stubborn(child_file)
+        self.assertEqual((result.outcome, result.error), ("interrupted", "timeout"))
+        self.assertFalse(alive(child))  # gone before wait() returned
+
+    def test_stop_also_stops_a_helper_that_ignores_sigterm(self):  # R76-1
+        child_file = self.tmp / "child"
+        self.mode("stubborn_child", FAKE_CODEX_CHILD=str(child_file))
+        lock = JobLock(self.folder.lock_path(GAME))
+        self.assertTrue(lock.try_acquire())
+        self.addCleanup(lock.release)
+        run = CodexRun(self.folder, game_id=GAME, job_id="j-1", host_run="r", lock=lock,
+                       codex=CODEX, grace=0.5)  # fmt: skip
+        os.environ.update(self.env)
+        try:
+            run.start("Hi", session_id=None, token="t")
+        finally:
+            for key in self.env:
+                os.environ.pop(key)
+        child = self.stubborn(child_file)
+        run.stop()
+        self.assertFalse(alive(child))  # stop() returns only once the group is gone
+        self.assertEqual(run.wait().error, "shutdown")
+
+    def test_a_session_that_cannot_be_saved_fails_the_run(self):  # R76-2
+        def cannot_save(thread_id):
+            raise RuntimeError("Session persistence failed")
+
+        uncaught = []
+        hook = threading.excepthook
+        threading.excepthook = uncaught.append
+        self.addCleanup(setattr, threading, "excepthook", hook)
+        self.mode("wait_for_file", FAKE_CODEX_GO=str(self.tmp / "never"))
+        started = time.monotonic()
+        result = self.run_job(timeout=30.0, on_session=cannot_save)
+        self.assertEqual((result.outcome, result.error, result.session_id),
+                         ("failed", "runner_failed", "fake-thread-1"))  # fmt: skip
+        self.assertIn("Session persistence failed", result.details[0])
+        self.assertIsNone(result.reply)
+        self.assertLess(time.monotonic() - started, 10)  # stopped, not left to time out
+        self.assertEqual(uncaught, [])
+
+    def test_a_missing_executable_is_a_runner_failure(self):  # R76-3
+        result = self.run_job(codex=(str(self.tmp / "no-such-codex"),))
+        self.assertEqual((result.outcome, result.error), ("failed", "runner_failed"))
+        self.assertIn("could not be started", result.details[0])
+        self.assertTrue(self.run._log.closed)
+        self.assertEqual(
+            JobLock.read(self.folder.lock_path(GAME)),
+            {"state": "ended", "job_id": "j-1"},
+        )
+        self.assertEqual(
+            json.loads(self.run.diagnostics.read_text().splitlines()[-1])["tesserae"],
+            "end",
+        )
+
+    def test_replies_are_checked_against_the_whole_schema(self):  # R76-4
+        message = {"audience": "table", "text": "Hi"}
+        good = {
+            "messages": [message],
+            "choices": {"ask": [], "resolve": []},
+            "narrated": [],
+        }
+        bad = {
+            "null choice lists": {**good, "choices": {"ask": None, "resolve": False}},
+            "no messages": {**good, "messages": []},
+            "nine messages": {**good, "messages": [message] * 9},
+            "message without text": {**good, "messages": [{"audience": "table"}]},
+            "unknown audience": {**good, "messages": [{"audience": "everyone", "text": "Hi"}]},
+            "empty text": {**good, "messages": [{"audience": "table", "text": ""}]},
+            "text too long": {**good, "messages": [{"audience": "table", "text": "x" * 4001}]},
+            "extra message key": {**good, "messages": [{**message, "to": "bob"}]},
+            "ask without question": {**good, "choices": {"ask": [{"participant_id": "p"}], "resolve": []}},
+            "question too long": {**good, "choices": {
+                "ask": [{"participant_id": "p", "question": "x" * 1001}], "resolve": []}},
+            "resolve of a number": {**good, "choices": {"ask": [], "resolve": [3]}},
+            "narrated number": {**good, "narrated": [{"job_id": "j", "step_id": 1}]},
+            "seventeen narrated": {**good, "narrated": [{"job_id": "j", "step_id": "s"}] * 17},
+        }  # fmt: skip
+        for number, (name, reply) in enumerate(bad.items()):
+            with self.subTest(name):
+                self.mode("custom", FAKE_CODEX_REPLY=json.dumps(reply))
+                result = self.run_job(job_id=f"j-{number}")
+                self.assertEqual(
+                    (result.outcome, result.error), ("failed", "malformed_reply")
+                )
+        full = {**good, "choices": {"ask": [{"participant_id": "p", "question": "Go?"}],
+                                    "resolve": ["q"]}, "narrated": [{"job_id": "j", "step_id": "s"}]}  # fmt: skip
+        self.mode("custom", FAKE_CODEX_REPLY=json.dumps(full))
+        self.assertEqual(self.run_job(job_id="j-full").reply, full)
 
 
 HOST = """

@@ -119,8 +119,10 @@ later jobs:  codex exec resume SESSION_ID --json --skip-git-repo-check \
 - **Diagnostics.** Every stdout line and stderr goes to the job's diagnostics
   file. None of it is ever sent to a player.
 - **Limits.** A job ends after 300 s (operator-configurable). The host then
-  stops the process group it started (SIGTERM, then SIGKILL after 10 s) and
-  never touches any other process.
+  stops the process group it started (SIGTERM, then SIGKILL after 10 s to
+  whatever is left) and never touches any other process. A run counts as over
+  only once every member of that group is gone, not just Codex itself, so a
+  helper that ignores SIGTERM cannot outlive its job.
 
 ### Who is still running: the job lock
 
@@ -413,8 +415,9 @@ reply tells their players about; a reply always narrates its own job's steps.
 Each listed step's sender must be able to see at least one of the reply's
 messages, or the reply is refused: a result is only acknowledged once it can
 have reached its player, and anything not listed stays waiting. A
-reply that does not parse or validate fails the job (`malformed_reply`), and
-nothing from it is published.
+reply that does not parse, or does not match this schema everywhere (types,
+required keys and limits, checked by the runner), fails the job
+(`malformed_reply`), and nothing from it is published.
 
 ### Limits
 
@@ -451,7 +454,8 @@ must be complete; the referee is told to read every page on a new session.
 
 | What fails | Detected by | Result |
 |---|---|---|
-| Codex will not start, or exits non-zero before `thread.started` | exit status | job `failed` (`runner_failed`); no session change; busy released |
+| Codex will not start, or exits non-zero before `thread.started` | launch error or exit status | job `failed` (`runner_failed`); no session change; busy released |
+| The host cannot save the session ID from `thread.started` | the save raises | the run is stopped; job `failed` (`runner_failed`); the ID is kept in the run's result and diagnostics |
 | Exit with no valid final reply | missing or invalid `LAST_MESSAGE` | job `failed` (`malformed_reply`), `narrated` false; its committed steps stay and are listed to the next job |
 | Timeout | the 300 s limit | process group stopped; job `interrupted`; committed steps stay |
 | Host stops cleanly during a job (SIGINT) | shutdown | the host stops the job's process group, waits for the lock, and marks the job `interrupted` |

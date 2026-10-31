@@ -340,22 +340,38 @@ def stop_orphan(lock_path: Path) -> str:
             )
     except ProcessLookupError:
         return "The job's Codex has already exited."
-    _stop_group(pgid, lambda: not JobLock.held(lock_path))
+    if not _stop_group(pgid, lambda: not _group_alive(pgid)):
+        raise RunnerError(f"Process group {pgid} survived SIGKILL; check it by hand.")
     return f"Stopped the job's Codex (process group {pgid})."
 
 
-def _stop_group(pgid: int, gone, grace: float = STOP_GRACE):
-    """SIGTERM a process group we own, then SIGKILL it after `grace` seconds."""
+def _group_alive(pgid: int) -> bool:
+    """Whether any process, a zombie included, is still in the group."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def _stop_group(pgid: int, gone, grace: float = STOP_GRACE) -> bool:
+    """SIGTERM a process group we own, then SIGKILL whatever is left after
+    `grace` seconds. True once `gone()` (every member, not only the leader)."""
     for signum in (signal.SIGTERM, signal.SIGKILL):
+        if gone():
+            return True
         try:
             os.killpg(pgid, signum)
         except ProcessLookupError:
-            return
+            return gone()
         deadline = time.monotonic() + grace
         while time.monotonic() < deadline:
             if gone():
-                return
+                return True
             time.sleep(0.05)
+    return gone()
 
 
 # --- One Codex run per job (contract section 4) ----------------------------------
@@ -384,17 +400,26 @@ class CodexRun:
     """
 
     def __init__(self, folder: RefereeDir, *, game_id: str, job_id: str, host_run: str,
-                 lock: JobLock, codex=("codex",), timeout: float = DEFAULT_TIMEOUT):  # fmt: skip
+                 lock: JobLock, codex=("codex",), timeout: float = DEFAULT_TIMEOUT,
+                 grace: float = STOP_GRACE):  # fmt: skip
         self.folder, self.game_id, self.job_id, self.host_run = (
             folder,
             game_id,
             job_id,
             host_run,
         )
-        self.lock, self.codex, self.timeout = lock, tuple(codex), timeout
+        self.lock, self.codex, self.timeout, self.grace = (
+            lock,
+            tuple(codex),
+            timeout,
+            grace,
+        )
         self.process = None
         self.session_id = None
+        self.version = None
         self._stopped = None
+        self._failure = None  # (error, detail) found while running
+        self._log = None
         self._stderr = []
 
     @property
@@ -415,35 +440,52 @@ class CodexRun:
     ):
         """Launch Codex; `on_session(thread_id)` is called as soon as the
         `thread.started` event is read, before anything else is trusted. It runs
-        on a reader thread: hand off to the store's own thread if needed."""
+        on a reader thread: hand off to the store's own thread if needed. If it
+        raises, the run is stopped and fails (`runner_failed`).
+
+        If Codex cannot be launched, start() returns anyway and wait() reports
+        `runner_failed`, with the diagnostics closed and the lock record ended.
+        """
         if self.lock.fd is None:
             raise RunnerError("Take the game's job lock before starting a run.")
-        self.version = codex_version(self.codex)
-        self.diagnostics.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.reply_path.unlink(missing_ok=True)
-        self._log = self.diagnostics.open("a")
-        self._log.write(json.dumps({"tesserae": "start", "job_id": self.job_id, "resume": session_id,
-                                    "codex_version": self.version, "argv": self.argv(session_id)}) + "\n")  # fmt: skip
         self.session_id = session_id
         self._on_session = on_session
-        self.lock.write(
-            {"state": "starting", "job_id": self.job_id, "host_run": self.host_run}
-        )
-        env = {**os.environ, "CODEX_HOME": str(self.folder.codex_home),
-               "TESSERAE_BRIDGE_SOCKET": str(self.folder.socket_path(self.game_id)),
-               "TESSERAE_BRIDGE_TOKEN": token}  # fmt: skip
-        self.process = subprocess.Popen(
-            self.argv(session_id), cwd=self.folder.workspace, env=env, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-            pass_fds=(self.lock.fd,),
-        )  # fmt: skip
-        identity = settled_identity(self.process.pid) or {}
-        self.lock.write({"state": "running", "job_id": self.job_id, "host_run": self.host_run,
-                         "pid": self.process.pid, "pgid": self.process.pid, **identity})  # fmt: skip
-        self._readers = [threading.Thread(target=self._read_events, daemon=True),
-                         threading.Thread(target=self._read_stderr, daemon=True)]  # fmt: skip
-        for reader in self._readers:
-            reader.start()
+        try:
+            self.version = codex_version(self.codex)
+            self.diagnostics.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.reply_path.unlink(missing_ok=True)
+            self._log = self.diagnostics.open("a")
+            self._log.write(json.dumps({"tesserae": "start", "job_id": self.job_id, "resume": session_id,
+                                        "codex_version": self.version, "argv": self.argv(session_id)}) + "\n")  # fmt: skip
+            self.lock.write(
+                {"state": "starting", "job_id": self.job_id, "host_run": self.host_run}
+            )
+            env = {**os.environ, "CODEX_HOME": str(self.folder.codex_home),
+                   "TESSERAE_BRIDGE_SOCKET": str(self.folder.socket_path(self.game_id)),
+                   "TESSERAE_BRIDGE_TOKEN": token}  # fmt: skip
+            self.process = subprocess.Popen(
+                self.argv(session_id), cwd=self.folder.workspace, env=env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                pass_fds=(self.lock.fd,),
+            )  # fmt: skip
+        except OSError as error:
+            self._failure = ("runner_failed", f"Codex could not be started: {error}")
+            self._finish({"tesserae": "end", "launch_error": str(error)})
+            return
+        try:
+            identity = settled_identity(self.process.pid) or {}
+            self.lock.write({"state": "running", "job_id": self.job_id, "host_run": self.host_run,
+                             "pid": self.process.pid, "pgid": self.process.pid, **identity})  # fmt: skip
+            self._readers = [threading.Thread(target=self._read_events, daemon=True),
+                             threading.Thread(target=self._read_stderr, daemon=True)]  # fmt: skip
+            for reader in self._readers:
+                reader.start()
+        except BaseException:
+            self._end_group()  # it did start: nothing of it outlives this
+            self._finish(
+                {"tesserae": "end", "launch_error": "setup after launch failed"}
+            )
+            raise
         try:
             self.process.stdin.write(prompt.encode())
             self.process.stdin.close()
@@ -467,7 +509,18 @@ class CodexRun:
                 if isinstance(thread_id, str) and thread_id:
                     self.session_id = thread_id
                     if self._on_session is not None:
-                        self._on_session(thread_id)
+                        try:
+                            self._on_session(thread_id)
+                        except Exception as error:
+                            # Without the saved ID the next job cannot resume:
+                            # stop the run (on another thread, so this one keeps
+                            # draining stdout) and fail it, keeping the ID.
+                            self._failure = (
+                                "runner_failed",
+                                f"The session ID was not saved: {error!r}",
+                            )
+                            threading.Thread(target=self.stop, args=("session_not_saved",),
+                                             daemon=True).start()  # fmt: skip
 
     def _read_stderr(self):
         total = 0
@@ -478,30 +531,57 @@ class CodexRun:
                 self._stderr.append(text)
 
     def stop(self, reason: str = "shutdown"):
-        """End the run: SIGTERM, then SIGKILL, to this run's own process group."""
-        self._stopped = reason
-        if self.process is not None and self.process.poll() is None:
-            _stop_group(self.process.pid, lambda: self.process.poll() is not None)
+        """End the run: SIGTERM, then SIGKILL, to this run's own process group,
+        returning once every member of the group is gone."""
+        if self._stopped is None:
+            self._stopped = reason
+        if self.process is not None:
+            self._end_group()
+
+    def _end_group(self) -> bool:
+        """Stop and reap this run's process group: the leader we started (it
+        leads its own group) and anything it left there, such as the bridge."""
+        pgid = self.process.pid
+        return _stop_group(
+            pgid,
+            lambda: self.process.poll() is not None and not _group_alive(pgid),
+            self.grace,
+        )
 
     def wait(self) -> RunResult:
+        """Block until the run ends. Returns only once its whole process group
+        is gone, then closes the diagnostics and ends the lock record."""
+        if self.process is None:  # it never started
+            error, detail = self._failure
+            return RunResult("failed", error, self.session_id, codex_version=self.version,
+                             details=[detail])  # fmt: skip
         try:
             self.process.wait(timeout=self.timeout)
         except subprocess.TimeoutExpired:
             self.stop("timeout")
-            self.process.wait()
+        cleaned = self._end_group()  # helpers it left behind go with it
         for reader in self._readers:
             reader.join(timeout=5)
         stderr = "".join(self._stderr)
-        self._log.write(json.dumps({"tesserae": "end", "exit_code": self.process.returncode,
-                                    "stderr": stderr}) + "\n")  # fmt: skip
-        self._log.close()
-        self.lock.write({"state": "ended", "job_id": self.job_id})
+        self._finish({"tesserae": "end", "exit_code": self.process.returncode,
+                      "group_stopped": cleaned, "stderr": stderr})  # fmt: skip
         result = self._result(stderr)
         result.codex_version = self.version
+        if not cleaned:
+            result.details.append("Its process group survived SIGKILL.")
         return result
+
+    def _finish(self, entry: dict):
+        if self._log is not None:
+            self._log.write(json.dumps(entry) + "\n")
+            self._log.close()
+        self.lock.write({"state": "ended", "job_id": self.job_id})
 
     def _result(self, stderr: str) -> RunResult:
         code, session = self.process.returncode, self.session_id
+        if self._failure is not None:
+            error, detail = self._failure
+            return RunResult("failed", error, session, exit_code=code, details=[detail])
         if self._stopped is not None:
             return RunResult("interrupted", self._stopped, session, exit_code=code)
         if SESSION_MISSING in stderr:
@@ -519,12 +599,43 @@ class CodexRun:
 
 
 def _reply_shape(reply) -> bool:
-    """The reply schema's structure; the store checks audiences and names."""
-    return (
-        isinstance(reply, dict)
-        and set(reply) == {"messages", "choices", "narrated"}
-        and isinstance(reply["messages"], list)
-        and isinstance(reply["narrated"], list)
-        and isinstance(reply["choices"], dict)
-        and set(reply["choices"]) == {"ask", "resolve"}
-    )
+    """Whether the reply matches REPLY_SCHEMA; the store then checks who the
+    names and audiences refer to."""
+    return _matches(reply, REPLY_SCHEMA)
+
+
+_SCHEMA_KEYWORDS = {"type", "enum", "properties", "required", "additionalProperties",
+                    "items", "minItems", "maxItems", "minLength", "maxLength"}  # fmt: skip
+
+
+def _matches(value, schema: dict) -> bool:
+    """The JSON Schema subset REPLY_SCHEMA uses; any other keyword is an error,
+    so the schema cannot grow a rule this silently skips."""
+    if unknown := set(schema) - _SCHEMA_KEYWORDS:
+        raise ValueError(f"Unsupported schema keywords: {sorted(unknown)}")
+    if "enum" in schema:
+        return isinstance(value, str) and value in schema["enum"]
+    kind = schema["type"]
+    if kind == "object":
+        properties = schema.get("properties", {})
+        return (
+            isinstance(value, dict)
+            and set(schema.get("required", ())) <= set(value)
+            and (schema.get("additionalProperties", True) or set(value) <= set(properties))
+            and all(_matches(item, properties[key]) for key, item in value.items() if key in properties)
+        )  # fmt: skip
+    if kind == "array":
+        return (
+            isinstance(value, list)
+            and schema.get("minItems", 0)
+            <= len(value)
+            <= schema.get("maxItems", len(value))
+            and all(_matches(item, schema["items"]) for item in value)
+        )
+    if kind == "string":
+        return isinstance(value, str) and (
+            schema.get("minLength", 0)
+            <= len(value)
+            <= schema.get("maxLength", len(value))
+        )
+    raise ValueError(f"Unsupported schema type: {kind!r}")

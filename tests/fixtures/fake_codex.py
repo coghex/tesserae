@@ -58,6 +58,12 @@ print("not json at all", flush=True)
 if mode == "wait_for_file":  # holds until the test says go
     while not Path(os.environ["FAKE_CODEX_GO"]).exists():
         time.sleep(0.02)
+if mode == "stubborn_child":  # a helper that ignores SIGTERM; the leader does not
+    subprocess.Popen([sys.executable, "-c", (
+        "import os, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        "open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)"
+    ), os.environ["FAKE_CODEX_CHILD"]])  # fmt: skip
+    time.sleep(60)
 if mode in ("slow", "slow_with_child"):
     if mode == "slow_with_child":  # a grandchild in the same group, like an MCP server
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -67,6 +73,8 @@ if mode == "nonzero_after_session":
     sys.exit(3)
 if mode == "malformed":
     reply_path.write_text("{not json")
+elif mode == "custom":
+    reply_path.write_text(os.environ["FAKE_CODEX_REPLY"])
 elif mode == "wrong_shape":
     reply_path.write_text(json.dumps({"messages": "hello"}))
 elif mode != "no_reply":
