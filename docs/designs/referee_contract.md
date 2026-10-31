@@ -117,13 +117,44 @@ later jobs:  codex exec resume SESSION_ID --json --skip-git-repo-check \
   stops the process group it started (SIGTERM, then SIGKILL after 10 s) and
   never touches any other process.
 
+### Who is still running: the job lock
+
+A host crash or SIGKILL does not stop a child in its own process group, so the
+host never assumes a job's Codex died with it. Liveness comes from a lock the
+kernel releases only when every holder has exited:
+
+- Before starting a job, the host opens `run/<game_id>.lock` and takes an
+  exclusive `flock` on it, then starts Codex in a new process group with that
+  file descriptor inherited (`pass_fds`). The lock is held while the host *or*
+  the Codex process tree still holds it. The host writes the job ID, the process
+  group ID and its own run ID into the file, for operators.
+- After Codex exits normally, the host closes its own descriptor; the lock is
+  free again.
+- **At host startup**, for a job still marked `running`, the host tries the lock
+  without blocking:
+  - Acquired: nothing from that job is alive. The job becomes `interrupted`
+    (section 10) and its steps are reconciled (section 6).
+  - Not acquired: the old Codex is still running. The game stays busy, players
+    get `referee_busy`, and the host retries the lock every 5 s. When it gets
+    it, it finishes the job the same way.
+- **Bridge access ends with the host run.** Each host run has a new run ID, and
+  a job token is valid only for the run that issued it. An orphaned Codex's
+  bridge calls are refused (its socket is gone, and its token is stale), so it
+  can change nothing more and soon stops.
+- `tesserae referee stop --database DB` (operator) sends SIGTERM, then SIGKILL,
+  to the process group recorded in the lock file, but only while that lock is
+  still held, which shows the group is the job's and not a reused ID.
+- No new job starts until the lock is free: there is never a second Codex
+  process for a game.
+
 ### Prompts
 
 `AGENTS.md` (written by setup) holds the standing instructions, the same for
 every game: you are the referee for a tabletop game; the bridge tools are your
 only way to see or change it, and their results are the truth; never invent
 rolls or outcomes; call `act` only for what the sender has clearly chosen, and
-ask (with `awaiting`) when a consequential choice is missing; state stakes and
+ask (with `choices.ask`) when a consequential choice is missing, and resolve a
+choice (`choices.resolve`) once it is answered; state stakes and
 any declared resource before a roll; questions and talk need no step; keep
 hidden preparation and other players' private details out of table messages;
 reply only in the required JSON shape.
@@ -137,7 +168,8 @@ Call get_context before anything else. Game revision now: 2.
 ```
 
 A private input says "privately to you" instead of "to the table". The first job
-of a session adds "This is the start of the game's referee conversation."; a
+of a session adds "This is the start of the game's referee conversation. Read
+every page of the transcript with get_transcript before replying."; a
 job after an interruption adds "The previous job was interrupted; get_context
 lists what it committed. Do not repeat those steps."
 
@@ -151,8 +183,9 @@ own sequence.
 | `referee` | One row: `enabled`, `session_id` (null before the first job), `state` (`ok` or `needs_rebuild`) |
 | `referee_sessions` | Every session ID the game has used, with `started_at` and `ended_reason` (kept after a rebuild) |
 | `referee_inputs` | `participant_id`, `request_id`, `text`, `private`, `received_at`; unique on (participant, request) |
-| `referee_jobs` | `job_id`, `input_id`, `state`, `revision_at_start`, `started_at`, `ended_at`, `error`, `awaiting` (participant ID and question, or null) |
-| `referee_steps` | `job_id`, `step_id`, `kind` (`act` or `referee_act`), the command, its arguments, the mapped `request_id`, `status`, `result` |
+| `referee_jobs` | `job_id`, `input_id`, `state`, `host_run`, `revision_at_start`, `started_at`, `ended_at`, `error`, `narrated` (whether its reply was published) |
+| `referee_steps` | `job_id`, `step_id` (unique per job, across both kinds), `kind` (`act` or `referee_act`), the acting context, the command, its arguments, the mapped `request_id`, `status` (`intended`, `committed`, `refused`, `not_committed`), `result` |
+| `referee_choices` | At most one pending choice per participant: `participant_id`, `question`, `asked_in_job`, `asked_at` |
 | `referee_messages` | `seq`, `job_id`, `sender` (`referee` or a participant ID), `audience` (`table` or a list of participant IDs), `text`, `created_at` |
 | `referee_rulings` | `id`, `job_id`, `text`, `scope`, `created_at` |
 
@@ -164,17 +197,31 @@ stays on. In referee mode, players' raw gameplay commands are refused (section
 
 | State | Busy? | Next |
 |---|---|---|
-| `running` | yes | `completed`, `awaiting_input`, `failed`, `interrupted` |
+| `running` | yes | `completed`, `failed`, `interrupted` |
 | `completed` | no | (final) |
-| `awaiting_input` | no | (final for this job; the answer starts a new job) |
 | `failed` | no | (final; `error` says why) |
 | `interrupted` | no | (final; see section 10) |
 
-The game is busy exactly while one job is `running`.
+The game is busy exactly while one job is `running`, or while the job lock is
+still held after a crash (section 4).
 
-A pending choice (`awaiting`) releases busy. The named participant's next input
-is their answer and starts a new job; anyone else's input also starts a job,
-and `get_context` still shows the pending choice. A new reply replaces it.
+### Pending choices
+
+A pending choice belongs to the game, not to a job, so it survives other
+players' conversation:
+
+- The referee sets one with the reply's `choices.ask` (section 7): at most one
+  per participant; asking that participant again replaces it.
+- It ends only when the referee lists that participant in `choices.resolve`,
+  normally after acting on their answer, or when it asks them something new.
+- Anything else leaves it alone: another player's talk, a question from the
+  addressed player, or a reply that sets or resolves nothing.
+- Any input from anyone starts a job once the game is idle; `get_context` shows
+  every pending choice, with who it is for.
+- Example (a test): Alice is asked "Try the repair now?"; Bob asks the referee a
+  question and gets an answer (Alice's choice is unchanged); Alice asks "What
+  happens if it fails?" and is answered (still unchanged); Alice says "Yes, go":
+  the referee acts and resolves her choice.
 
 ### Accepting input
 
@@ -191,6 +238,19 @@ One transaction:
 Two simultaneous submissions serialize on the store's write lock: one gets
 `accepted`, the other `referee_busy`.
 
+Two cases that look alike, and stay different:
+
+- **An accepted input, retried** (even while busy): the same `request_id`
+  returns its recorded state and any reply. It never starts a second job.
+- **A busy-refused input, sent again later:** it was never stored, so once the
+  game is idle it is a fresh acceptance and starts a job. Nothing is queued in
+  between, and no job is invented for the refused attempt.
+
+**The sender's last input.** `referee_status` also returns the caller's own most
+recent accepted input: its `request_id`, text, privacy, job ID and job state.
+A newly started client uses it to recover (section 12), so a reply lost with the
+old client never forces the player to retype, which would be a new request.
+
 ## 6. The bridge: the whitelisted scripts
 
 `python -m tesserae.referee.bridge` is an MCP stdio server that Codex starts.
@@ -201,7 +261,8 @@ These are the only tools, and the only way Codex sees or changes the game.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `get_context` | none | The module's complete referee context for the bounded scene (`Module.referee_context(state)`), the participants (ID, name), this job's input and sender, any pending choice, the last 50 conversation messages, recorded rulings, and committed steps of any interrupted job |
+| `get_context` | none | The module's complete referee context for the bounded scene (`Module.referee_context(state)`), the participants (ID, name), this job's input and sender, every pending choice, all recorded rulings, the committed steps of every earlier job whose reply was never published, and the first page of the conversation transcript |
+| `get_transcript` | `after_seq` | The next page of the complete conversation transcript (up to 200 messages and `next_after_seq`), so nothing is ever cut off |
 | `get_view` | `participant_id` | That participant's own snapshot view, so the referee knows what they can see |
 | `list_actions` | none | The commands the job's sender may use now, with descriptions and stakes (`Module.referee_actions(state, participant_id)`), and any referee-only commands |
 | `act` | `step_id`, `command`, `args` | Runs a player command **as the job's sender** (never anyone else), through the normal store path, at the current revision |
@@ -213,16 +274,29 @@ These are the only tools, and the only way Codex sees or changes the game.
   `{"ok": true, "result": {...}}` or `{"ok": false, "error": {"code": "...",
   "message": "..."}}`. The host runs mutations in its normal worker path, so
   other players still get their revision notifications.
-- **Step identity.** `step_id` is chosen by Codex, 1 to 64 characters. The host
-  maps it to the request ID `ref:<job_id>:<step_id>` in the acting context's
-  namespace, so the store's existing exact replay applies: the same step returns
-  its recorded result; the same step ID with other content is
-  `request_conflict`.
+- **Step identity.** `step_id` is chosen by Codex, 1 to 64 characters, and is
+  unique within the job across `act` and `referee_act`. The host maps it to the
+  request ID `ref:<job_id>:<step_id>` in the acting context's namespace, so the
+  store's existing exact replay applies within a context. The `referee_steps`
+  row decides first: the same step ID with another kind, command or arguments
+  is `request_conflict` even if the other kind would act in another context.
+- **The step journal and its recovery boundary.** For `act` and `referee_act`:
+  1. Insert the step as `intended` (with its kind, context, command, arguments
+     and mapped request ID) and commit. A conflicting row stops here.
+  2. Run the command through `GameStore.execute`, which commits state, result,
+     history and revision atomically, or refuses with nothing changed.
+  3. Record `committed` with the result, or `refused` with the error.
+
+  A crash between 2 and 3 leaves an `intended` row. Reconciliation (at startup,
+  and before any new job) looks up its mapped request ID in the acting context's
+  command history: found means `committed`, with the recorded result; absent
+  means `not_committed`. So a committed action is always found, and one that
+  never committed is never reported as done.
 - **Errors** are tool results, not crashes: `action_rejected`,
   `unsupported_command`, `invalid_request` and `request_conflict` come back with
   their messages so the referee can explain them.
-- Every call and result is recorded in `referee_steps` (for mutations) and the
-  diagnostics file.
+- Every call and result is recorded in the diagnostics file, and every mutation
+  in `referee_steps` as above.
 
 ## 7. Messages and the reply schema
 
@@ -243,13 +317,14 @@ Host to client:
 | `{"type": "accepted", "request_id", "job_id", "seq"}` | Reply to a new `say` |
 | `{"type": "error", "request_id", "code": "referee_busy", "message", "job": {"state", "for"}}` | Reply while another job runs |
 | `{"type": "error", "code": "referee_mode", ...}` | Reply to a raw gameplay `command` in referee mode |
-| `{"type": "referee_status", "state": "idle" or "busy", "awaiting": {"participant_id", "name"} or null, "last_seq"}` | Reply to `referee_status` |
+| `{"type": "referee_status", "state": "idle" or "busy", "choices": [{"participant_id", "name", "question"}], "last_seq", "your_last_input": {"request_id", "text", "private", "job_id", "job_state"} or null}` | Reply to `referee_status` |
 | `{"type": "messages", "messages": [...]}` | Reply to `messages`: the caller's own audience only |
 | `{"type": "message", "seq", "from": {"kind": "referee"} or {"kind": "player", "name"}, "audience": "table" or "private", "text"}` | Unsolicited, to each recipient as it is stored |
 | `{"type": "referee", "state": "busy" or "idle"}` | Unsolicited, to everyone, when a job starts or ends |
 
-The snapshot gains `"referee": {"state", "awaiting", "last_seq"}` in referee
-mode. A retry of a `say` gets the same `accepted`, plus any stored reply
+The snapshot gains `"referee": {"state", "choices", "last_seq",
+"your_last_input"}` in referee mode, with only the choices addressed to the
+viewer. A retry of a `say` gets the same `accepted`, plus any stored reply
 messages. Sync and joins never wait for a job.
 
 ### Audience
@@ -269,28 +344,37 @@ messages. Sync and joins never wait for a job.
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["messages", "awaiting"],
+  "required": ["messages", "choices"],
   "properties": {
     "messages": {"type": "array", "minItems": 1, "maxItems": 8, "items": {
       "type": "object", "additionalProperties": false, "required": ["audience", "text"],
       "properties": {
         "audience": {"enum": ["table", "sender"]},
         "text": {"type": "string", "minLength": 1, "maxLength": 4000}}}},
-    "awaiting": {"anyOf": [{"type": "null"}, {
-      "type": "object", "additionalProperties": false, "required": ["participant_id", "question"],
-      "properties": {"participant_id": {"type": "string"}, "question": {"type": "string", "maxLength": 1000}}}]}
+    "choices": {
+      "type": "object", "additionalProperties": false, "required": ["ask", "resolve"],
+      "properties": {
+        "ask": {"type": "array", "maxItems": 4, "items": {
+          "type": "object", "additionalProperties": false, "required": ["participant_id", "question"],
+          "properties": {"participant_id": {"type": "string"}, "question": {"type": "string", "maxLength": 1000}}}},
+        "resolve": {"type": "array", "maxItems": 4, "items": {"type": "string"}}}}
   }
 }
 ```
 
-`sender` means "privately to this job's sender". `awaiting` names whose choice
-is pending; the host checks it is a participant. A reply that does not parse
-or validate fails the job (`malformed_reply`), and nothing from it is published.
+`sender` means "privately to this job's sender". `choices.ask` sets or replaces
+pending choices and `choices.resolve` ends them (section 5); both may be empty,
+and empty changes nothing. The host checks every named participant exists. A
+reply that does not parse or validate fails the job (`malformed_reply`), and
+nothing from it is published.
 
 ### Limits
 
 Player text: 1 to 2,000 characters. Messages per reply: 8, each up to 4,000.
-`get_context` returns at most the last 50 messages.
+The transcript is never truncated: `get_context` returns its first page and
+`get_transcript` the rest. The page size limits one tool result, not what the
+referee can read. A rebuilt session (section 10) has only this transcript, so it
+must be complete; the referee is told to read every page on a new session.
 
 ## 8. Referee mode on the host
 
@@ -320,22 +404,25 @@ Player text: 1 to 2,000 characters. Messages per reply: 8, each up to 4,000.
 | What fails | Detected by | Result |
 |---|---|---|
 | Codex will not start, or exits non-zero before `thread.started` | exit status | job `failed` (`runner_failed`); no session change; busy released |
-| Exit with no valid final reply | missing or invalid `LAST_MESSAGE` | job `failed` (`malformed_reply`); committed steps stay committed and are listed to the next job |
+| Exit with no valid final reply | missing or invalid `LAST_MESSAGE` | job `failed` (`malformed_reply`), `narrated` false; its committed steps stay and are listed to the next job |
 | Timeout | the 300 s limit | process group stopped; job `interrupted`; committed steps stay |
-| Host stops or crashes during a job | at startup, a `running` job | that job becomes `interrupted`; its process, if still alive, is the host's own child and was stopped with it |
-| A step committed, then the run died before replying | `referee_steps` | the commit stands; the sender sees `interrupted`; the next job's `get_context` lists the committed steps so the referee narrates them instead of repeating them |
+| Host stops cleanly during a job (SIGINT) | shutdown | the host stops the job's process group, waits for the lock, and marks the job `interrupted` |
+| Host is killed or crashes during a job | at startup, a `running` job | the job lock decides (section 4): if Codex is gone, the job becomes `interrupted`; if it is still alive, the game stays busy and its bridge calls are refused until it exits |
+| A step committed, then the host died before journaling it | an `intended` step at reconciliation | the mapped request ID is found in the command history: `committed`, with its result |
+| A step was intended, but never ran | an `intended` step at reconciliation | not in the history: `not_committed`; nothing to narrate or undo |
+| Any job ends without publishing a reply (`failed`, `interrupted`) | `narrated` false | its committed steps are listed by every later `get_context` until a reply narrates them; the sender sees the job's state |
 | `resume` finds no session | runner error ("no rollout found") | job `failed` (`session_missing`); `referee.state = needs_rebuild`; later input is refused with `referee_needs_rebuild` until the operator rebuilds |
 | Bridge call with a stale token | the host | refused; nothing runs |
 
-- **Rebuild.** `tesserae referee rebuild --database DB` (host stopped) ends the
-  current session in `referee_sessions` and clears `session_id`. The next job
-  starts a new session, and `get_context` supplies the stored conversation and
-  rulings. No game state changes.
+- **Rebuild.** `tesserae referee rebuild --database DB` (host stopped, lock
+  free) ends the current session in `referee_sessions` and clears `session_id`.
+  The next job starts a new session; `get_context` and `get_transcript` supply
+  the complete stored conversation and rulings. No game state changes.
 - **Retries.** A player resending an input exactly gets its recorded state
   (`interrupted`, `failed`, or the reply). It never reruns. They say something
   new to continue.
 - There is never more than one Codex process per game: a new job starts only
-  after the previous one's process has exited or been stopped.
+  when the job lock is free (section 4).
 
 ## 11. Demonstrations
 
@@ -354,14 +441,20 @@ only `referee_context` (the scene, the rules text, both workers) and
    sheet.
 4. Bob: "Odo signs up too." `act` with `relay.enlist {"name": "Odo"}`.
 5. Alice: "Can Wren fix the relay?" The referee explains the stakes (1d6 plus
-   repair against 5, one effort either way) and asks whether to try now:
-   `awaiting` Alice. Busy is released.
-6. Bob says something while Alice decides: accepted as table conversation (no
-   action for Alice).
+   repair against 5, one effort either way) and asks whether to try now
+   (`choices.ask` for Alice). The job ends; busy is released.
+6. Bob asks the referee something while Alice decides: a job answers him, and
+   Alice's pending choice is unchanged.
 7. Alice: "Yes, go." `act` with `relay.repair {}`; the referee narrates the
-   actual roll and result.
-8. While that job runs, Bob's new input gets `referee_busy`; his exact retry
-   after it finishes returns his first input's state, not a new job.
+   actual roll and result, and resolves Alice's choice.
+8. While that job runs, Bob sends a new input: `referee_busy`, and nothing is
+   stored. Bob's earlier, accepted input (step 6), resent with its request ID,
+   returns its recorded reply without a job. Bob's refused input, sent again
+   after the game is idle, is a fresh acceptance and starts a job.
+9. Recovery: Alice's client exits right after an input is accepted and before
+   its reply arrives. A new client shows her last input and its state from
+   `referee_status`; `/retry` resends it with the same request ID and gets the
+   recorded reply, with no second job or action.
 
 ### The private scene (REF-7), criteria only
 
@@ -382,9 +475,17 @@ This is a human-friendly interface (owner decision O-1, 2026-10-31).
 
 **Input.** Each stdin line is a `say` with a client-generated request ID. Lines
 starting with `/` are plumbing: `/private TEXT`, `/status`, `/sync`,
-`/history`, `/retry` (resend the last unanswered input unchanged). `//TEXT`
-sends text that starts with `/`. Anything else, including text that looks like
-JSON or code, is sent as the player's words.
+`/history`, `/retry`. `//TEXT` sends text that starts with `/`. Anything else,
+including text that looks like JSON or code, is sent as the player's words.
+
+**Recovery.** On every join, the client asks `referee_status` and prints the
+player's last accepted input and its state (for example `[your last input]
+"Yes, go." completed`). `/retry` resends an input exactly, with its original
+request ID, text and privacy: the last unanswered input of this client if there
+is one, or else the `your_last_input` the host reported. Retrying an accepted
+input returns its recorded state and reply, never a second job. An input the
+host refused as busy is never in `your_last_input`; to send it again the player
+types it again, as a fresh input.
 
 **Output.** Readable lines on stdout, not JSON:
 
@@ -397,14 +498,14 @@ JSON or code, is sent as the player's words.
 [status] idle; waiting for Alice; last message 6
 ```
 
-Messages show their audience and sender; status, busy, awaiting and errors get
+Messages show their audience and sender; status, busy, pending choices and errors get
 short bracketed lines; `/sync` prints a short summary of the player's own view.
 Diagnostics stay on stderr. `connect --json` keeps the JSON-line stream (and
 sends input as `say` messages the same way) for scripts and tests.
 
 ## 13. Feasibility evidence (2026-10-31)
 
-Five short `codex exec` probes on `codex-cli 0.166.0`, ephemeral, with the
+Six short `codex exec` probes on `codex-cli 0.166.0`, ephemeral, with the
 section 3 settings and a one-tool stub bridge:
 
 1. With the shell features off, Codex could not run `ls` or read `/etc/hosts`.
@@ -417,6 +518,12 @@ section 3 settings and a one-tool stub bridge:
    `agents.max_threads` cannot be 0 in this version.
 5. The section 7 reply schema was accepted by `--output-schema`, and the reply
    written to `-o` matched it.
+6. After review, the revised schema (with `choices.ask` and `choices.resolve`)
+   was accepted too; Codex set a pending choice for the addressed player and
+   resolved nothing, as asked.
+
+The probes say nothing about crash recovery, the step journal or client
+reconnects; those are specified above and tested by REF-2 to REF-5.
 
 ## 14. An illustrative exchange
 
@@ -430,9 +537,10 @@ all  < {"version": 1, "type": "referee", "state": "busy"}
          (Codex: get_context, list_actions; no step)
 all  < {"version": 1, "type": "message", "seq": 6, "from": {"kind": "referee"}, "audience": "table", "text": "Wren can try: 1d6 plus repair 1, needing 5. It costs one effort either way. Try now?"}
 all  < {"version": 1, "type": "referee", "state": "idle"}
-alice< (snapshot field) "referee": {"state": "idle", "awaiting": {"participant_id": "p_a…", "name": "Alice"}, "last_seq": 6}
+alice< (snapshot field) "referee": {"state": "idle", "choices": [{"participant_id": "p_a…", "name": "Alice", "question": "Try now?"}], "last_seq": 6, "your_last_input": {"request_id": "a-1", "text": "Can Wren fix the relay?", "private": false, "job_id": "j-3", "job_state": "completed"}}
 alice> {"version": 1, "type": "say", "request_id": "a-2", "text": "Yes, go.", "private": false}
          (Codex: act {"step_id": "repair-1", "command": "relay.repair", "args": {}} -> revision 3, roll 5, success)
 all  < {"version": 1, "type": "revision", "game_id": "…", "revision": 3}
 all  < {"version": 1, "type": "message", "seq": 8, "from": {"kind": "referee"}, "audience": "table", "text": "Wren rolls a 5: 6 against 5. The relay hums back to life. Effort 3 → 2."}
+         (the reply's choices.resolve lists Alice: her pending choice ends)
 ```
