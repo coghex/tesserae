@@ -151,7 +151,7 @@ Its view is None, so its snapshots stay metadata-only. `tesserae roll` and
 
 A module can also live outside Tesserae, in a directory the host operator names
 (#51). `tesserae.external.load_module_dir(directory)` loads it and returns a
-`Runtime`, or raises `ModuleError` before anything runs. Loading executes the
+`Runtime`, or raises `ModuleError` before any game command runs. Loading executes the
 package's Python as the host user: it is trusted code, not a sandbox. Load once
 and share the runtime; there is no reloading. The original example is
 `tests/fixtures/modules/beacon/`.

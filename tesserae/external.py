@@ -60,7 +60,7 @@ def read_manifest(directory) -> Manifest:
             data = tomllib.load(file)
     except FileNotFoundError:
         raise ModuleError(f"No {MANIFEST} in {directory}.") from None
-    except (OSError, tomllib.TOMLDecodeError) as error:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ModuleError(f"Cannot read {path}: {error}") from None
 
     expected = {"schema_version", "entry_point", "providers"}

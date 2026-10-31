@@ -207,6 +207,13 @@ class ManifestTests(ExternalCase):
             with self.subTest(name):
                 self.assertRefused(self.beacon(toml), message)
 
+    def test_a_manifest_that_is_not_utf8_is_refused(self):
+        directory = self.beacon()
+        (directory / "module.toml").write_bytes(
+            b'schema_version = 1\nentry_point = "\xff"\n'
+        )
+        self.assertRefused(directory, "Cannot read")
+
     def test_missing_manifest_or_package(self):
         directory = self.beacon()
         (directory / "module.toml").unlink()
