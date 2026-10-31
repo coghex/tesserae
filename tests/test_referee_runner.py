@@ -347,6 +347,19 @@ class CommandLineTests(unittest.TestCase):
         check = run("check")
         self.assertIn("Config current: yes", check.stdout)
 
+    def test_check_without_codex_installed(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name) / "referee"
+        runner.setup(root)
+        report = runner.check(
+            root, codex=(str(Path(directory.name) / "no-such-codex"),)
+        )
+        self.assertEqual(
+            (report["codex_version"], report["logged_in"], report["config_current"]),
+            (None, False, True),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

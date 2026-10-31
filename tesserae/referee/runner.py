@@ -172,11 +172,14 @@ def check(
         and config.read_text() == config_text(python),
         "logged_in": False,
     }
-    if folder.codex_home.is_dir():
-        status = subprocess.run(
-            [*codex, "login", "status"], capture_output=True, text=True,
-            env={**os.environ, "CODEX_HOME": str(folder.codex_home)}, timeout=60,
-        )  # fmt: skip
+    if folder.codex_home.is_dir() and report["codex_version"] is not None:
+        try:
+            status = subprocess.run(
+                [*codex, "login", "status"], capture_output=True, text=True,
+                env={**os.environ, "CODEX_HOME": str(folder.codex_home)}, timeout=60,
+            )  # fmt: skip
+        except (OSError, subprocess.TimeoutExpired):
+            return report
         report["logged_in"] = status.returncode == 0
     return report
 
