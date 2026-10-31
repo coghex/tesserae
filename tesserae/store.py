@@ -559,6 +559,17 @@ class GameStore:
         with self._write():
             yield self._connection
 
+    @contextmanager
+    def snapshot(self):
+        """A read transaction: every read inside sees one committed state,
+        even if another connection commits meanwhile (WAL). For companion
+        stores' multi-read views."""
+        self._connection.execute("BEGIN")
+        try:
+            yield self._connection
+        finally:
+            self._connection.execute("COMMIT")
+
     def query(self, sql: str, parameters: tuple = ()) -> list[tuple]:
         """Rows from a read-only query, for companion stores in this package."""
         return self._connection.execute(sql, parameters).fetchall()

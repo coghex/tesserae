@@ -24,6 +24,8 @@ MAX_MESSAGES = 8
 MAX_CHOICES = 4
 MAX_QUESTION = 1000
 TRANSCRIPT_PAGE = 200
+MAX_NARRATED = 16
+MAX_STEP_ID = 64  # so `ref:<job>:<step>` stays a valid request ID
 FINISHED = ("completed", "failed", "interrupted")
 
 
@@ -170,7 +172,8 @@ class RefereeStore:
                host_run: str | None = None) -> Submission:  # fmt: skip
         """Accept one player's input, replay an earlier one, or refuse.
 
-        In one transaction: an exact retry (same participant and request ID,
+        In one transaction: the context's credential must still be active
+        (`session_revoked` otherwise); an exact retry (same participant and request ID,
         same text and privacy) returns its recorded job, busy or not; another
         content under that ID is `request_conflict`; otherwise a running job
         means `referee_busy`, with nothing stored; otherwise the input, the
@@ -191,6 +194,12 @@ class RefereeStore:
             raise RefereeError("invalid_request", "'private' is true or false.")
         who = context.participant_id
         with self.store.transaction() as db:
+            # Inside the write lock, before any replay or new job, as for
+            # gameplay commands: a revoked or rotated credential gets nothing.
+            if self.store.session_revision(context) is None:
+                raise RefereeError(
+                    "session_revoked", "This session's credential is no longer valid."
+                )
             if db.execute("SELECT enabled FROM referee").fetchone() is None:
                 raise RefereeError(
                     "referee_off", "Referee mode is not enabled for this game."
@@ -263,9 +272,14 @@ class RefereeStore:
 
     def publish_reply(self, job_id: str, reply: dict) -> tuple:
         """Validate a running job's reply, then in one transaction store its
-        messages, apply its choices, mark earlier unnarrated steps narrated and
-        complete the job. Returns the stored messages. A reply that does not
-        validate raises RefereeError (`malformed_reply`) and changes nothing.
+        messages, apply its choices, mark the steps it narrates and complete
+        the job. Returns the stored messages. A reply that does not validate
+        raises RefereeError (`malformed_reply`) and changes nothing.
+
+        A reply narrates this job's own committed steps, and the earlier
+        unnarrated steps it lists in `narrated`. Each listed step's sender must
+        be able to see at least one of the reply's messages: a result is only
+        acknowledged once it reaches the player it belongs to.
         """
         with self.store.transaction() as db:
             job = self._require_running(db, job_id)
@@ -273,6 +287,7 @@ class RefereeStore:
                 row[0] for row in db.execute("SELECT participant_id FROM participants")
             }
             messages, asks, resolves = _validated_reply(reply, job, participants)
+            acknowledged = self._acknowledged(db, reply["narrated"], messages)
             now = _now()
             stored = []
             for audience, text in messages:
@@ -296,7 +311,12 @@ class RefereeStore:
                     (participant_id, question, job_id, now),
                 )
             db.execute(
-                "UPDATE referee_steps SET narrated = 1 WHERE status = 'committed' AND narrated = 0"
+                "UPDATE referee_steps SET narrated = 1 WHERE job_id = ? AND status = 'committed'",
+                (job_id,),
+            )
+            db.executemany(
+                "UPDATE referee_steps SET narrated = 1 WHERE job_id = ? AND step_id = ?",
+                acknowledged,
             )
             db.execute(
                 "UPDATE referee_jobs SET state = 'completed', ended_at = ?, narrated = 1 "
@@ -312,13 +332,10 @@ class RefereeStore:
         """Journal a step before it runs. The same step ID with the same
         kind, context, command and arguments returns the existing row; any
         difference is `request_conflict`, across both kinds of step."""
-        if (
-            not isinstance(step_id, str)
-            or not 1 <= len(step_id) <= 64
-            or not step_id.isprintable()
-        ):
+        if not is_valid_request_id(step_id) or len(step_id) > MAX_STEP_ID:
             raise RefereeError(
-                "invalid_request", "A step ID is 1 to 64 printable characters."
+                "invalid_request",
+                f"A step ID is 1 to {MAX_STEP_ID} characters with no whitespace.",
             )
         if kind not in ("act", "referee_act"):
             raise ValueError(f"Unknown step kind {kind!r}.")
@@ -473,7 +490,12 @@ class RefereeStore:
     def projection(self, participant_id: str) -> dict:
         """The recipient-scoped referee object for status, join and sync
         (contract section 7): busy or idle, only the viewer's own pending
-        choice, the last message seq they can see, and their last input."""
+        choice, the last message seq they can see, and their last input, all
+        read from one committed state."""
+        with self.store.snapshot():
+            return self._projection(participant_id)
+
+    def _projection(self, participant_id: str) -> dict:
         choice = self.store.query(
             "SELECT question FROM referee_choices WHERE participant_id = ?",
             (participant_id,),
@@ -553,6 +575,31 @@ class RefereeStore:
             or job.participant_id in json.loads(audience)
         )
 
+    def _acknowledged(self, db, narrated, messages) -> list[tuple]:
+        """The (job, step) pairs a reply's `narrated` list may acknowledge."""
+        pairs = []
+        for entry in narrated:
+            row = db.execute(
+                "SELECT i.participant_id FROM referee_steps AS s "
+                "JOIN referee_jobs AS j ON j.job_id = s.job_id "
+                "JOIN referee_inputs AS i ON i.id = j.input_id "
+                "WHERE s.job_id = ? AND s.step_id = ? AND s.status = 'committed' "
+                "AND s.narrated = 0 AND j.state != 'running'",
+                (entry["job_id"], entry["step_id"]),
+            ).fetchone()
+            if row is None:
+                raise RefereeError(
+                    "malformed_reply",
+                    "The reply lists a step that is not an unnarrated earlier result.",
+                )
+            if not any(target == "table" or row[0] in target for target, _ in messages):
+                raise RefereeError(
+                    "malformed_reply",
+                    "The reply acknowledges a result its player cannot see in any message.",
+                )
+            pairs.append((entry["job_id"], entry["step_id"]))
+        return pairs
+
     def _step(self, db, job_id: str, step_id: str) -> Step:
         row = self._rows(
             db,
@@ -598,8 +645,20 @@ def _validated_reply(reply, job: Job, participants: set[str]):
             "malformed_reply", f"The referee's reply is not usable: {why}."
         )
 
-    if not isinstance(reply, dict) or set(reply) != {"messages", "choices"}:
-        raise bad("it needs exactly messages and choices")
+    if not isinstance(reply, dict) or set(reply) != {"messages", "choices", "narrated"}:
+        raise bad("it needs exactly messages, choices and narrated")
+    narrated = reply["narrated"]
+    if (
+        not isinstance(narrated, list)
+        or len(narrated) > MAX_NARRATED
+        or not all(
+            isinstance(entry, dict)
+            and set(entry) == {"job_id", "step_id"}
+            and all(isinstance(value, str) for value in entry.values())
+            for entry in narrated
+        )
+    ):
+        raise bad(f"narrated lists at most {MAX_NARRATED} job_id/step_id pairs")
     messages = reply["messages"]
     if not isinstance(messages, list) or not 1 <= len(messages) <= MAX_MESSAGES:
         raise bad(f"messages must be a list of 1 to {MAX_MESSAGES}")

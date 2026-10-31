@@ -15,8 +15,9 @@ from tesserae.store import SCHEMA_VERSION, GameStore, ParticipantContext
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-def reply(*messages, ask=(), resolve=()):
+def reply(*messages, ask=(), resolve=(), narrated=()):
     return {
+        "narrated": [{"job_id": j, "step_id": s} for j, s in narrated],
         "messages": [{"audience": a, "text": t} for a, t in messages],
         "choices": {
             "ask": [{"participant_id": p, "question": q} for p, q in ask],
@@ -310,9 +311,12 @@ class StepTests(RefereeCase):
         )
         self.assertEqual(settled["s2"].status, "not_committed")
         self.assertEqual([s.step_id for s in self.referee.unnarrated_steps()], ["s1"])
-        # The next published reply narrates it; the interrupted job stays interrupted.
+        # A later table reply that lists it narrates it; the interrupted job stays interrupted.
         job = self.ask(self.bob, "b-1", "What happened?").job
-        self.referee.publish_reply(job.job_id, reply(("table", "Alice rolled a 4.")))
+        self.referee.publish_reply(
+            job.job_id,
+            reply(("table", "Alice rolled a 4."), narrated=[(self.job.job_id, "s1")]),
+        )
         self.assertEqual((self.referee.unnarrated_steps(), self.referee.job(self.job.job_id).state),
                          ([], "interrupted"))  # fmt: skip
 
@@ -387,6 +391,113 @@ class CommandLineTests(unittest.TestCase):
         with GameStore(database) as store:
             self.assertTrue(RefereeStore(store).enabled())
         self.assertEqual((run(missing).returncode, missing.exists()), (1, False))
+
+
+class ReviewRegressionTests(RefereeCase):
+    """The review of 6789920 (R75-1 to R75-4)."""
+
+    def test_a_revoked_credential_can_neither_submit_nor_replay(self):  # R75-1
+        token = new_token()
+        carol_id = self.store.add_participant("Carol", token)
+        carol = self.store.authenticate(token)
+        job = self.ask(carol, "c-1", "Secret?", private=True).job
+        self.referee.publish_reply(job.job_id, reply(("sender", "Only for you.")))
+        self.store.revoke_credential(carol_id)
+        before = self.store.query("SELECT count(*) FROM referee_inputs")
+        for request_id in (
+            "c-1",
+            "c-2",
+        ):  # a replay of the private reply, and new input
+            with self.subTest(request_id):
+                self.refused(
+                    "session_revoked", self.ask, carol, request_id, "Secret?", True
+                )
+        self.assertEqual(
+            self.store.query("SELECT count(*) FROM referee_inputs"), before
+        )
+        self.assertIsNone(self.referee.running_job())
+
+    def test_an_unrelated_reply_does_not_acknowledge_someone_elses_result(
+        self,
+    ):  # R75-2
+        job = self.ask(self.alice, "a-1", "Roll for me").job
+        step = self.referee.intend_step(
+            job.job_id,
+            "s1",
+            "act",
+            self.alice.participant_id,
+            "roll",
+            {"expression": "1d6"},
+        )
+        self.store.execute(self.alice, roll(step.request_id, 0))
+        self.referee.reconcile_steps()
+        self.referee.finish(job.job_id, "interrupted")
+        bob_job = self.ask(self.bob, "b-1", "Weather?", private=True).job
+        # Bob's private reply cannot carry Alice's result, so it may not claim it.
+        self.refused("malformed_reply", self.referee.publish_reply, bob_job.job_id,
+                     reply(("sender", "Stormy."), narrated=[(job.job_id, "s1")]))  # fmt: skip
+        self.referee.publish_reply(bob_job.job_id, reply(("sender", "Stormy.")))
+        self.assertEqual([s.step_id for s in self.referee.unnarrated_steps()], ["s1"])
+        # A reply the table sees, which lists it, acknowledges it.
+        next_job = self.ask(self.bob, "b-2", "What happened to Alice?").job
+        self.referee.publish_reply(
+            next_job.job_id,
+            reply(("table", "Alice rolled a 4."), narrated=[(job.job_id, "s1")]),
+        )
+        self.assertEqual(self.referee.unnarrated_steps(), [])
+
+    def test_a_reply_cannot_acknowledge_a_step_that_is_not_waiting(self):  # R75-2
+        job = self.ask(self.alice, "a-1").job
+        self.refused("malformed_reply", self.referee.publish_reply, job.job_id,
+                     reply(("table", "Hi"), narrated=[("j-none", "s1")]))  # fmt: skip
+
+    def test_step_ids_are_valid_request_id_parts(self):  # R75-3
+        job = self.ask(self.alice, "a-1").job
+        for step_id in ("first roll", "tab\tstep", "", "x" * 65):
+            with self.subTest(step_id=step_id):
+                self.refused("invalid_request", self.referee.intend_step, job.job_id, step_id, "act",
+                             self.alice.participant_id, "roll", {"expression": "1d6"})  # fmt: skip
+        step = self.referee.intend_step(job.job_id, "x" * 64, "act", self.alice.participant_id, "roll",
+                                        {"expression": "1d6"})  # fmt: skip
+        self.assertEqual(
+            self.store.execute(self.alice, roll(step.request_id, 0))["type"], "result"
+        )
+
+    def test_the_projection_reads_one_committed_state(self):  # R75-4
+        a = self.alice.participant_id
+        first = self.ask(self.alice, "a-1", "Can I go?").job
+        self.referee.publish_reply(
+            first.job_id, reply(("table", "Proceed?"), ask=[(a, "Proceed?")])
+        )
+        pending = self.ask(self.alice, "a-2", "Yes").job
+        other = GameStore(self.path)
+        self.addCleanup(other.close)
+        original = RefereeStore.messages_for
+
+        def publish_midway(store, participant_id, after_seq=0):
+            # Another connection commits between the projection's reads.
+            RefereeStore(other).publish_reply(
+                pending.job_id, reply(("table", "Done."), resolve=[a])
+            )
+            RefereeStore.messages_for = original
+            return original(store, participant_id, after_seq)
+
+        RefereeStore.messages_for = publish_midway
+        self.addCleanup(setattr, RefereeStore, "messages_for", original)
+        seen = self.referee.projection(a)
+        # Everything from before the other commit, nothing mixed:
+        self.assertEqual(
+            (
+                seen["state"],
+                seen["choices"],
+                seen["your_last_input"]["job_state"],
+                seen["last_seq"],
+            ),
+            ("busy", [{"question": "Proceed?"}], "running", 3),
+        )
+        after = self.referee.projection(a)
+        self.assertEqual((after["state"], after["choices"], after["your_last_input"]["job_state"], after["last_seq"]),
+                         ("idle", [], "completed", 4))  # fmt: skip
 
 
 if __name__ == "__main__":
