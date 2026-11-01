@@ -8,7 +8,11 @@ validation and audiences of section 7) in `tesserae/referee/store.py` (#65), and
 Codex runner (sections 2 to 4) in `tesserae/referee/runner.py` (#66), with
 `tesserae referee setup` and `check`; the bridge (section 6) and module hooks
 (section 9) in `tesserae/referee/tools.py` and `bridge.py` (#67), with Relay's
-hooks. Host wiring, the CLI and `referee stop`/`rebuild` are not. It turns the [M1-6 delivery plan](codex_referee_design.md)
+hooks; and the host's referee mode and the CLI (sections 7, 8 and 12) in
+`tesserae/server.py` and `client.py` (#68), with a pluggable executor for each
+accepted job. The Codex executor, integrated host wiring and recovery (#69),
+and `referee stop`/`rebuild` are not. It turns the
+[M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
 records how the CLI shows conversation (owner decision O-1).
 
@@ -473,6 +477,11 @@ must be complete; the referee is told to read every page on a new session.
 - The referee's `act` and `referee_act` are the only gameplay writers, through
   the same `GameStore.execute` (validation, atomic state/result/history, exact
   replay). No model process holds a transaction open.
+- Accepting an input and settling a job each happen together with queueing
+  their unsolicited messages, under one host-wide lock, so delivery follows
+  the store's order: a job's reply and `idle` always precede the next job's
+  input and `busy`. An accepted job is started before its `accepted` is sent,
+  so a sender who disconnects first never leaves the game busy with no job.
 - Mechanical-only hosting (no referee mode) is unchanged.
 
 ## 9. Referee authority
@@ -577,7 +586,8 @@ including text that looks like JSON or code, is sent as the player's words.
 player's last accepted input and its state (for example `[your last input]
 "Yes, go." completed`). `/retry` resends an input exactly, with its original
 request ID, text and privacy: the last unanswered input of this client if there
-is one, or else the `your_last_input` the host reported. Retrying an accepted
+is one, else its last accepted input (a later input refused as busy does not
+replace it), or else the `your_last_input` the host reported. Retrying an accepted
 input returns its recorded state and reply, never a second job. An input the
 host refused as busy is never in `your_last_input`; to send it again the player
 types it again, as a fresh input.

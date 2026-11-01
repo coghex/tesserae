@@ -14,6 +14,7 @@ docs/protocol.md and docs/game_store.md.
 
 import asyncio
 import logging
+import secrets
 import signal
 import sqlite3
 import sys
@@ -28,17 +29,27 @@ from .modules import ModuleError
 from .protocol import (
     JOIN_TIMEOUT_SECONDS,
     JoinRequest,
+    MessagesRequest,
     ProtocolError,
+    RefereeStatusRequest,
+    SayRequest,
     SyncRequest,
+    accepted_message,
+    busy_message,
+    conversation_message,
     encode_message,
     error_message,
+    messages_message,
     parse_client_message,
     parse_request,
+    referee_state_message,
+    referee_status_message,
     revision_message,
     session_error,
     snapshot_message,
     welcome_message,
 )
+from .referee.store import REFEREE, RefereeError, RefereeStore
 from .store import GameStore, ParticipantContext, StoreBusy, StoreError
 from .transport import TransportConfigError, check_server, server_context
 
@@ -61,6 +72,16 @@ class HostConfigError(ValueError):
     """The game cannot be served in the requested mode; nothing was started."""
 
 
+class RefereeJobFailed(Exception):
+    """Raised by a referee executor: the job ends `state` (`failed` or
+    `interrupted`) with `error`, and publishes nothing."""
+
+    def __init__(self, state: str, error: str):
+        super().__init__(error)
+        self.state = state
+        self.error = error
+
+
 class GameHost:
     """Serves one game store to any number of local connections.
 
@@ -80,10 +101,15 @@ class GameHost:
         join_timeout: float = JOIN_TIMEOUT_SECONDS,
         write_timeout: float = WRITE_TIMEOUT_SECONDS,
         runtime=None,
+        referee_executor=None,
     ):
         """`runtime`, if given, is an externally loaded module's runtime
         (tesserae.external). The game must then already exist and be bound to
-        exactly that runtime; without one, the bundled catalog is used."""
+        exactly that runtime; without one, the bundled catalog is used.
+
+        A game in referee mode needs `referee_executor`: an async callable
+        given each accepted Job, returning the reply to publish or raising
+        RefereeJobFailed. The host stores and delivers what it returns."""
         self.database = Path(database).resolve()
         self.authenticated = authenticated
         self.host = host
@@ -104,18 +130,38 @@ class GameHost:
             # never a fallback. Messages are parsed with its commands, and
             # every worker's store executes with it.
             self._runtime = store.runtime()
+            self.referee_mode = RefereeStore(store).enabled()
         self.module = self._runtime.module
         if self.module.requires_authentication and not authenticated:
             raise HostConfigError(
                 f"this game's module, {self.module.id}, requires --authenticated, "
                 "even on this computer"
             )
+        if self.referee_mode and not authenticated:
+            raise HostConfigError(
+                "this game is in referee mode, which requires --authenticated"
+            )
+        if self.referee_mode and referee_executor is None:
+            raise HostConfigError(
+                "this game is in referee mode, and this host has no referee runner yet"
+            )
+        self._referee_executor = referee_executor
+        self._host_run = "h-" + secrets.token_hex(6)
+        self._jobs: set[asyncio.Task] = set()
+        self._outbox = None  # ordered unsolicited deliveries, while running
+        # Held across each referee transition (accepting an input, settling a
+        # job) and the outbox items it queues, so the outbox order is the
+        # store's order.
+        self._lifecycle = None
         self._executor = ThreadPoolExecutor(
             WORKER_THREADS, thread_name_prefix="tesserae-store"
         )
 
     async def run(self, port: int, stop: asyncio.Future, on_ready=None):
         """Serve until `stop` completes, then close connections and the store."""
+        self._outbox = asyncio.Queue()
+        self._lifecycle = asyncio.Lock()
+        deliveries = asyncio.create_task(self._deliver_outbox())
         try:
             async with serve(self._handle, self.host, port, ssl=self._ssl) as server:
                 address, bound_port = server.sockets[0].getsockname()[:2]
@@ -123,7 +169,12 @@ class GameHost:
                 if on_ready is not None:
                     on_ready(f"{scheme}://{address}:{bound_port}/")
                 await stop
+                # A running job ends `interrupted` before the store closes.
+                for job in list(self._jobs):
+                    job.cancel()
+                await asyncio.gather(*self._jobs, return_exceptions=True)
         finally:
+            deliveries.cancel()
             # Finish in-flight store calls: each commits or rolls back whole.
             self._executor.shutdown(wait=True)
 
@@ -225,12 +276,18 @@ class GameHost:
         current = await self._call(GameStore.participant_view, context)
         if current is None:
             return None
+        referee = None
+        if self.referee_mode:
+            referee = await self._call(_referee_projection, context)
+            if referee is None:
+                return None
         return snapshot_message(
             self.game_id,
             context.participant_id,
             current.revision,
             None if current.view is None else self.module,
             current.view,
+            referee,
         )
 
     def _publish(self, revision: int):
@@ -288,12 +345,153 @@ class GameHost:
             else:
                 if isinstance(parsed, SyncRequest):
                     return await session.send_read(lambda: self._sync(context))
-                if isinstance(parsed, JoinRequest):
+                if isinstance(
+                    parsed, (SayRequest, RefereeStatusRequest, MessagesRequest)
+                ):
+                    if not self.referee_mode:
+                        reply = error_message(
+                            "referee_off",
+                            "This game is not in referee mode.",
+                            request_id=getattr(parsed, "request_id", None),
+                        )
+                    elif isinstance(parsed, SayRequest):
+                        return await self._say(session, parsed)
+                    else:
+                        reply = await self._referee_read(context, parsed)
+                elif isinstance(parsed, JoinRequest):
                     reply = session_error("already_joined")
+                elif self.referee_mode:
+                    # Every player action goes through the referee, busy or not.
+                    reply = error_message(
+                        "referee_mode",
+                        "This game has a referee: say what you want to do, and the "
+                        "referee runs the game's commands.",
+                        request_id=parsed.request_id,
+                    )
                 else:
                     reply = await self._execute(context, message)
         await session.send(reply)
         return reply
+
+    async def _say(self, session: "_Session", request: SayRequest) -> dict:
+        """Accept, replay or refuse one input and send its reply; an accepted
+        input's job is running, and its message and `busy` queued, before
+        that reply is sent, so a failed send never strands the job. Holding
+        the sender's send lock throughout keeps the reply ahead of them."""
+        replay = []
+
+        async def decide() -> dict:
+            async with self._lifecycle:
+                try:
+                    outcome = await self._call(
+                        _submit, session.context, request, self._host_run
+                    )
+                except Exception:
+                    return self._failure(request.request_id)
+                kind = outcome[0]
+                if kind == "busy":
+                    return busy_message(request.request_id, outcome[2], outcome[1])
+                if kind == "error":
+                    code, text = outcome[1], outcome[2]
+                    if code == "session_revoked":
+                        return session_error(code)
+                    return error_message(code, text, request_id=request.request_id)
+                submission, said, names = outcome[1:]
+                if kind == "accepted":
+                    self._outbox.put_nowait(("conversation", ([said], names)))
+                    self._outbox.put_nowait(("state", referee_state_message("busy")))
+                    job = asyncio.create_task(self._run_job(submission.job))
+                    self._jobs.add(job)
+                    job.add_done_callback(self._jobs.discard)
+                else:  # replayed: its recorded reply, to this connection only
+                    replay.extend(_wire(m, names) for m in submission.messages)
+                return accepted_message(
+                    request.request_id, submission.job.job_id, said["seq"]
+                )
+
+        reply = await session.send_read(decide)
+        for message in replay:
+            await session.send(message)
+        return reply
+
+    async def _run_job(self, job):
+        """Run one job with the executor, then store and deliver how it ended."""
+        reply, state, error = None, None, None
+        try:
+            reply = await self._referee_executor(job)
+        except RefereeJobFailed as failed:
+            state, error = failed.state, failed.error
+        except asyncio.CancelledError:
+            state, error = "interrupted", "shutdown"
+        except Exception:
+            logger.exception("A referee job failed")
+            state, error = "failed", "runner_failed"
+        async with self._lifecycle:  # no new job is accepted until this is queued
+            try:
+                stored, names = await self._call(
+                    _settle, job.job_id, reply, state, error
+                )
+            except Exception:
+                logger.exception("Could not record how a referee job ended")
+                stored, names = (), {}
+            if stored:
+                self._outbox.put_nowait(("conversation", (list(stored), names)))
+            self._outbox.put_nowait(("state", referee_state_message("idle")))
+
+    async def _referee_read(self, context: ParticipantContext, request) -> dict:
+        """`referee_status` or `messages`, for the caller only."""
+        try:
+            if isinstance(request, RefereeStatusRequest):
+                projection = await self._call(_referee_projection, context)
+                if projection is not None:
+                    return referee_status_message(projection)
+            else:
+                visible = await self._call(
+                    _visible_messages, context, request.after_seq
+                )
+                if visible is not None:
+                    return messages_message(visible)
+        except Exception:
+            return self._failure(None)
+        return session_error("session_revoked")
+
+    async def _deliver_outbox(self):
+        """Deliver unsolicited referee messages in the order they were queued.
+        Conversation goes only to its audience, each session rechecked first."""
+        while True:
+            kind, payload = await self._outbox.get()
+            sends = []
+            for session in list(self._sessions):
+                if kind == "state":
+                    sends.append(self._send_all(session, [payload], check=False))
+                    continue
+                messages, names = payload
+                pid = session.context.participant_id
+                visible = [
+                    _wire(m, names)
+                    for m in messages
+                    if m["audience"] == "table" or pid in m["audience"]
+                ]
+                if visible:
+                    sends.append(self._send_all(session, visible, check=True))
+            await asyncio.gather(*sends, return_exceptions=True)
+
+    async def _send_all(self, session: "_Session", messages: list, *, check: bool):
+        try:
+            if check:
+                revision = await self._check_for_delivery(session)
+                if revision is _UNCHECKED:
+                    await session.connection.close(FAILURE_CLOSE_CODE, "internal error")
+                    return
+                if revision is None:  # a revoked credential gets nothing
+                    await session.connection.close(
+                        SESSION_CLOSE_CODE, "session_revoked"
+                    )
+                    return
+            for message in messages:
+                await session.send(message)
+        except (ConnectionClosed, _SlowConsumer):
+            pass
 
     async def _rejection(self, context: ParticipantContext, error: ProtocolError):
         """An invalid message's error, carrying the revision only if still joined."""
@@ -352,6 +550,70 @@ class GameHost:
 
     def _open(self) -> GameStore:
         return GameStore(self.database, randint=self._randint, runtime=self._runtime)
+
+
+def _submit(store: GameStore, context, request: SayRequest, host_run: str) -> tuple:
+    referee = RefereeStore(store)
+    try:
+        submission = referee.submit(
+            context, request.request_id, request.text, request.private, host_run
+        )
+    except RefereeError as error:
+        if error.code == "referee_busy":
+            running = referee.running_job()
+            names = _names(store)
+            name = (
+                "someone"
+                if running is None
+                else names.get(running.participant_id, "someone")
+            )
+            return ("busy", name, store.revision())
+        return ("error", error.code, str(error))
+    said = referee.input_message(submission.job.job_id)
+    return (submission.outcome, submission, said, _names(store))
+
+
+def _settle(store: GameStore, job_id: str, reply, state, error) -> tuple:
+    """Publish a job's reply, or record why it ended without one."""
+    referee = RefereeStore(store)
+    if reply is not None:
+        try:
+            return referee.publish_reply(job_id, reply), _names(store)
+        except RefereeError as refused:  # nothing from it is published
+            state, error = "failed", refused.code
+    referee.finish(job_id, state, error)
+    return (), {}
+
+
+def _referee_projection(store: GameStore, context) -> dict | None:
+    if store.session_revision(context) is None:
+        return None
+    return RefereeStore(store).projection(context.participant_id)
+
+
+def _visible_messages(store: GameStore, context, after_seq: int) -> list | None:
+    if store.session_revision(context) is None:
+        return None
+    names = _names(store)
+    return [
+        _wire(m, names)
+        for m in RefereeStore(store).messages_for(context.participant_id, after_seq)
+    ]
+
+
+def _names(store: GameStore) -> dict:
+    return {p.participant_id: p.name for p in store.participants()}
+
+
+def _wire(message: dict, names: dict) -> dict:
+    """A stored message as its recipients see it."""
+    sender = message["sender"]
+    return conversation_message(
+        message["seq"],
+        None if sender == REFEREE else names.get(sender, sender),
+        "table" if message["audience"] == "table" else "private",
+        message["text"],
+    )
 
 
 _UNCHECKED = object()

@@ -4,12 +4,18 @@ Joins with a token from a file, then forwards each nonblank stdin line as one
 message while printing every message the host sends, one JSON object per
 stdout line. Diagnostics go to stderr. The host owns all validation and game
 logic; the client never rewrites, retries, or judges a request.
-See docs/protocol.md.
+
+In a game with a referee (the join snapshot carries `referee`), each line is
+instead the player's words, sent as a `say`; lines starting with `/` are
+plumbing (/private, /status, /sync, /history, /retry, /help), and `//` sends a
+line that starts with `/`. Output is readable lines, or JSON with --json.
+See docs/protocol.md and docs/designs/referee_contract.md section 12.
 """
 
 import asyncio
 import json
 import os
+import secrets
 import signal
 import ssl
 import stat
@@ -46,6 +52,7 @@ def run(
     game_id=None,
     drain_timeout=DRAIN_TIMEOUT_SECONDS,
     ca_file=None,
+    json_output=False,
 ):
     """Check the destination and trust first: plaintext to another computer is
     refused before anything is read, sent, or contacted."""
@@ -54,12 +61,19 @@ def run(
         token = _read_token(token_file)
     except (_Failure, TransportConfigError) as failure:
         return _diagnose(str(failure), EXIT_FAILED)
-    client = _Client(uri, token, game_id, drain_timeout, ssl_context)
+    client = _Client(uri, token, game_id, drain_timeout, ssl_context, json_output)
     return asyncio.run(client.main())
 
 
 class _Client:
-    def __init__(self, uri, token, game_id, drain_timeout, ssl_context=None):
+    def __init__(
+        self, uri, token, game_id, drain_timeout, ssl_context=None, json_output=False
+    ):
+        self.json_output = json_output
+        self.referee = False  # set from the join snapshot
+        self.sending = {}  # request ID to input, for says not yet answered
+        self.last_say = None  # this client's last accepted input, for /retry
+        self.reported_input = None  # `your_last_input` from the host, for /retry
         self.ssl_context = ssl_context
         self.uri = uri
         self.token = token
@@ -138,7 +152,14 @@ class _Client:
         except ConnectionClosed:
             raise _Failure(f"the host closed the connection {_closed(connection)}")
         message = _decode(first)
-        _print(message)
+        self.referee = isinstance(message.get("referee"), dict)
+        if self.referee and not self.json_output:
+            if message.get("type") == "snapshot":
+                self._note(
+                    "[joined] Type to talk to the referee; /help lists commands."
+                )
+        else:
+            _print(message)
         if message.get("type") == "welcome":
             raise _Failure("this is a development host; start it with --authenticated")
         if message.get("type") == "error":
@@ -153,6 +174,8 @@ class _Client:
             )
 
         lines = asyncio.Queue()
+        if self.referee:  # show the player's last input and its state first
+            lines.put_nowait(b"/status")
         _start_stdin_reader(asyncio.get_running_loop(), lines)
         receiver = asyncio.create_task(self._receive(connection))
         try:
@@ -175,6 +198,8 @@ class _Client:
         """Send each nonblank stdin line as it arrives, until stdin ends."""
         while (line := await self._until_closed(lines.get(), receiver)) is not None:
             text = _decode_line(line)
+            if text is not None and self.referee:
+                text = self._translate(text)
             if text is None:
                 continue
             self.unanswered.append(text)
@@ -196,16 +221,84 @@ class _Client:
                 if message.get("type") == "revision":
                     if not _is_revision(message.get("revision")):
                         raise _Failure("the host sent a malformed notification")
-                    _print(message)
+                    self._show(message)
+                    continue
+                if message.get("type") in ("message", "referee"):
+                    if not _is_unsolicited(message):
+                        raise _Failure("the host sent a malformed referee message")
+                    self._show(message)
                     continue
                 if not self.unanswered:
                     raise _Failure("the host sent a reply to nothing")
                 _check_reply(message, self.unanswered[0], self.session)
-                _print(message)
+                if self.referee:  # every line sent was the client's own JSON
+                    self._remember(message, self.unanswered[0])
+                self._show(message)
                 self.unanswered.popleft()
                 self.replied.set()
         except ConnectionClosed:
             pass
+
+    # --- referee mode -------------------------------------------------------------
+
+    def _translate(self, text: str) -> str | None:
+        """One typed line as the message to send, or None if it was handled
+        here. Anything that is not plumbing is the player's words, even if it
+        looks like JSON or code."""
+        if text.startswith("//"):
+            return self._say(text[1:], private=False)
+        if not text.startswith("/"):
+            return self._say(text, private=False)
+        command, _, rest = text[1:].partition(" ")
+        if command == "private":
+            if not rest.strip():
+                return self._note("[error] Type /private and then what to say.")
+            return self._say(rest, private=True)
+        if command == "status":
+            return json.dumps({"version": 1, "type": "referee_status"})
+        if command == "sync":
+            return json.dumps({"version": 1, "type": "sync"})
+        if command == "history":
+            return json.dumps({"version": 1, "type": "messages", "after_seq": 0})
+        if command == "retry":
+            target = self.last_say or self.reported_input
+            if self.sending:  # one still unanswered is the one to retry
+                target = list(self.sending.values())[-1]
+            if target is None:
+                return self._note("[retry] There is no input to retry.")
+            return self._say(target["text"], target["private"], target["request_id"])
+        if command == "help":
+            return self._note(_HELP)
+        return self._note(f"[error] There is no /{command}; /help lists commands.")
+
+    def _say(self, text: str, private: bool, request_id: str | None = None) -> str:
+        said = {"request_id": request_id or "c-" + secrets.token_hex(6), "text": text,
+                "private": private}  # fmt: skip
+        self.sending[said["request_id"]] = said
+        return json.dumps({"version": 1, "type": "say", **said})
+
+    def _remember(self, message: dict, sent: str):
+        """Track what /retry should resend."""
+        line = json.loads(sent)
+        if message.get("type") == "referee_status":
+            self.reported_input = message.get("your_last_input")
+        elif line.get("type") == "say":
+            said = self.sending.pop(line["request_id"], None)
+            if said is not None and message.get("type") == "accepted":
+                self.last_say = said
+            # A refused input (busy or error) is typed again, never retried,
+            # and the last accepted input stays the one /retry resends.
+
+    def _note(self, text: str) -> None:
+        """A line from the client itself; stderr when stdout is JSON."""
+        print(text, file=sys.stderr if self.json_output else sys.stdout, flush=True)
+
+    def _show(self, message: dict):
+        if not self.referee or self.json_output:
+            _print(message)
+            return
+        for line in _readable(message):
+            print(line, flush=True)
 
     async def _all_answered(self):
         while self.unanswered:
@@ -303,6 +396,80 @@ def _print(message: dict):
     print(json.dumps(message), flush=True)
 
 
+_HELP = """\
+[help] Type to talk to the referee; everyone at the table sees it.
+[help] /private TEXT  say something to the referee only
+[help] /status        the referee's state, your pending choice, your last input
+[help] /sync          your current view of the game
+[help] /history       the conversation you can see
+[help] /retry         resend your last input exactly (never a second job)
+[help] //TEXT         say text that starts with /"""
+
+
+def _readable(message: dict) -> list[str]:
+    """A host message as lines for a person; the client adds no game rules."""
+    kind = message.get("type")
+    if kind == "message":
+        return [_line(message)]
+    if kind == "messages":
+        return [_line(m) for m in message["messages"]] or ["[history] Nothing yet."]
+    if kind == "referee":
+        if message["state"] == "busy":
+            return ["[busy] The referee is answering."]
+        return ["[idle] The referee is ready."]
+    if kind == "referee_status":
+        choices = message["choices"]
+        waiting = (
+            f'waiting for you: "{choices[0]["question"]}"'
+            if choices
+            else "nothing waiting for you"
+        )
+        lines = [
+            f"[status] {message['state']}; {waiting}; last message {message['last_seq']}"
+        ]
+        last = message["your_last_input"]
+        if last is not None:
+            privacy = " (private)" if last["private"] else ""
+            lines.append(
+                f'[your last input] "{last["text"]}"{privacy} {last["job_state"]}'
+            )
+        return lines
+    if kind == "error":
+        if message["code"] == "referee_busy":
+            return [f"[busy] {message['message']}"]
+        return [f"[error] {message['message']}"]
+    if kind == "snapshot":
+        view = message.get("view")
+        detail = "" if view is None else " " + json.dumps(view, separators=(", ", ": "))
+        return [f"[view] revision {message['revision']}{detail}"]
+    return []  # accepted (its words arrive as a message) and revisions
+
+
+def _line(message: dict) -> str:
+    sender = message["from"]
+    who = "Referee" if sender.get("kind") == "referee" else sender.get("name", "?")
+    return f"[{message['audience']}] {who}: {message['text']}"
+
+
+def _is_unsolicited(message: dict) -> bool:
+    if message.get("version") != 1:
+        return False
+    if message["type"] == "referee":
+        return message.get("state") in ("busy", "idle")
+    return _is_conversation(message)
+
+
+def _is_conversation(message: dict) -> bool:
+    sender = message.get("from")
+    return (
+        _is_revision(message.get("seq"))
+        and isinstance(sender, dict)
+        and (sender.get("kind") == "referee" or isinstance(sender.get("name"), str))
+        and message.get("audience") in ("table", "private")
+        and isinstance(message.get("text"), str)
+    )
+
+
 def _check_reply(message: dict, sent: str, session: tuple):
     """Raise unless `message` is a well-formed reply to the line `sent`.
 
@@ -329,6 +496,28 @@ def _check_reply(message: dict, sent: str, session: tuple):
     elif kind == "sync" and message.get("type") == "snapshot":
         if not (_is_snapshot(message) and _session_of(message) == session):
             raise _Failure("the host sent a snapshot that does not match this session")
+    elif kind == "say" and message.get("type") == "accepted":
+        if not (
+            message.get("request_id") == line.get("request_id")
+            and isinstance(message.get("job_id"), str)
+            and _is_revision(message.get("seq"))
+        ):
+            raise _Failure("the host sent an acceptance that does not answer the input")
+    elif kind == "referee_status" and message.get("type") == "referee_status":
+        last = message.get("your_last_input")
+        if not (
+            message.get("state") in ("idle", "busy")
+            and isinstance(message.get("choices"), list)
+            and _is_revision(message.get("last_seq"))
+            and (last is None or isinstance(last, dict))
+        ):
+            raise _Failure("the host sent a malformed referee status")
+    elif kind == "messages" and message.get("type") == "messages":
+        if not (
+            isinstance(message.get("messages"), list)
+            and all(_is_conversation(m) for m in message["messages"])
+        ):
+            raise _Failure("the host sent malformed messages")
     else:
         raise _Failure(
             f"the host answered a {kind or 'malformed'} line with a "
