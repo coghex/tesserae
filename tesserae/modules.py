@@ -133,6 +133,16 @@ class Module:
     proposed state, including that every reference to a participant names one
     of `participant_ids`, and raises SeedError if it is not valid. A module
     without it refuses seeds.
+
+    Referee mode (docs/designs/referee_contract.md section 9) adds three
+    optional hooks. `referee_context(state)` returns everything the referee
+    should know about the bounded scene, hidden preparation included; it is
+    never sent to a player. `referee_actions(state, participant_id)` describes
+    the commands that participant may use now, with their stakes.
+    `referee_commands` run only in the host's `referee` context, which no
+    player can authenticate as; their executors see `participant_id ==
+    "referee"`. A module without them gets a minimal default and no
+    referee-only commands.
     """
 
     id: str
@@ -147,6 +157,9 @@ class Module:
     requires_authentication: bool = False
     api_version: int = HOST_API_VERSION
     validate_seed: Callable[[dict, frozenset[str]], None] | None = None
+    referee_context: Callable[[dict], dict] | None = None
+    referee_actions: Callable[[dict, str], list] | None = None
+    referee_commands: tuple[Command, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -160,6 +173,32 @@ class Runtime:
 
     def command(self, name: str) -> Command | None:
         return self._commands.get(name)
+
+    def for_referee(self) -> "Runtime":
+        """The same module and providers with only its referee-only commands,
+        for the host's `referee` context. Player runtimes never include them."""
+        return Runtime(
+            module=self.module,
+            providers=self.providers,
+            _commands=MappingProxyType(
+                {command.name: command for command in self.module.referee_commands}
+            ),
+        )
+
+    def referee_context(self, state: dict) -> dict | None:
+        """The module's referee context, or None if it has no hook."""
+        hook = self.module.referee_context
+        if hook is None:
+            return None
+        return _json_copy(hook(_json_copy(state, "state")), "referee context")
+
+    def referee_actions(self, state: dict, participant_id: str) -> list | None:
+        """What `participant_id` may do now, or None if the module has no hook."""
+        hook = self.module.referee_actions
+        if hook is None:
+            return None
+        actions = hook(_json_copy(state, "state"), participant_id)
+        return _json_copy({"actions": actions}, "referee actions")["actions"]
 
     @property
     def command_names(self) -> tuple[str, ...]:
@@ -238,7 +277,11 @@ class Catalog:
         self._modules = _unique(modules, lambda m: m.id, "module")
         self._providers = _unique(providers, lambda p: p.id, "provider")
         for module in self._modules.values():
-            _unique(module.commands, lambda c: c.name, f"{module.id} command")
+            _unique(
+                (*module.commands, *module.referee_commands),
+                lambda c: c.name,
+                f"{module.id} command",
+            )
 
     def module_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._modules))
