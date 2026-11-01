@@ -8,7 +8,8 @@ before its implementation and implemented with it in `tesserae/lobby.py`,
 [host lobby design](host_lobby_design.md) into exact rules for the
 registry-backed host: the lobby messages, how a host player becomes a
 campaign participant, and how access checks are ordered against game commits.
-The CLI (#98) and browser (#99) clients build on it; the
+The CLI (`tesserae connect --lobby`, #98) implements its client rules; the
+browser (#99) will too. The
 [registry guide](../host-registry.md) covers the HOST-1 operator tools it uses.
 
 Inside a selected campaign every message is the existing
@@ -196,7 +197,8 @@ campaign message is tied to the selection it was produced for:
 `your_last_input` belong to the campaign's participant. A client keeps any
 unconfirmed input with the campaign it was sent to and never resends it after
 selecting another campaign; it may resend it unchanged after selecting the
-same campaign again, which replays the recorded outcome. The host cannot
+same campaign again as the same participant, which replays the recorded
+outcome. The host cannot
 recognise a misdirected retry (another campaign is another namespace), so this
 is a client rule, and HOST-3 and HOST-4 test it.
 
@@ -342,9 +344,9 @@ holds another game, the connection gets `left` instead.
 `serve --database`, development mode, browser mode, TLS and the existing
 clients are unchanged. A game opened by this version is upgraded to schema
 version 6, which older Tesserae versions refuse to open, as with earlier
-upgrades. The CLI's lobby commands (#98) and the browser's login and picker
-(#99) are not part of HOST-2; HOST-2's tests drive the lobby over raw
-WebSocket messages.
+upgrades. The CLI's lobby mode (#98, `tesserae connect --lobby`) and the
+browser's login and picker (#99) are separate deliveries; HOST-2's own tests
+drive the lobby over raw WebSocket messages.
 
 ## 9. Tests
 

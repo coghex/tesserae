@@ -443,6 +443,10 @@ The thin client ([#17](https://github.com/coghex/tesserae/issues/17),
 python3 -m tesserae connect URI --token-file PATH [--game-id ID] [--ca-file CERT]
 ```
 
+With `--lobby` (and optionally `--campaign ID`), the token file holds a host
+token for a lobby host: the client logs in and offers `/campaigns`, `/join`
+and `/leave` ([registry guide](host-registry.md#play-from-the-cli)).
+
 `URI` is `wss://HOST:PORT/` for an encrypted host, verified against `--ca-file`
 or the system's trusted authorities. It can be `ws://` only for this computer
 (a loopback address or `localhost`). Certificate and name checks finish before
@@ -473,7 +477,9 @@ the join is sent. See [tls.md](tls.md).
   roll, or a result with no payload. The client stops without printing it,
   and reports the requests still unanswered as uncertain.
 - **End of input.** The client waits up to `--drain-timeout` seconds (default
-  10) for replies to everything sent, then closes. It does not wait for
+  10) after its input ends for replies to everything sent, then closes; that
+  includes a reply it was holding later lines back for, such as its first
+  status or a campaign selection. It does not wait for
   further notifications. If replies are missing, or the host closes with
   requests outstanding, it names their request IDs on stderr and exits 3.
   Resend those lines unchanged. Ctrl-C exits 130, and a host that ends the
@@ -544,7 +550,8 @@ sends text that starts with `/`. It prints readable lines:
 ```
 
 On joining it asks for `referee_status`, so it shows the player's last input
-and its state (`[your last input] "Yes, go." completed`). `/retry` resends the
+and its state (`[your last input] "Yes, go." completed`), and reads no more
+input until the answer arrives. `/retry` resends the
 client's input still waiting for its reply, else its last accepted input (a
 later input refused as busy does not replace it), else that reported input, with
 its original request ID: the host returns its recorded state and reply, never

@@ -42,8 +42,8 @@ local registry foundation (#96), registry-backed foreground host (#97), CLI
 selection (#98), browser selection (#99) and mixed-client acceptance (#100).
 The [registry guide](host-registry.md) covers the operator tools and
 `serve --registry`, the lobby host implemented by #97 under the
-[lobby contract](designs/lobby_contract.md); client selection (#98, #99) is
-next. Existing single-game connections remain usable.
+[lobby contract](designs/lobby_contract.md), and `tesserae connect --lobby`
+(#98) from the CLI; browser selection (#99) is next. Existing single-game connections remain usable.
 
 Character selection/creation, multiple characters per player and joining an
 ongoing scenario are the next direction after this foundation; their rules

@@ -593,9 +593,9 @@ class ClientTests(RefereeGame):
         self.assertEqual(alice.finish(), 0)  # it left before the reply
         self.host.release.set()
         alice = self.client("alice")
+        alice.type("/retry")  # piped at once: it waits for the client's /status
         lines = alice.until("[your last input]")
         self.assertRegex(lines[-1], r'^\[your last input\] "hold" (running|completed)$')
-        alice.type("/retry")
         self.assertIn(
             "[table] Referee: Heard: hold", alice.until("[table] Referee: Heard: hold")
         )
