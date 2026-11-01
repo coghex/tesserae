@@ -82,6 +82,15 @@ class ConversationCase(BrowserCase):
     def expect_status(self, page, text):
         expect(page.locator("#console-status")).to_contain_text(text)
 
+    def expect_answered(self, page, text):
+        """The job's reply `text`, then its end, reached this page. "Ready"
+        alone can still be the status from before the job, whose `busy` may
+        not have arrived yet (#104); a page gets `busy`, the reply and `idle`
+        in that order."""
+        replies = page.locator("#conversation .message-text", has_text=text)
+        expect(replies).to_have_count(1)
+        self.expect_status(page, "The referee is ready.")
+
     def texts(self, page) -> list:
         return page.locator("#conversation .message-text").all_text_contents()
 
@@ -212,7 +221,7 @@ class SendingTests(ConversationCase):
         expect(private).not_to_be_checked()
         expect(private).to_be_enabled()
         self.replies.put(reply(("sender", "Noted.")))
-        self.expect_status(page, "The referee is ready.")
+        self.expect_answered(page, "Noted.")
         self.assertEqual(self.errors, [])
 
 
@@ -243,6 +252,7 @@ class TalkingTests(ConversationCase):
         self.say(bob, "Can anyone see me?", private=True)
         job = self.job()
         self.assertEqual((job.participant_id, job.private), (self.ids["bob"], True))
+        self.expect_status(alice, "The referee is answering.")  # so "ready" is after it
         self.replies.put(reply(("sender", "Only you and I know.")))
         expect(bob.locator("#conversation .message.private")).to_have_count(2)
         expect(bob.locator("#conversation .audience")).to_have_text(
@@ -280,7 +290,7 @@ class TalkingTests(ConversationCase):
         self.assertEqual((job.participant_id, job.text), (self.ids["bob"], "Me too!"))
         self.assertTrue(self.jobs.empty())  # the refused attempt never ran
         self.replies.put(reply(("table", "Now Bob.")))
-        self.expect_status(alice, "The referee is ready.")
+        self.expect_answered(alice, "Now Bob.")
         [alice_socket] = self.sent(alice)
         self.assertEqual(alice_socket.count("say"), 1)
         self.assertEqual(alice_socket.count("join"), 1)
