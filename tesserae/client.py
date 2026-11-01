@@ -98,6 +98,7 @@ class _Client:
         self.drain_timeout = drain_timeout
         self.unanswered = deque()  # lines sent, oldest first; replies come in order
         self.replied = asyncio.Event()
+        self.deadline = None  # once stdin ends, when the host must have answered
         # Lobby mode (--lobby): the catalog last shown, the selected campaign,
         # and the retry state of each campaign and participant while the client
         # is elsewhere.
@@ -170,13 +171,11 @@ class _Client:
         lines = asyncio.Queue()
         if self.campaign_wanted is not None:
             lines.put_nowait(f"/join {self.campaign_wanted}".encode())
-        _start_stdin_reader(asyncio.get_running_loop(), lines)
+        _start_stdin_reader(asyncio.get_running_loop(), lines, self._input_ended)
         receiver = asyncio.create_task(self._receive(connection))
         try:
             await self._forward(connection, lines, receiver)
-            await asyncio.wait_for(
-                self._until_closed(self._all_answered(), receiver), self.drain_timeout
-            )
+            await self._until_closed(self._all_answered(), receiver)
         except TimeoutError:
             return self._stop(
                 f"no reply within {self.drain_timeout:g} seconds after input ended",
@@ -513,9 +512,20 @@ class _Client:
             print(line, flush=True)
 
     async def _all_answered(self):
+        """Wait until every line sent is answered. Once stdin has ended, the
+        host has the drain timeout from then to answer, whatever the client
+        is waiting for (a join, a leave, its first status, or the last reply)."""
         while self.unanswered:
             self.replied.clear()
-            await self.replied.wait()
+            if self.deadline is None:
+                await self.replied.wait()
+            else:
+                left = self.deadline - asyncio.get_running_loop().time()
+                await asyncio.wait_for(self.replied.wait(), max(left, 0))
+
+    def _input_ended(self):
+        self.deadline = asyncio.get_running_loop().time() + self.drain_timeout
+        self.replied.set()  # a wait already in progress takes the deadline now
 
     async def _until_closed(self, awaitable, receiver):
         """Await something unless the host closes or Ctrl-C comes first."""
@@ -896,14 +906,17 @@ def _decode_line(line: bytes):
         return None
 
 
-def _start_stdin_reader(loop, lines: asyncio.Queue):
+def _start_stdin_reader(loop, lines: asyncio.Queue, ended):
     """Read stdin on a daemon thread with os.read, which holds no Python locks,
-    so an idle reader never prevents the client from exiting.
+    so an idle reader never prevents the client from exiting. At the end it
+    queues None and calls `ended` on the loop.
     """
 
     def deliver(item):
         try:
             loop.call_soon_threadsafe(lines.put_nowait, item)
+            if item is None:
+                loop.call_soon_threadsafe(ended)
         except RuntimeError:  # the client has already finished
             pass
 

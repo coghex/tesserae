@@ -477,7 +477,9 @@ the join is sent. See [tls.md](tls.md).
   roll, or a result with no payload. The client stops without printing it,
   and reports the requests still unanswered as uncertain.
 - **End of input.** The client waits up to `--drain-timeout` seconds (default
-  10) for replies to everything sent, then closes. It does not wait for
+  10) after its input ends for replies to everything sent, then closes; that
+  includes a reply it was holding later lines back for, such as its first
+  status or a campaign selection. It does not wait for
   further notifications. If replies are missing, or the host closes with
   requests outstanding, it names their request IDs on stderr and exits 3.
   Resend those lines unchanged. Ctrl-C exits 130, and a host that ends the

@@ -13,6 +13,8 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import serve as sync_serve
 
 from tesserae.credentials import new_token, write_token_file
+from tesserae.protocol import snapshot_message
+from tesserae.referee.store import RefereeStore
 from tesserae.store import GameStore
 
 TIMEOUT = 15
@@ -377,6 +379,44 @@ class UnansweredRequestTests(ClientCase):
         self.assertIn("'r1'", client.stderr)
         self.assertIn("resend those lines unchanged", client.stderr)
         self.assertCleanOutput(client)
+
+    def test_drain_timeout_bounds_the_wait_for_a_first_status_or_a_join(self):
+        """The client reads no input until its automatic status (or a lobby
+        join) is answered, but once stdin ends the drain timeout still holds."""
+
+        def ignore_everything(connection):
+            try:
+                for _ in connection:
+                    pass
+            except ConnectionClosed:
+                pass
+
+        with GameStore(self.database) as store:
+            referee = RefereeStore(store)
+            referee.enable()
+            pid = store.authenticate(self.tokens["alice"]).participant_id
+            snapshot = snapshot_message(
+                store.game_id, pid, 0, referee=referee.projection(pid)
+            )
+        uri = self.fake_host(ignore_everything, snapshot=snapshot)
+        client = self.connect("alice", "--json", "--drain-timeout", "0.1", uri=uri)
+        self.assertEqual(client.message()["type"], "snapshot")
+        self.assertEqual(client.finish(), 3)  # its status is still unanswered
+        self.assertIn("no reply within 0.1 seconds after input ended", client.stderr)
+
+        def lobby_then_silence(connection):
+            json.loads(connection.recv())  # the login
+            connection.send(json.dumps({"version": 1, "type": "lobby",
+                "player_id": "h_1", "player_name": "Alice",
+                "campaigns": [{"campaign_id": "c_1", "name": "Harbor"}],
+                "selected": None}))  # fmt: skip
+            ignore_everything(connection)
+
+        uri = self.fake_host(lobby_then_silence, greet=False)
+        client = self.connect("alice", "--lobby", "--drain-timeout", "0.1", uri=uri)
+        client.send("/join 1", "/campaigns")  # the second waits for the join
+        self.assertEqual(client.finish(), 3)
+        self.assertIn("no reply within 0.1 seconds after input ended", client.stderr)
 
     def test_host_closing_at_once_is_a_clean_failure(self):
         uri = self.fake_host(lambda connection: connection.close(), greet=False)
