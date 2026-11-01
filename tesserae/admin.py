@@ -5,13 +5,12 @@ administration. A new token goes only to the token file the operator names.
 It is never printed, logged, passed as an argument, or stored.
 """
 
-import os
 import sqlite3
 import sys
 from pathlib import Path
 
 from .builtin import CATALOG
-from .credentials import new_token, write_token_file
+from .credentials import IssuedToken
 from .external import load_module_dir
 from .modules import ModuleError, SeedError
 from .seed import read_seed
@@ -191,7 +190,7 @@ def run(args) -> int:
 
 def _add(args) -> int:
     created = not Path(args.database).exists()
-    with _issued_token(args.token_file) as token, GameStore(args.database) as store:
+    with IssuedToken(args.token_file) as token, GameStore(args.database) as store:
         participant_id = store.add_participant(args.name, token)
     if created:
         print(f"Created a new game store at {args.database}.", file=sys.stderr)
@@ -214,7 +213,7 @@ def _list(args) -> int:
 
 
 def _rotate(args) -> int:
-    with _existing(args.database) as store, _issued_token(args.token_file) as token:
+    with _existing(args.database) as store, IssuedToken(args.token_file) as token:
         replaced = store.rotate_credential(args.participant_id, token)
     if replaced:
         print(f"Rotated {args.participant_id}: the old token no longer works.")
@@ -241,26 +240,3 @@ def _existing(database) -> GameStore:
     if not Path(database).is_file():
         raise StoreError(f"No game store at {database}.")
     return GameStore(database)
-
-
-class _issued_token:
-    """Write a new token file first; remove it again if the store change fails.
-
-    Writing first means an existing file or bad path fails before anything is
-    committed, and a committed credential always has its token on disk.
-    """
-
-    def __init__(self, path):
-        self.path = path
-
-    def __enter__(self) -> str:
-        token = new_token()
-        try:
-            write_token_file(self.path, token)
-        except FileExistsError:
-            raise OSError(f"Refusing to overwrite existing file {self.path}.") from None
-        return token
-
-    def __exit__(self, kind, error, traceback):
-        if kind is not None:
-            os.remove(self.path)

@@ -874,35 +874,7 @@ class GameStore:
         )
 
     def _validate(self) -> int:
-        """Check identity and schema with reads only; return the schema version."""
-        if self._pragma("application_id") != APPLICATION_ID:
-            raise StoreError("Not a Tesserae game store; refusing to modify it.")
-        version = self._pragma("user_version")
-        if version > SCHEMA_VERSION:
-            raise StoreError(
-                f"This game store uses schema version {version}, which is newer "
-                f"than this Tesserae supports ({SCHEMA_VERSION}). Upgrade Tesserae."
-            )
-        if version not in _COLUMNS:
-            raise StoreError(f"Unsupported Tesserae store schema version {version}.")
-        for table, expected in _COLUMNS[version].items():
-            columns = [
-                row[0]
-                for row in self._connection.execute(
-                    "SELECT name FROM pragma_table_info(?)", (table,)
-                )
-            ]
-            if columns != expected:
-                raise StoreError(f"Tesserae store table {table!r} is damaged.")
-        if self._connection.execute("SELECT count(*) FROM game").fetchone()[0] != 1:
-            raise StoreError("Tesserae store must hold exactly one game.")
-        if (
-            version >= 3
-            and self._connection.execute("SELECT count(*) FROM module").fetchone()[0]
-            != 1
-        ):
-            raise StoreError("Tesserae store must hold exactly one module binding.")
-        return version
+        return _validate_store(self._connection)
 
     @contextmanager
     def _write(self):
@@ -1009,3 +981,64 @@ def _is_busy(error: sqlite3.OperationalError) -> bool:
         sqlite3.SQLITE_BUSY,
         sqlite3.SQLITE_LOCKED,
     )
+
+
+def inspect_game_id(path) -> str:
+    """Read an existing game's identity without migrations or module loading.
+
+    Read-only SQLite mode sees committed WAL data too. Unlike open_existing,
+    this does not initialize the store or change its journal mode/schema.
+    """
+    path = Path(path).expanduser().resolve(strict=True)
+    if not path.is_file():
+        raise StoreError("Campaign database must be an existing file.")
+    connection = sqlite3.connect(
+        path.as_uri() + "?mode=ro", uri=True, isolation_level=None
+    )
+    try:
+        connection.execute("BEGIN")
+        _validate_store(connection)
+        game_id = connection.execute("SELECT game_id FROM game").fetchone()[0]
+        try:
+            if str(uuid.UUID(game_id)) != game_id:
+                raise ValueError
+        except (TypeError, ValueError, AttributeError):
+            raise StoreError("The campaign has an invalid game ID.") from None
+        return game_id
+    finally:
+        connection.close()
+
+
+def _validate_store(connection: sqlite3.Connection) -> int:
+    """Check identity and schema with reads only; return the schema version."""
+
+    def pragma(name):
+        return connection.execute(f"PRAGMA {name}").fetchone()[0]
+
+    if pragma("application_id") != APPLICATION_ID:
+        raise StoreError("Not a Tesserae game store; refusing to modify it.")
+    version = pragma("user_version")
+    if version > SCHEMA_VERSION:
+        raise StoreError(
+            f"This game store uses schema version {version}, which is newer "
+            f"than this Tesserae supports ({SCHEMA_VERSION}). Upgrade Tesserae."
+        )
+    if version not in _COLUMNS:
+        raise StoreError(f"Unsupported Tesserae store schema version {version}.")
+    for table, expected in _COLUMNS[version].items():
+        columns = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM pragma_table_info(?)", (table,)
+            )
+        ]
+        if columns != expected:
+            raise StoreError(f"Tesserae store table {table!r} is damaged.")
+    if connection.execute("SELECT count(*) FROM game").fetchone()[0] != 1:
+        raise StoreError("Tesserae store must hold exactly one game.")
+    if (
+        version >= 3
+        and connection.execute("SELECT count(*) FROM module").fetchone()[0] != 1
+    ):
+        raise StoreError("Tesserae store must hold exactly one module binding.")
+    return version

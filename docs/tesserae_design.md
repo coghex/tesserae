@@ -24,8 +24,9 @@ streaming CLI is the first game client; a browser later displays the player's
 view and offers interactions. Friends can join the same host from other computers.
 
 The diversity of rulesets is a central motivation. A game can use a different
-set of concepts and mechanics without being forced into a universal character,
-combat, inventory, or turn model.
+set of concepts and mechanics without being forced into universal character
+attributes, combat, inventory, or turn mechanics. D-24 adds a small common
+character identity/lifecycle for entering RPG play, with module-owned details.
 
 ## Verified starting point
 
@@ -291,6 +292,29 @@ tokens initially; remembered login is a later design. The
 [#82](https://github.com/coghex/tesserae/issues/82), and its
 [browser contract](designs/browser_contract.md) record the children and the
 engineering boundaries, under [Milestone 2](milestone-2.md).
+
+### D-24. Stable host players, campaign selection and character lifecycle
+
+On 2026-11-01 the owner selected host-level personal tokens and the flow:
+authenticate, choose an accessible active campaign, then choose or create a
+character before entering play. A player may own multiple characters per
+campaign; selection belongs to each connection. CLI and browser use the same
+host operations. Character deletion will archive records so history remains
+intact. Rules modules retain character attributes, creation mechanics and
+turn rules; the common layer provides identity and lifecycle, not a universal
+sheet. Standalone utility commands remain usable without a character.
+
+The first delivery is
+[M2-2: host identity and campaign lobby](designs/host_lobby_design.md),
+tracker [#95](https://github.com/coghex/tesserae/issues/95), beginning with the
+[local registry](host-registry.md). Network selection and both clients follow
+the registry; character lifecycle/creation and private campaign continuation
+are subsequent work. This supersedes joining directly into a single game for
+the new opt-in host mode. Existing single-game mode remains compatible.
+Console stays the default in-campaign screen under D-23; authentication and
+campaign/character selection precede it. Accepted inputs retain their original
+campaign/character and cannot be redirected by switching. Switching characters
+cannot grant extra turns. Model-guided creation releases busy between answers.
 
 ## Proposed implementation boundaries
 
