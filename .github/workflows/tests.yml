@@ -26,3 +26,18 @@ jobs:
         run: |
           python3 -m tesserae --help
           python3 -m tesserae roll '2d1+3' --json
+          python3 -c "from tesserae.web import load_assets; print(sorted(load_assets()))"
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 -m pip install -e '.[dev,browser-test]'
+      - run: python3 -m playwright install --with-deps chromium
+      - run: python3 -m unittest discover -s tests -p 'test_browser_*.py' -v
+        env:
+          TESSERAE_BROWSER_TESTS: "1"

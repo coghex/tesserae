@@ -24,6 +24,7 @@ from pathlib import Path
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
+from .browser import RequestPolicy
 from .external import load_module_dir
 from .modules import ModuleError
 from .protocol import (
@@ -55,6 +56,7 @@ from .referee.runner import DEFAULT_TIMEOUT, RefereeDir, RunnerError
 from .referee.store import REFEREE, RefereeError, RefereeStore
 from .store import GameStore, ParticipantContext, StoreBusy, StoreError
 from .transport import TransportConfigError, check_server, server_context
+from .web import AssetsError, load_assets
 
 HOST = "127.0.0.1"  # the default; see tesserae.transport for what else is allowed
 DEVELOPMENT_PARTICIPANT = ParticipantContext("local-development")
@@ -97,6 +99,7 @@ class GameHost:
         referee_executor=None,
         referee_dir=None,
         referee_timeout: float = DEFAULT_TIMEOUT,
+        browser_assets=None,
     ):
         """`runtime`, if given, is an externally loaded module's runtime
         (tesserae.external). The game must then already exist and be bound to
@@ -107,7 +110,11 @@ class GameHost:
         RefereeJobFailed. The host stores and delivers what it returns.
         Without one, `referee_dir` (a folder made by `tesserae referee setup`)
         gives the game a CodexReferee (tesserae.referee.orchestrator), which
-        the host also opens, lets recover an earlier run's job, and closes."""
+        the host also opens, lets recover an earlier run's job, and closes.
+
+        `browser_assets` (tesserae.web.load_assets) also serves the browser
+        page from this port: plain loopback, authenticated and in referee mode
+        only (docs/designs/browser_contract.md sections 2 and 3)."""
         self.database = Path(database).resolve()
         self.authenticated = authenticated
         self.host = host
@@ -139,6 +146,18 @@ class GameHost:
             raise HostConfigError(
                 "this game is in referee mode, which requires --authenticated"
             )
+        if browser_assets is not None:
+            if not authenticated:
+                raise HostConfigError("--browser requires --authenticated")
+            if not self.referee_mode:
+                raise HostConfigError(
+                    "--browser needs a game in referee mode (tesserae referee enable)"
+                )
+            if ssl_context is not None or host != HOST:
+                raise HostConfigError(
+                    f"--browser serves this computer only, on {HOST} without TLS"
+                )
+        self._requests = RequestPolicy(browser_assets)
         if self.referee_mode and referee_executor is None and referee_dir is not None:
             folder = RefereeDir(Path(referee_dir).expanduser())
             if not (folder.codex_home / "config.toml").is_file():
@@ -186,8 +205,15 @@ class GameHost:
                     lambda revision: loop.call_soon_threadsafe(self._publish, revision),
                 )
                 recovery = asyncio.create_task(self._recover_referee())
-            async with serve(self._handle, self.host, port, ssl=self._ssl) as server:
+            async with serve(
+                self._handle,
+                self.host,
+                port,
+                ssl=self._ssl,
+                process_request=self._requests.process_request,
+            ) as server:
                 address, bound_port = server.sockets[0].getsockname()[:2]
+                self._requests.bind(bound_port)
                 scheme = "ws" if self._ssl is None else "wss"
                 if on_ready is not None:
                     on_ready(f"{scheme}://{address}:{bound_port}/")
@@ -782,6 +808,7 @@ def run_foreground(
     module_dir=None,
     referee_dir=None,
     referee_timeout: float = DEFAULT_TIMEOUT,
+    browser: bool = False,
 ) -> int:
     """The `tesserae serve` command: run until Ctrl-C, then exit cleanly.
 
@@ -791,6 +818,21 @@ def run_foreground(
     and the game must already exist bound to it.
     """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    if browser:
+        if not authenticated:
+            return _fail("--browser requires --authenticated; nothing was started", 2)
+        if tls_cert is not None or tls_key is not None or host != HOST:
+            return _fail(
+                f"--browser serves this computer only, on {HOST} without TLS "
+                "(browser certificate trust is later work); nothing was started",
+                2,
+            )
+        try:
+            assets = load_assets()
+        except AssetsError as error:
+            return _fail(str(error))
+    else:
+        assets = None
     try:
         transport = check_server(
             host, authenticated=authenticated, tls_cert=tls_cert, tls_key=tls_key
@@ -816,6 +858,7 @@ def run_foreground(
             runtime=runtime,
             referee_dir=referee_dir or DEFAULT_REFEREE_DIR,
             referee_timeout=referee_timeout,
+            browser_assets=assets,
         )
     except HostConfigError as error:
         return _fail(f"{error}; nothing was started", code=2)
@@ -835,6 +878,12 @@ def run_foreground(
             "Press Ctrl-C to stop.",
             flush=True,
         )
+        if browser:
+            page = "http://" + uri.removeprefix("ws://")
+            print(
+                f"Browser: {page} (this computer only; join with a personal token)",
+                flush=True,
+            )
 
     async def main():
         loop = asyncio.get_running_loop()

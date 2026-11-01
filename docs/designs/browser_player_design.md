@@ -5,7 +5,8 @@ Status: delivery plan, filed as tracker
 (WEB-1 to WEB-6, in the table below). The owner accepted localhost-only browser
 delivery, console first, and the navigation layout below on 2026-11-01. The
 exact contracts are in the [browser contract](browser_contract.md) (WEB-1);
-no browser runtime is implemented yet. Baseline: M1-6 completed through PR #80
+so far `serve --browser` serves the page shell (WEB-2, #84), and players cannot
+join from it yet. Baseline: M1-6 completed through PR #80
 at `b4384f2`. This is the first delivery tracker in
 [Milestone 2](../milestone-2.md).
 
