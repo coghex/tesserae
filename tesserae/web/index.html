@@ -63,6 +63,21 @@
         <div class="play" id="console-play" hidden>
           <ol class="conversation" id="conversation" role="log"
               aria-label="Conversation"></ol>
+          <div class="panel question" id="console-question" aria-live="polite" hidden>
+            <h2>The referee asks you</h2>
+            <p id="console-question-text"></p>
+            <p class="note">Answer by typing below, like anything else you say.</p>
+          </div>
+          <div class="panel last-input" id="console-last" hidden>
+            <h2>Your last input</h2>
+            <p><span id="console-last-text"></span>:
+              <span id="console-last-state"></span></p>
+          </div>
+          <div class="panel state" id="console-state">
+            <h2>Your view</h2>
+            <div id="console-state-body"></div>
+            <p class="note" id="console-state-revision"></p>
+          </div>
           <div class="composer">
             <label for="composer-text">Say to the referee</label>
             <textarea id="composer-text" rows="3" maxlength="2000"

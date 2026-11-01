@@ -222,3 +222,16 @@ input { width: 100%; min-width: 0; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 
 code { overflow-wrap: anywhere; }
+
+.question { border-left: 0.25rem solid var(--accent); }
+.question p { margin: 0 0 0.5rem; }
+.last-input p { margin: 0; overflow-wrap: anywhere; }
+.state h3 { margin: 0.75rem 0 0.25rem; font-size: 1rem; }
+.state h3:first-child { margin-top: 0; }
+.state p { margin: 0 0 0.5rem; }
+.relay-state { font-weight: 600; }
+.tree { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.125rem 0.75rem; margin: 0; }
+.tree dt { color: var(--muted); }
+.tree dd { margin: 0; overflow-wrap: anywhere; }
+.tree-list { margin: 0; padding-left: 1.25rem; }
+.none { color: var(--muted); font-style: italic; }

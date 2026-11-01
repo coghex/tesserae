@@ -53,10 +53,15 @@ class ConversationCase(BrowserCase):
         }
 
     async def executor(self, job):
-        """Hands each job to the test, then returns the reply it scripts."""
+        """Hands each job to the test, then returns the reply it scripts: a
+        reply, or a function of the job run on a worker thread (which may use
+        the bridge tools) that returns one."""
         self.jobs.put(job)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.replies.get, True, 20)
+        outcome = await loop.run_in_executor(None, self.replies.get, True, 20)
+        if callable(outcome):
+            return await loop.run_in_executor(None, outcome, job)
+        return outcome
 
     def joined(self, name):
         page = self.open()
@@ -100,6 +105,7 @@ class JoiningTests(ConversationCase):
         page.locator("#console-join .join-button").click()
         self.expect_status(page, "Joined as Alice")
         expect(page.locator("#console-notice")).to_be_hidden()
+        expect(page.locator("#console-state-body")).to_have_text("Nothing to show yet.")
         page.get_by_role("button", name="Settings").click()
         expect(page.locator("#settings-name")).to_have_text(
             f"Alice ({self.ids['alice']})"

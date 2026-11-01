@@ -7,8 +7,10 @@ so far: serving, the request rules and the shell (sections 2 to 5) in
 browser test tooling of section 12; joining, identity and conversation
 (sections 6, 7 and 8's status line, conversation and composer) and the
 snapshot's `participant_name` (section 11) in `tesserae/web/session.js` and
-`app.js` (#85). Until WEB-5, a dropped connection clears the identity like a
-refusal, and the player joins again. It turns the
+`app.js` (#85); the state panel, pending question and last input (sections 8
+and 10, and 7's revision-driven sync) in `views.js` and `app.js` (#86). Until
+WEB-5, a dropped connection clears the identity like a refusal, and the player
+joins again, and the last input has no Resend button. It turns the
 [M2-1 delivery plan](browser_player_design.md) into exact contracts for WEB-2
 to WEB-6 ([#84](https://github.com/coghex/tesserae/issues/84) to
 [#88](https://github.com/coghex/tesserae/issues/88)). The wire messages are the
