@@ -20,8 +20,10 @@ for agreed direction, proposals, and open questions, and the
 The next delivery is
 [host identity and a campaign lobby](docs/designs/host_lobby_design.md).
 The [local registry tools](docs/host-registry.md) manage stable players, campaign
-registrations and access grants. Network lobby/client selection follows;
-existing connections still use single-game participant tokens.
+registrations and access grants, and `tesserae serve --registry` serves those
+campaigns to players logging in with a host token
+([lobby contract](docs/designs/lobby_contract.md)). CLI and browser selection
+follow; single-game hosts still use their participant tokens.
 
 ## First executable slice
 

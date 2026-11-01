@@ -42,6 +42,12 @@ ERROR_CODES = frozenset(
         "referee_mode",
         "referee_off",
         "referee_needs_rebuild",
+        # Lobby hosts (docs/designs/lobby_contract.md section 3).
+        "login_required",
+        "already_logged_in",
+        "no_campaign",
+        "campaign_selected",
+        "campaign_unavailable",
     }
 )
 # One fixed message per session error, so failures never vary with the
@@ -53,6 +59,17 @@ SESSION_ERROR_MESSAGES = {
     "already_joined": "This connection has already joined.",
     "session_revoked": "This session's credential is no longer valid.",
 }
+# A lobby host's fixed messages (docs/designs/lobby_contract.md section 3).
+LOBBY_ERROR_MESSAGES = {
+    "authentication_failed": SESSION_ERROR_MESSAGES["authentication_failed"],
+    "session_revoked": SESSION_ERROR_MESSAGES["session_revoked"],
+    "login_required": "This host serves campaigns: log in with a host token first.",
+    "join_timeout": f"No login message within {JOIN_TIMEOUT_SECONDS} seconds.",
+    "already_logged_in": "This connection has already logged in.",
+    "no_campaign": "Select a campaign first.",
+    "campaign_selected": "Leave this campaign before selecting another.",
+    "campaign_unavailable": "That campaign is not available to you.",
+}
 _REQUEST_FIELDS = frozenset(
     {"version", "type", "request_id", "expected_revision", "command", "args"}
 )
@@ -60,6 +77,9 @@ _JOIN_FIELDS = frozenset({"version", "type", "token"})
 _SYNC_FIELDS = frozenset({"version", "type"})
 _SAY_FIELDS = frozenset({"version", "type", "request_id", "text", "private"})
 _MESSAGES_FIELDS = frozenset({"version", "type", "after_seq"})
+_LOGIN_FIELDS = frozenset({"version", "type", "token"})
+_SELECT_FIELDS = frozenset({"version", "type", "campaign_id"})
+LOBBY_TYPES = frozenset({"login", "lobby", "select", "leave"})
 
 
 class ProtocolError(ValueError):
@@ -129,6 +149,28 @@ class MessagesRequest:
     after_seq: int
 
 
+@dataclass(frozen=True)
+class LoginRequest:
+    """A well-formed lobby login; the host token is unverified and never shown."""
+
+    token: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class LobbyRequest:
+    """A read of the caller's catalog and selection."""
+
+
+@dataclass(frozen=True)
+class SelectRequest:
+    campaign_id: str
+
+
+@dataclass(frozen=True)
+class LeaveRequest:
+    """Return to the lobby from the selected campaign."""
+
+
 def is_valid_request_id(value) -> bool:
     return (
         isinstance(value, str)
@@ -187,6 +229,34 @@ def parse_client_message(text: str | bytes, runtime: Runtime = DICE_RUNTIME):
             )
         return MessagesRequest(data["after_seq"])
     return _parse_command(data, runtime)
+
+
+def parse_lobby_message(text: str | bytes):
+    """A lobby host's own message (login, lobby, select or leave), or None for
+    any other well-formed JSON object, which belongs to the selected campaign.
+
+    Raises ProtocolError for malformed JSON and malformed lobby messages.
+    Error messages never include a presented token.
+    """
+    data = _decode(text)
+    kind = data.get("type")
+    if kind == "login":
+        return LoginRequest(_parse_join(data, "Login").token)
+    if kind in ("lobby", "leave"):
+        _check_session_fields(data, _SYNC_FIELDS, f"A {kind} request")
+        _check_session_version(data)
+        return LobbyRequest() if kind == "lobby" else LeaveRequest()
+    if kind == "select":
+        _check_session_fields(data, _SELECT_FIELDS, "A select request")
+        if not is_valid_identifier(data["campaign_id"]):
+            raise ProtocolError(
+                "invalid_request",
+                f"'campaign_id' must be a string of 1 to {MAX_IDENTIFIER_LENGTH} "
+                "characters without whitespace.",
+            )
+        _check_session_version(data)
+        return SelectRequest(data["campaign_id"])
+    return None
 
 
 def _parse_say(data: dict) -> SayRequest:
@@ -265,8 +335,8 @@ def _has_lone_surrogate(data) -> bool:
     return False
 
 
-def _parse_join(data: dict) -> JoinRequest:
-    _check_session_fields(data, _JOIN_FIELDS, "Join")
+def _parse_join(data: dict, subject: str = "Join") -> JoinRequest:
+    _check_session_fields(data, _JOIN_FIELDS, subject)
     if not isinstance(data["token"], str):
         raise ProtocolError("invalid_request", "'token' must be a string.")
     _check_session_version(data)
@@ -418,6 +488,7 @@ def snapshot_message(
     view: dict | None = None,
     referee: dict | None = None,
     participant_name: str | None = None,
+    campaign: dict | None = None,
 ) -> dict:
     """The recipient's view: the reply to a join or a sync.
 
@@ -425,6 +496,7 @@ def snapshot_message(
     `view`, read with `revision`. Otherwise the snapshot is metadata only. A
     game in referee mode adds the recipient's `referee` projection, and an
     authenticated host the recipient's own `participant_name` (never a roster).
+    A lobby host adds the selected `campaign`, `{"campaign_id", "name"}`.
     """
     _check_identifier(game_id, "game_id")
     _check_identifier(participant_id, "participant_id")
@@ -453,7 +525,43 @@ def snapshot_message(
         message["view"] = view
     if referee is not None:
         message["referee"] = referee
+    if campaign is not None:
+        message["campaign"] = _campaign_summary(campaign)
     return message
+
+
+def lobby_message(
+    player_id: str, player_name: str, campaigns: list, selected: dict | None
+) -> dict:
+    """A lobby host's catalog for the caller: only campaign IDs and names."""
+    _check_identifier(player_id, "player_id")
+    if not isinstance(player_name, str):
+        raise ValueError("A player name is a string.")
+    return {"version": PROTOCOL_VERSION, "type": "lobby", "player_id": player_id,
+            "player_name": player_name,
+            "campaigns": [_campaign_summary(c) for c in campaigns],
+            "selected": None if selected is None else _campaign_summary(selected)}  # fmt: skip
+
+
+def left_message(campaign_id: str, reason: str) -> dict:
+    """Unsolicited: the host returned this connection to the lobby."""
+    _check_identifier(campaign_id, "campaign_id")
+    if reason != "campaign_unavailable":
+        raise ValueError("Unknown reason for leaving a campaign.")
+    return {"version": PROTOCOL_VERSION, "type": "left", "campaign_id": campaign_id,
+            "reason": reason}  # fmt: skip
+
+
+def lobby_error(code: str, message: str | None = None) -> dict:
+    """A lobby host's error, with its fixed message unless one is given."""
+    return error_message(code, message or LOBBY_ERROR_MESSAGES[code])
+
+
+def _campaign_summary(campaign: dict) -> dict:
+    _check_identifier(campaign["campaign_id"], "campaign_id")
+    if not isinstance(campaign["name"], str):
+        raise ValueError("A campaign name is a string.")
+    return {"campaign_id": campaign["campaign_id"], "name": campaign["name"]}
 
 
 def accepted_message(request_id: str, job_id: str, seq: int) -> dict:

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from tesserae.builtin import DICE_RUNTIME
-from tesserae.credentials import read_token_file
+from tesserae.credentials import new_token, read_token_file
 from tesserae.registry import HostRegistry
 from tesserae.store import GameStore
 
@@ -106,3 +106,46 @@ class HostAdminTests(unittest.TestCase):
             "campaign", "add", "--name", "Missing", "--database", missing, ok=False
         )
         self.assertFalse(missing.exists())
+
+    def test_operator_links_and_unlinks_existing_participants(self):
+        self.cli("init")
+        self.cli(
+            "player", "add", "--name", "Alice", "--token-file", self.root / "a.token"
+        )
+        [player] = json.loads(self.cli("player", "list").stdout)
+        game = self.root / "harbor.sqlite3"
+        with GameStore.create(game, DICE_RUNTIME) as store:
+            wren = store.add_participant("Wren", new_token())
+            campaign = store.game_id
+        self.cli("campaign", "add", "--database", game, "--name", "Harbor")
+        player_id = player["player_id"]
+        result = self.cli("campaign", "link", campaign, player_id, wren)
+        self.assertIn(f"Linked player {player_id} to {wren}.", result.stdout)
+        [link] = json.loads(self.cli("campaign", "links", campaign).stdout)
+        self.assertEqual(
+            (link["player_id"], link["participant_id"], link["unlinked_at"]),
+            (player_id, wren, None),
+        )
+        for refused in (
+            ("link", campaign, player_id, wren),  # already linked
+            ("link", campaign, "u_0000000000000000", wren),  # no such player
+            ("link", "00000000-0000-0000-0000-000000000000", player_id, wren),
+        ):
+            with self.subTest(refused=refused[:2]):
+                self.cli("campaign", *refused, ok=False)
+        self.assertIn(
+            "Unlinked", self.cli("campaign", "unlink", campaign, player_id).stdout
+        )
+        self.assertIn(
+            "no link", self.cli("campaign", "unlink", campaign, player_id).stdout
+        )
+        self.assertIn(
+            "no access", self.cli("campaign", "revoke", campaign, player_id).stdout
+        )
+        with GameStore(game) as store:
+            self.assertEqual([p.participant_id for p in store.participants()], [wren])
+            self.assertEqual(store.revision(), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

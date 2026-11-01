@@ -6,11 +6,15 @@ access grants. The registry is local operator data, not a campaign database.
 Keep it private along with the token files and your game databases.
 
 This is the first part of [M2-2](designs/host_lobby_design.md), tracker
-[#95](https://github.com/coghex/tesserae/issues/95). It does **not** yet serve a
-campaign lobby. Existing `serve --database`, CLI connections and browser joins
-continue using game-specific participant tokens. A new host token will not join
-those existing servers. Network admission and client selection follow in
-#97–#100; character lifecycle follows that tracker.
+[#95](https://github.com/coghex/tesserae/issues/95). HOST-2
+([#97](https://github.com/coghex/tesserae/issues/97)) serves the registry's
+campaigns with `tesserae serve --registry` ([below](#serve-the-campaigns));
+the exact rules are in the [lobby contract](designs/lobby_contract.md). The
+CLI's lobby commands and the browser's login and picker follow in #98 and
+#99. Existing `serve --database`, CLI connections and browser joins continue
+using game-specific participant tokens. A host token never joins those
+servers, and a game token never logs in to a lobby host. Character lifecycle
+follows this tracker.
 
 ## Create players and register a campaign
 
@@ -86,7 +90,7 @@ credentials and access grants but no character sheets or referee history.
 Campaign files remain authoritative for those records. Keeping the registry
 path stable is separate from the canonical registered campaign paths.
 
-## Python boundary for the next host slice
+## Python boundary
 
 `HostRegistry(path)` opens an existing registry; `HostRegistry.create(path)`
 creates one explicitly. `authenticate(token)` returns a frozen
@@ -111,7 +115,48 @@ revocation from committing until the guarded operation ends; a writer can time
 out and fail without changing access. Switching it to WAL breaks that ordering
 and is refused on open. Do not change journal mode with external tools while
 registry users are open. This is not an atomic transaction across the registry
-and game databases. HOST-2 must establish/test lock ordering, participant links,
-bridge rechecks and frozen request identities before using this API for actual
-network gameplay. The foundation alone cannot enforce revocation on legacy
-servers, which do not read the registry.
+and game databases. The lobby host holds the guard across each campaign
+transaction, registry first ([lobby contract](designs/lobby_contract.md#6-authorization-and-ordering)
+section 6). Revocation is not enforced on single-game servers, which do not
+read the registry.
+
+## Serve the campaigns
+
+```sh
+tesserae serve --registry host.sqlite3 --port 8765
+```
+
+The lobby host listens on 127.0.0.1 only. Players log in with their host
+token, see their catalog and select a campaign; the first selection admits
+them as a participant of that campaign, named as in the registry, without any
+game token. Each campaign keeps its own state, history, busy state and
+referee session. Repeat `--module-dir` for each external module package the
+campaigns use; `--referee-dir` is the referee folder for every referee-mode
+campaign. `--database`, `--authenticated`, `--browser`, TLS and other
+`--host` values are refused (exit 2). Until HOST-3 and HOST-4, clients are
+scripts speaking the lobby messages.
+
+A campaign is opened when first selected. If its file is missing, moved,
+replaced or bound to a module that is not loaded, the selection is refused as
+unavailable and the host logs why; nothing is created, and the next selection
+tries again.
+
+## Link existing participants
+
+A campaign that already has participants, for example a seeded or older game,
+can give one of them to a host player instead of creating a new one:
+
+```sh
+tesserae host campaign link --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID PARTICIPANT_ID
+tesserae host campaign links --registry host.sqlite3 CAMPAIGN_ID
+tesserae host campaign unlink --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID
+```
+
+Find participant IDs with `tesserae participant list --database GAME`. These
+commands open the campaign's file (which upgrades it to schema version 6 if
+needed) and change only its link table: never state, history or game tokens.
+A player has at most one active link per campaign, and a participant at most
+one player. Linking does not grant access. To move a player who was already
+admitted to a new participant onto an existing one, revoke their grant (or
+deactivate the campaign), `unlink`, `link`, then grant again; `unlink` keeps
+the old participant and its history.

@@ -52,12 +52,18 @@ def main(argv: list[str] | None = None) -> int:
         description="Serve one game over WebSocket until Ctrl-C, on 127.0.0.1 "
         "unless --host says otherwise (which requires authenticated TLS). "
         "By default every connection acts as one fixed development participant; "
-        "with --authenticated, each must join with a personal token.",
+        "with --authenticated, each must join with a personal token. With "
+        "--registry instead of --database, serve the host registry's campaigns "
+        "on 127.0.0.1: players log in with a host token and choose one.",
     )
     serve.add_argument(
         "--database",
-        required=True,
         help="SQLite game store; created if missing, except with --module-dir.",
+    )
+    serve.add_argument(
+        "--registry",
+        help="Serve this host registry's campaigns (see 'tesserae host'), "
+        "instead of one --database. Always authenticated, on 127.0.0.1 only.",
     )
     serve.add_argument(
         "--port", required=True, type=_port, help="TCP port; 0 picks a free one."
@@ -82,8 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     serve.add_argument(
         "--module-dir",
+        action="append",
         help="The trusted module package this game was created with (see "
-        "docs/modules.md). Its code runs as you. The game must already exist.",
+        "docs/modules.md). Its code runs as you. The game must already exist. "
+        "With --registry, repeat it for each package the campaigns use.",
     )
     serve.add_argument(
         "--referee-dir",
@@ -277,20 +285,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_game(args)
     if args.command == "serve":
-        from .server import run_foreground
-
-        return run_foreground(
-            args.database,
-            args.port,
-            authenticated=args.authenticated,
-            host=args.host,
-            tls_cert=args.tls_cert,
-            tls_key=args.tls_key,
-            module_dir=args.module_dir,
-            referee_dir=args.referee_dir,
-            referee_timeout=args.referee_timeout,
-            browser=args.browser,
-        )
+        return _serve(args)
     try:
         result = roll_expression(args.expression)
     except DiceExpressionError as error:
@@ -309,3 +304,52 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(json.dumps(result.as_dict()) if args.json else format_roll(result))
     return 0
+
+
+def _serve(args) -> int:
+    """`tesserae serve`: one game, or with --registry the lobby host."""
+    module_dirs = args.module_dir or []
+    if args.registry is None:
+        if args.database is None:
+            return _serve_refused("give --database (one game) or --registry")
+        if len(module_dirs) > 1:
+            return _serve_refused("one game takes one --module-dir")
+        from .server import run_foreground
+
+        return run_foreground(
+            args.database,
+            args.port,
+            authenticated=args.authenticated,
+            host=args.host,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
+            module_dir=module_dirs[0] if module_dirs else None,
+            referee_dir=args.referee_dir,
+            referee_timeout=args.referee_timeout,
+            browser=args.browser,
+        )
+    for given, option in (
+        (args.database is not None, "--database"),
+        (args.authenticated, "--authenticated (a lobby host always is)"),
+        (args.browser, "--browser (not yet for a lobby host)"),
+        (args.tls_cert is not None or args.tls_key is not None, "--tls-cert/--tls-key"),
+        (args.host != "127.0.0.1", "--host"),
+    ):
+        if given:
+            return _serve_refused(
+                f"--registry serves this computer only and does not take {option}"
+            )
+    from .lobby import run_foreground
+
+    return run_foreground(
+        args.registry,
+        args.port,
+        module_dirs=module_dirs,
+        referee_dir=args.referee_dir,
+        referee_timeout=args.referee_timeout,
+    )
+
+
+def _serve_refused(message: str) -> int:
+    print(f"tesserae serve: {message}; nothing was started", file=sys.stderr)
+    return 2

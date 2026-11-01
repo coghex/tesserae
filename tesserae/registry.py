@@ -52,6 +52,14 @@ class RegistryError(RuntimeError):
     """Invalid registry, operator request or stale/unauthorized host context."""
 
 
+class CredentialRevoked(RegistryError):
+    """The host context's credential is no longer active."""
+
+
+class CampaignUnavailable(RegistryError):
+    """The campaign is unknown, inactive or not granted to this player."""
+
+
 @dataclass(frozen=True)
 class HostPlayerContext:
     """Host-created authority, never constructed from client-asserted IDs."""
@@ -178,6 +186,14 @@ class HostRegistry:
             )
             self._issue(player_id, digest)
         return player_id
+
+    def require_player(self, player_id):
+        """Raise RegistryError unless the host player exists."""
+        self._require_player(player_id)
+
+    def campaign(self, campaign_id):
+        """One operator record, including its private path."""
+        return self._campaign(campaign_id)
 
     def _require_player(self, player_id):
         if not self._connection.execute(
@@ -316,7 +332,15 @@ class HostRegistry:
 
     def _require_context(self, context):
         if not self.credential_active(context):
-            raise RegistryError("Host authorization is no longer valid.")
+            raise CredentialRevoked("Host authorization is no longer valid.")
+
+    def player_name(self, context):
+        """The context's player's display name, rechecking its credential."""
+        with self._transaction():
+            self._require_context(context)
+            return self._connection.execute(
+                "SELECT name FROM players WHERE player_id = ?", (context.player_id,)
+            ).fetchone()[0]
 
     def visible_campaigns(self, context):
         with self._transaction():
@@ -344,5 +368,5 @@ class HostRegistry:
                 (campaign_id, context.player_id),
             ).fetchone()
             if row is None:
-                raise RegistryError("Campaign is not available to this player.")
+                raise CampaignUnavailable("Campaign is not available to this player.")
             yield dict(row)

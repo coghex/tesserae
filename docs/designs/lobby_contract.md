@@ -2,7 +2,9 @@
 
 Status: specification for [#97](https://github.com/coghex/tesserae/issues/97)
 under tracker [#95](https://github.com/coghex/tesserae/issues/95), written
-before its implementation. It turns the
+before its implementation and implemented with it in `tesserae/lobby.py`,
+`tesserae/server.py` (`CampaignService`), the store's `host_links` and
+`tesserae host campaign link`. It turns the
 [host lobby design](host_lobby_design.md) into exact rules for the
 registry-backed host: the lobby messages, how a host player becomes a
 campaign participant, and how access checks are ordered against game commits.
@@ -132,6 +134,10 @@ messages:
 | `campaign_unavailable` | `select` of a campaign not in the caller's catalog, unknown, inactive, or that the host cannot open now (section 7); or any campaign request after access was lost (section 6) | Stays open, in the lobby |
 | `session_revoked` | The host credential was revoked or rotated, noticed by any request | Close 1008 |
 | `internal_error` | The host failed while checking | Stays open where it was |
+
+A `campaign_unavailable` or `session_revoked` that ends a campaign or the
+session carries no `request_id` or `revision`, like every session error; the
+other errors carry the request's `request_id` where it had a valid one.
 
 `campaign_unavailable` is the same code for a campaign the player cannot see
 and one the host cannot open, so a player learns nothing about campaigns
@@ -265,7 +271,11 @@ operation is ordered wholly before or wholly after the revocation:
 | `say` | As above; then acceptance, replay or refusal |
 | A `command` (non-referee campaigns) | As above; then replay, revision check and commit |
 | `sync`, `messages`, `referee_status` | As above; then the read |
-| Each `revision`, `message` or `referee` delivery | As above, rechecked per recipient before sending |
+| Each `revision` and `message` delivery | As above, rechecked per recipient before sending |
+
+The `referee` busy/idle notice carries nothing about the game and is sent
+without a recheck, as on a single-game host; a connection that has left a
+campaign never receives one from it (section 4).
 
 This is an ordering, not an atomic transaction across the two databases; no
 claim of cross-database atomicity is made. A registry writer waits at most
@@ -292,9 +302,10 @@ that job's participant without a registry check, exactly as for a revoked
 game token, and its reply is delivered to the recipients who still have
 access. The revoked player receives none of it.
 
-Notifications and conversation deliveries for a connection whose check cannot
-complete (the registry or campaign busy past the retries) close it with 1011,
-as today: the client reconnects and logs in again.
+A delivery whose check cannot complete (the registry or campaign busy past
+the retries) closes the connection with 1011, as today: the client reconnects
+and logs in again. If the check failed because the campaign file is gone or
+holds another game, the connection gets `left` instead.
 
 ## 7. Campaign runtimes
 
