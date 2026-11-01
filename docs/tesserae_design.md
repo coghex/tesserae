@@ -285,9 +285,10 @@ exactly two navigation items for Milestone 2: Console and Settings. Console
 is selected and open by default. Browser LAN access and interactive maps
 follow this first browser tracker. The owner also selected memory-only browser
 tokens initially; remembered login is a later design. The
-[browser delivery draft](designs/browser_player_design.md) records the proposed
-children and remaining engineering boundaries, under
-[Milestone 2](milestone-2.md); it implements no runtime.
+[browser delivery plan](designs/browser_player_design.md), tracker
+[#82](https://github.com/coghex/tesserae/issues/82), and its
+[browser contract](designs/browser_contract.md) record the children and the
+engineering boundaries, under [Milestone 2](milestone-2.md).
 
 ## Proposed implementation boundaries
 
