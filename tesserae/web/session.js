@@ -74,6 +74,10 @@ export class Session {
     });
   }
 
+  sync() {
+    return this.request({ version: 1, type: "sync" });
+  }
+
   status() {
     return this.request({ version: 1, type: "referee_status" });
   }

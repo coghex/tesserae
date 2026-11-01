@@ -37,8 +37,9 @@ class BackgroundHost:
     """A browser-mode host on its own event loop thread, so the synchronous
     Playwright API can drive the page from the test's thread."""
 
-    def __init__(self, database: Path, executor=never):
+    def __init__(self, database: Path, executor=never, runtime=None):
         self.executor = executor
+        self.runtime = runtime
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
@@ -49,11 +50,12 @@ class BackgroundHost:
         return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result(10)
 
     async def _start(self, database):
-        host = GameHost(
+        host = self.game = GameHost(
             database,
             authenticated=True,
             referee_executor=self.executor,
             browser_assets=load_assets(),
+            runtime=self.runtime,
         )
         self.stop, ready = self.loop.create_future(), self.loop.create_future()
         self.task = asyncio.create_task(
@@ -74,6 +76,8 @@ class BackgroundHost:
 
 class BrowserCase(unittest.TestCase):
     """One Chromium per class; a fresh game and browser-mode host per test."""
+
+    runtime = None  # the game's module runtime; None for a dice game
 
     @classmethod
     def setUpClass(cls):
@@ -96,12 +100,16 @@ class BrowserCase(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.directory = Path(directory.name)
         self.database = self.directory / "game.sqlite3"
-        with GameStore(self.database) as store:
+        if self.runtime is None:
+            opened = GameStore(self.database)
+        else:
+            opened = GameStore.create(self.database, self.runtime)
+        with opened as store:
             self.make_game(store)
             RefereeStore(store).enable()
-        self.host = BackgroundHost(self.database, self.executor)
+        self.host = BackgroundHost(self.database, self.executor, self.runtime)
         self.addCleanup(self.host.close)
-        self.errors, self.sockets = [], {}
+        self.errors, self.sockets, self.received = [], {}, {}
 
     def make_game(self, store):
         store.add_participant("Alice", new_token())
@@ -110,18 +118,20 @@ class BrowserCase(unittest.TestCase):
         return await never(job)
 
     def open(self, width=1024, height=768):
-        """A fresh page on the host, recording script errors, and each socket
-        it opens with the types of the messages it sends (never their
-        content, which would include a token)."""
+        """A fresh page on the host, recording script errors, each socket it
+        opens with the types of the messages it sends (never their content,
+        which would include a token), and everything the host sent it."""
         context = self.browser.new_context(viewport={"width": width, "height": height})
         self.addCleanup(context.close)
         page = context.new_page()
         sockets = self.sockets[page] = []
+        received = self.received[page] = []
 
         def opened(socket):
             sent = []
             sockets.append(sent)
             socket.on("framesent", lambda payload: sent.append(_type_of(payload)))
+            socket.on("framereceived", lambda payload: received.append(str(payload)))
 
         page.on("console", lambda m: m.type == "error" and self.errors.append(m.text))
         page.on("pageerror", lambda e: self.errors.append(str(e)))

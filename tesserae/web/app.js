@@ -5,9 +5,17 @@
 // only while a join is being sent, and never stored or logged.
 
 import { Session, newRequestId } from "/session.js";
+import { viewNode } from "/views.js";
 
 const NARROW = "(max-width: 40rem)";
 const MAX_TEXT = 2000;
+
+const JOB_STATES = {
+  running: "the referee is answering it",
+  completed: "answered",
+  failed: "the referee could not answer it; say it again",
+  interrupted: "interrupted before an answer; say it again",
+};
 
 const REFUSALS = {
   authentication_failed:
@@ -23,6 +31,8 @@ const state = {
   notice: "",
   me: null, // {gameId, participantId, name, module}
   referee: null, // the host's referee projection for this participant
+  view: null, // this participant's view, as the host projected it
+  revision: null, // the revision the view was read at
   busyFor: null, // who the referee is answering, when known
   messages: new Map(), // seq to conversation message
   draft: "",
@@ -34,6 +44,8 @@ const state = {
 
 let session = null; // the one live Session, shared by both screens
 let statusRead = null; // a referee_status in flight, and whether to read again
+let syncRead = null; // a sync in flight, and whether to read again
+let renderedView = null; // the view object the state panel shows
 const fileTokens = new WeakMap(); // token-entry fieldset to a chosen file's token
 let entryGeneration = 0; // bumped on every clear, so an older file read is dropped
 
@@ -119,6 +131,8 @@ function clearIdentity() {
     phase: "out",
     me: null,
     referee: null,
+    view: null,
+    revision: null,
     busyFor: null,
     messages: new Map(),
     draft: "",
@@ -128,6 +142,7 @@ function clearIdentity() {
     noteIsBusy: false,
   });
   statusRead = null;
+  syncRead = null;
   $("composer-text").value = "";
   $("composer-private").checked = false;
   clearTokenEntries();
@@ -154,6 +169,8 @@ function applySnapshot(snapshot) {
     module: snapshot.module || null,
   };
   state.referee = snapshot.referee || null;
+  state.view = snapshot.view ?? null;
+  state.revision = snapshot.revision;
 }
 
 function receive(message) {
@@ -163,8 +180,38 @@ function receive(message) {
     if (state.referee) state.referee.state = message.state;
     if (message.state === "idle") becameIdle();
     readStatus();
+  } else if (message.type === "revision") {
+    if (state.revision === null || message.revision > state.revision) readView();
   }
   render();
+}
+
+// A newer revision means the view may have changed: read a fresh snapshot.
+// Revisions coalesce, and reads never overlap; a revision arriving during a
+// read is covered by reading again.
+async function readView() {
+  if (syncRead) {
+    syncRead.again = true;
+    return;
+  }
+  const current = session;
+  syncRead = { again: false };
+  try {
+    do {
+      syncRead.again = false;
+      const reply = await current.sync();
+      if (current !== session) return;
+      if (reply.type === "snapshot" && reply.revision >= state.revision) {
+        applySnapshot(reply);
+        if (state.referee && state.referee.state === "idle") becameIdle();
+        render();
+      }
+    } while (syncRead && syncRead.again);
+  } catch {
+    // The connection closed; lost() has already said so.
+  } finally {
+    if (current === session) syncRead = null;
+  }
 }
 
 function becameIdle() {
@@ -311,6 +358,38 @@ function renderConsole() {
   $("composer-private").disabled = state.sending;
   $("composer-note").textContent = state.composerNote;
   renderConversation();
+  renderQuestion();
+  renderLastInput();
+  renderView();
+}
+
+// Only the viewer's own pending choice is ever in the projection.
+function renderQuestion() {
+  const [choice] = (state.referee && state.referee.choices) || [];
+  $("console-question").hidden = !choice;
+  $("console-question-text").textContent = choice ? String(choice.question) : "";
+}
+
+function renderLastInput() {
+  const last = state.referee && state.referee.your_last_input;
+  $("console-last").hidden = !last;
+  // Emptied, not just hidden, so no other identity's text stays in the page.
+  $("console-last-text").textContent = last
+    ? `“${last.text}”${last.private ? " (private)" : ""}`
+    : "";
+  $("console-last-state").textContent = last
+    ? JOB_STATES[last.job_state] || String(last.job_state)
+    : "";
+}
+
+function renderView() {
+  const panel = $("console-state-body");
+  if (renderedView === state.view && panel.dataset.revision === String(state.revision)) return;
+  renderedView = state.view;
+  panel.dataset.revision = String(state.revision);
+  panel.replaceChildren(viewNode(state.me && state.me.module, state.view));
+  $("console-state-revision").textContent =
+    state.revision === null ? "" : `As of revision ${state.revision}.`;
 }
 
 function renderConversation() {
