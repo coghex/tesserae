@@ -245,7 +245,14 @@ def main(argv: list[str] | None = None) -> int:
                 "--referee-dir",
                 help="The referee folder (default ~/.local/share/tesserae/referee).",
             )
+    from .host_admin import add_parser
+
+    add_parser(commands)
     args = parser.parse_args(argv)
+    if args.command == "host":
+        from .host_admin import run
+
+        return run(args)
     if args.command == "connect":
         from .client import run
 

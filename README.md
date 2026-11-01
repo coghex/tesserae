@@ -17,6 +17,12 @@ This project is at the bootstrap stage. See the [design](docs/tesserae_design.md
 for agreed direction, proposals, and open questions, and the
 [first milestone](docs/milestone-1.md) for implementation order and progress.
 
+The next delivery is
+[host identity and a campaign lobby](docs/designs/host_lobby_design.md).
+The [local registry tools](docs/host-registry.md) manage stable players, campaign
+registrations and access grants. Network lobby/client selection follows;
+existing connections still use single-game participant tokens.
+
 ## First executable slice
 
 The initial command-line interface exercises a generic dice expression evaluator.
@@ -49,8 +55,8 @@ This standalone utility does not load a game, update a campaign, or persist roll
 Use the foreground host below for recorded game actions.
 There are no built-in critical, fumble, success, or damage rules.
 
-No web UI or model integration has been implemented yet. The only game module
-is the small original [Relay demo](docs/relay-demo.md).
+The browser and Codex referee are implemented (see their runbooks below).
+The public [Relay demo](docs/relay-demo.md) provides an original playable example.
 Authenticated participant joining and the streaming CLI support localhost and
 explicit encrypted LAN connections. The [localhost acceptance](docs/acceptance/localhost-multiplayer.md)
 covers tracker #12. The [encrypted-network acceptance](docs/acceptance/encrypted-lan.md)

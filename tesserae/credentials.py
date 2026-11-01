@@ -45,3 +45,26 @@ def write_token_file(path, token: str):
 def read_token_file(path) -> str:
     with open(path, encoding="utf-8") as file:
         return file.read().rstrip("\n")
+
+
+class IssuedToken:
+    """Write a new token file first; remove it again if the store change fails.
+
+    Writing first means an existing file or bad path fails before anything is
+    committed, and a committed credential always has its token on disk.
+    """
+
+    def __init__(self, path):
+        self.path = path
+
+    def __enter__(self) -> str:
+        token = new_token()
+        try:
+            write_token_file(self.path, token)
+        except FileExistsError:
+            raise OSError(f"Refusing to overwrite existing file {self.path}.") from None
+        return token
+
+    def __exit__(self, kind, error, traceback):
+        if kind is not None:
+            os.remove(self.path)

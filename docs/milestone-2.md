@@ -6,7 +6,8 @@ host computer join, talk to the referee, see their state and recover from
 dropped connections and refreshes (#84 to #87). The
 [browser runbook](browser-runbook.md) explains it and the
 [acceptance record](acceptance/browser.md) shows both scenes played in the
-browser. Later browser work below is not yet selected. The first agreed browser tracker is M2-1
+browser. The next approved slice is M2-2, host identity and campaign selection.
+The first agreed browser tracker is M2-1
 ([#82](https://github.com/coghex/tesserae/issues/82)), the
 [localhost Console/Settings client](designs/browser_player_design.md), with
 its exact contracts in the [browser contract](designs/browser_contract.md).
@@ -32,13 +33,29 @@ acceptance. Completion requires both existing demonstration scenes, two
 browser identities and browser/CLI compatibility, exact retry and active-play
 recovery, plus focused Chromium CI coverage and private local review.
 
+## Next approved slice: M2-2
+
+A stable host player authenticates once, sees only accessible active campaigns,
+and selects one per connection. The [host lobby design](designs/host_lobby_design.md)
+and tracker [#95](https://github.com/coghex/tesserae/issues/95) separate the
+local registry foundation (#96), registry-backed foreground host (#97), CLI
+selection (#98), browser selection (#99) and mixed-client acceptance (#100).
+The [registry guide](host-registry.md) distinguishes the local operator tools
+from future network admission. Existing single-game connections remain usable.
+
+Character selection/creation, multiple characters per player and joining an
+ongoing scenario are the next direction after this foundation; their rules
+and private campaign integration are not hidden requirements of M2-2. There is
+no universal character attributes schema. Browser login remains memory-only,
+and the first lobby stays localhost-only (the VM may use an SSH tunnel).
+
 ## Later browser work
 
 LAN certificate trust and interactive maps follow M2-1. Their exact scope and
 delivery order have not been selected. Remembered login, potentially through
 server-managed cookies, also needs a later design covering expiry, revocation
-and automatic credential handling. No additional browser slice is approved by
-this overview alone.
+and automatic credential handling. Beyond M2-2, no additional browser slice
+is approved by this overview alone.
 
 Do not expand game mechanics, introduce a universal sheet schema or bypass the
 referee to demonstrate browser controls. The private module/content and its
