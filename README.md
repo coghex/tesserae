@@ -22,8 +22,9 @@ The next delivery is
 The [local registry tools](docs/host-registry.md) manage stable players, campaign
 registrations and access grants, and `tesserae serve --registry` serves those
 campaigns to players logging in with a host token
-([lobby contract](docs/designs/lobby_contract.md)). CLI and browser selection
-follow; single-game hosts still use their participant tokens.
+([lobby contract](docs/designs/lobby_contract.md)), who choose one from the CLI
+with `tesserae connect --lobby`. Browser selection follows; single-game hosts
+still use their participant tokens.
 
 ## First executable slice
 

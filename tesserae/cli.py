@@ -134,6 +134,16 @@ def main(argv: list[str] | None = None) -> int:
         "--game-id", help="Refuse to send anything unless the host serves this game."
     )
     connect.add_argument(
+        "--lobby",
+        action="store_true",
+        help="The host serves campaigns ('serve --registry') and --token-file "
+        "holds your host token: log in, then /join a campaign (/help lists "
+        "the commands).",
+    )
+    connect.add_argument(
+        "--campaign", help="With --lobby, enter this campaign (its ID) on login."
+    )
+    connect.add_argument(
         "--ca-file",
         help="The host's certificate to trust, for wss:// (see docs/tls.md). "
         "Without it, wss:// uses the system's trusted authorities.",
@@ -271,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
             args.drain_timeout,
             args.ca_file,
             json_output=args.json,
+            lobby=args.lobby,
+            campaign=args.campaign,
         )
     if args.command == "participant":
         from .admin import run

@@ -9,9 +9,11 @@ This is the first part of [M2-2](designs/host_lobby_design.md), tracker
 [#95](https://github.com/coghex/tesserae/issues/95). HOST-2
 ([#97](https://github.com/coghex/tesserae/issues/97)) serves the registry's
 campaigns with `tesserae serve --registry` ([below](#serve-the-campaigns));
-the exact rules are in the [lobby contract](designs/lobby_contract.md). The
-CLI's lobby commands and the browser's login and picker follow in #98 and
-#99. Existing `serve --database`, CLI connections and browser joins continue
+the exact rules are in the [lobby contract](designs/lobby_contract.md).
+Players use it from the CLI with `tesserae connect --lobby`
+([#98](https://github.com/coghex/tesserae/issues/98),
+[below](#play-from-the-cli)); the browser's login and picker follow in #99.
+Existing `serve --database`, CLI connections and browser joins continue
 using game-specific participant tokens. A host token never joins those
 servers, and a game token never logs in to a lobby host. Character lifecycle
 follows this tracker.
@@ -133,13 +135,51 @@ game token. Each campaign keeps its own state, history, busy state and
 referee session. Repeat `--module-dir` for each external module package the
 campaigns use; `--referee-dir` is the referee folder for every referee-mode
 campaign. `--database`, `--authenticated`, `--browser`, TLS and other
-`--host` values are refused (exit 2). Until HOST-3 and HOST-4, clients are
-scripts speaking the lobby messages.
+`--host` values are refused (exit 2). Players connect with
+`tesserae connect --lobby` ([below](#play-from-the-cli)); the browser page does
+not log in to a lobby host yet (#99).
 
 A campaign is opened when first selected. If its file is missing, moved,
 replaced or bound to a module that is not loaded, the selection is refused as
 unavailable and the host logs why; nothing is created, and the next selection
 tries again.
+
+## Play from the CLI
+
+Give each player their host token file and the address. On the host computer
+(or through an SSH tunnel to it):
+
+```sh
+tesserae connect ws://127.0.0.1:8765/ --token-file alice.token --lobby
+```
+
+```text
+[lobby] Alice: 2 campaigns open to you
+[lobby] 1. Bridge  4b0c…
+[lobby] 2. Harbor  8f36…
+[lobby] /join N enters campaign N; /help lists commands.
+/join 2
+[joined] Harbor: type to talk to the referee; /leave returns to the lobby; /help lists commands.
+[status] idle; nothing waiting for you; last message 0
+```
+
+- `/campaigns` lists the campaigns open to you and marks the one you are in;
+  `/join` takes its number, ID or name; `/leave` returns to the lobby. Join
+  another campaign by leaving first. Choosing a campaign plays nothing.
+- Inside a referee campaign everything is as in the
+  [referee runbook](referee-runbook.md): typed lines are your words, with
+  `/private`, `/status`, `/history`, `/retry` and the rest. A campaign without
+  a referee takes JSON commands, one per line.
+- `/retry` belongs to the campaign you sent the input in. Leaving keeps it with
+  that campaign, and joining it again restores it; it is never resent
+  anywhere else.
+- If your access to the campaign ends, the client says so and you are back in
+  the lobby. If your host token is revoked, the client stops.
+- `--campaign ID` enters a campaign as soon as you log in, and `--json` prints
+  the host's messages as JSON lines (typed lines are still words and
+  commands). Characters come in a later version; `/character` says so.
+- Without `--lobby`, `tesserae connect` joins one game with a game token, as
+  before, and says so if you point it at a lobby host.
 
 ## Link existing participants
 
