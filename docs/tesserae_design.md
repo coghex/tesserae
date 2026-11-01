@@ -40,8 +40,10 @@ combat, inventory, or turn model.
   with 77 tests at tracker #12's acceptance. A small catalog of bundled modules
   is in place for M1-4. External module loading and bounded private validation
   completed in M1-5 through PR #62. M1-6's resumable Codex referee and both
-  demonstrations completed through PR #80. The next agreed slice is the
-  [localhost browser console](designs/browser_player_design.md).
+  demonstrations completed through PR #80. Milestone 2's first slice, the
+  [localhost browser console](designs/browser_player_design.md), serves a
+  Console and Settings page for players at the host computer
+  ([browser runbook](browser-runbook.md)).
 
 ## Agreed direction
 

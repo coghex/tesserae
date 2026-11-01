@@ -2,8 +2,8 @@
 
 Tesserae is a local-first tabletop roleplaying application built around an AI
 referee, executable rules modules, and several clients connected to one game host.
-The first game client is a thin streaming CLI; the browser client follows in a
-later milestone, beyond Milestone 1.
+The first game client is a thin streaming CLI. Milestone 2 adds a browser page
+for players at the host computer (see below).
 Friends should be able to join the same locally hosted game from other computers.
 
 Different games select different modules. The application does not assume that
@@ -78,7 +78,13 @@ once per input, plays the game only through Tesserae's bridge
 ([referee contract](docs/designs/referee_contract.md)). The
 [referee runbook](docs/referee-runbook.md) sets it up, and the
 [acceptance record](docs/acceptance/referee.md) shows both demonstration scenes
-played that way.
+played that way. [M2-1 / tracker #82](https://github.com/coghex/tesserae/issues/82)
+added a localhost browser page, Console and Settings, served by
+`tesserae serve --browser` for the same referee games
+([browser contract](docs/designs/browser_contract.md)). The
+[browser runbook](docs/browser-runbook.md) explains it, and its
+[acceptance record](docs/acceptance/browser.md) shows both scenes played in the
+browser.
 
 ## Working together
 
@@ -115,6 +121,11 @@ python3 -m ruff check .
 python3 -m ruff format --check .
 python3 -m unittest discover -s tests -v
 ```
+
+The browser tests (`tests/test_browser_*.py`) drive Chromium with Playwright.
+They skip unless the optional extra and its browser are installed:
+`python3 -m pip install -e '.[dev,browser-test]'`, then
+`python3 -m playwright install chromium`. CI's `browser` job always runs them.
 
 [Ruff linting](https://docs.astral.sh/ruff/linter/) checks basic Python errors and
 import ordering. Its [formatter](https://docs.astral.sh/ruff/formatter/) handles
