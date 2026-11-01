@@ -35,40 +35,56 @@ async def never(job):
 
 class BackgroundHost:
     """A browser-mode host on its own event loop thread, so the synchronous
-    Playwright API can drive the page from the test's thread."""
+    Playwright API can drive the page from the test's thread. It can be
+    stopped and started again on the same port, like a restarted host."""
 
     def __init__(self, database: Path, executor=never, runtime=None):
+        self.database = database
         self.executor = executor
         self.runtime = runtime
+        self.task = None
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
-        self.uri = self._call(self._start(database))
-        self.page = "http://" + self.uri.removeprefix("ws://")
+        self.start()
 
     def _call(self, coroutine):
         return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result(10)
 
-    async def _start(self, database):
+    def start(self, port=0):
+        self.uri = self._call(self._start(port))
+        self.port = int(self.uri.rsplit(":", 1)[1].strip("/"))
+        self.page = "http://" + self.uri.removeprefix("ws://")
+
+    async def _start(self, port):
         host = self.game = GameHost(
-            database,
+            self.database,
             authenticated=True,
             referee_executor=self.executor,
             browser_assets=load_assets(),
             runtime=self.runtime,
         )
-        self.stop, ready = self.loop.create_future(), self.loop.create_future()
+        self.stop_future, ready = self.loop.create_future(), self.loop.create_future()
         self.task = asyncio.create_task(
-            host.run(0, self.stop, on_ready=ready.set_result)
+            host.run(port, self.stop_future, on_ready=ready.set_result)
         )
         return await ready
 
-    def close(self):
+    def stop(self):
         async def end():
-            self.stop.set_result(None)
+            self.stop_future.set_result(None)
             await self.task
 
         self._call(end())
+        self.task = None
+
+    def restart(self):
+        self.stop()
+        self.start(self.port)
+
+    def close(self):
+        if self.task is not None:
+            self.stop()
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(10)
         self.loop.close()

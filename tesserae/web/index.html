@@ -43,7 +43,10 @@
     <main class="main">
       <section class="screen" id="screen-console" aria-labelledby="console-title">
         <h1 id="console-title">Console</h1>
-        <p class="status" role="status" id="console-status">Not connected</p>
+        <div class="status-line">
+          <p class="status" role="status" id="console-status">Not connected</p>
+          <button type="button" id="console-reconnect" hidden>Reconnect</button>
+        </div>
         <p class="notice" id="console-notice" aria-live="polite" hidden></p>
         <div class="panel join" id="console-join">
           <h2>Join the game</h2>
@@ -68,10 +71,26 @@
             <p id="console-question-text"></p>
             <p class="note">Answer by typing below, like anything else you say.</p>
           </div>
+          <div class="panel unconfirmed" id="console-unconfirmed" aria-live="polite" hidden>
+            <h2>Not confirmed</h2>
+            <p>The connection dropped before the host answered, so it is not known
+              whether the referee received this input:</p>
+            <p id="console-unconfirmed-text"></p>
+            <div class="actions">
+              <button type="button" id="unconfirmed-resend">Resend exactly</button>
+              <button type="button" id="unconfirmed-edit">Edit</button>
+            </div>
+            <p class="note">Resending is safe: if the referee already has it, you get
+              its answer again and nothing happens twice.</p>
+          </div>
           <div class="panel last-input" id="console-last" hidden>
             <h2>Your last input</h2>
             <p><span id="console-last-text"></span>:
               <span id="console-last-state"></span></p>
+            <div class="actions">
+              <button type="button" id="console-resend" hidden>Resend exactly</button>
+            </div>
+            <p class="note" id="console-resend-target"></p>
           </div>
           <div class="panel state" id="console-state">
             <h2>Your view</h2>
