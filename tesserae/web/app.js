@@ -35,6 +35,7 @@ const state = {
 let session = null; // the one live Session, shared by both screens
 let statusRead = null; // a referee_status in flight, and whether to read again
 const fileTokens = new WeakMap(); // token-entry fieldset to a chosen file's token
+let entryGeneration = 0; // bumped on every clear, so an older file read is dropped
 
 const $ = (id) => document.getElementById(id);
 
@@ -43,7 +44,6 @@ const $ = (id) => document.getElementById(id);
 async function join(token) {
   if (session) leave();
   clearIdentity();
-  clearTokenEntries();
   state.phase = "joining";
   state.notice = "";
   render();
@@ -130,9 +130,13 @@ function clearIdentity() {
   statusRead = null;
   $("composer-text").value = "";
   $("composer-private").checked = false;
+  clearTokenEntries();
 }
 
+// Empties every token field and file choice, forgets file tokens, and makes
+// any file read still in progress land nowhere.
 function clearTokenEntries() {
+  entryGeneration += 1;
   for (const entry of document.querySelectorAll(".token-entry")) {
     entry.querySelector('input[type="password"]').value = "";
     entry.querySelector('input[type="file"]').value = "";
@@ -300,7 +304,11 @@ function renderConsole() {
   for (const button of document.querySelectorAll(".join-button")) {
     button.disabled = state.phase === "joining";
   }
+  // Locked while a send awaits its reply, so the reply clears only what was
+  // sent, never text typed meanwhile.
   $("composer-send").disabled = !joined || state.sending;
+  $("composer-text").readOnly = state.sending;
+  $("composer-private").disabled = state.sending;
   $("composer-note").textContent = state.composerNote;
   renderConversation();
 }
@@ -379,8 +387,12 @@ function wireTokenEntry(entry) {
     fileTokens.delete(entry);
     const chosen = file.files && file.files[0];
     if (!chosen) return;
+    const generation = entryGeneration;
     // The token file rule: the token alone, with trailing newlines removed.
-    fileTokens.set(entry, (await chosen.text()).replace(/\n+$/, ""));
+    const token = (await chosen.text()).replace(/\n+$/, "");
+    if (generation === entryGeneration && file.files[0] === chosen) {
+      fileTokens.set(entry, token);
+    }
   });
   typed.addEventListener("keydown", (event) => {
     if (event.key === "Enter") tryJoin();

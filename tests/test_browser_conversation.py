@@ -126,6 +126,90 @@ class JoiningTests(ConversationCase):
         self.assertEqual(self.errors, [])
 
 
+class TokenCleanupTests(ConversationCase):
+    def test_clearing_an_identity_empties_every_entry_and_drops_pending_reads(self):
+        page = self.joined("alice")
+        page.get_by_role("button", name="Settings").click()
+        page.locator("#settings-token").fill(self.tokens["bob"])  # never submitted
+        page.get_by_role("button", name="Disconnect").click()
+        expect(page.locator("#settings-token")).to_have_value("")
+        expect(page.locator("#console-token")).to_have_value("")
+
+        # A file read that finishes only after the identity is cleared.
+        page = self.joined("alice")
+        page.evaluate("""() => {
+            const read = Blob.prototype.text;
+            window.held = [];
+            Blob.prototype.text = function () {
+                return new Promise((done) => window.held.push(() => done(read.call(this))));
+            };
+        }""")
+        token_file = self.directory / "bob.token"
+        write_token_file(token_file, self.tokens["bob"])
+        page.get_by_role("button", name="Settings").click()
+        page.locator("#settings-token-file").set_input_files(str(token_file))
+        page.wait_for_function("window.held.length === 1")
+        page.get_by_role("button", name="Disconnect").click()
+        page.evaluate("() => window.held.forEach((release) => release())")
+        page.get_by_role("button", name="Join").click()
+        expect(page.locator("#settings-notice")).to_contain_text(
+            "choose your token file"
+        )
+        self.assertEqual(len(self.sent(page)), 1)  # Alice's only: no second join
+        self.assertEqual(self.errors, [])
+
+
+class SendingTests(ConversationCase):
+    def test_the_composer_is_locked_until_the_host_acknowledges(self):
+        held, routes = [], []
+
+        def route(socket):
+            # Holds back the host's `accepted` and everything after it, so
+            # the page still receives the host's messages in order.
+            routes.append(socket)
+            server = socket.connect_to_server()
+
+            def from_host(message):
+                if held or '"type": "accepted"' in str(message):
+                    held.append(message)
+                else:
+                    socket.send(message)
+
+            server.on_message(from_host)
+            socket.on_message(lambda message: server.send(message))
+
+        page = self.open()
+        page.route_web_socket(f"{self.host.uri}**", route)
+        page.locator("#console-token").fill(self.tokens["alice"])
+        page.locator("#console-token").press("Enter")
+        self.expect_status(page, "Joined as Alice")
+        text, private = (
+            page.locator("#composer-text"),
+            page.locator("#composer-private"),
+        )
+        private.check()
+        text.fill("A private plan.")
+        text.press("Enter")
+        self.job()  # the host accepted it; the page has not heard yet
+        page.wait_for_function("document.getElementById('composer-text').readOnly")
+        expect(private).to_be_disabled()
+        expect(page.locator("#composer-send")).to_be_disabled()
+        text.focus()
+        page.keyboard.type(" More.")  # read-only: ignored
+        expect(text).to_have_value("A private plan.")
+
+        [socket] = routes
+        while held:
+            socket.send(held.pop(0))
+        expect(text).to_have_value("")
+        expect(text).to_be_editable()
+        expect(private).not_to_be_checked()
+        expect(private).to_be_enabled()
+        self.replies.put(reply(("sender", "Noted.")))
+        self.expect_status(page, "The referee is ready.")
+        self.assertEqual(self.errors, [])
+
+
 class TalkingTests(ConversationCase):
     def test_two_players_at_the_table_and_in_private_with_plain_text(self):
         alice, bob = self.joined("alice"), self.joined("bob")

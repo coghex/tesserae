@@ -165,7 +165,9 @@ and version. Its controls:
   IndexedDB, a cookie, the console or an error message.
 - **Disconnect:** closes the socket and clears the identity: the token, the
   conversation, view, referee status, last input, pending sends, the draft and
-  the private toggle. Console returns to the join prompt.
+  the private toggle, and every token field and chosen file on both screens; a
+  token file still being read is dropped when it finishes. Console returns to
+  the join prompt.
 - **Change identity:** the same as Disconnect, then focuses the token entry.
 
 A refused join or a revoked session (`authentication_failed`,
@@ -250,7 +252,8 @@ From top to bottom:
   or a command is sent as words. The page checks only that the text is not
   blank and at most 2000 characters; the host decides the rest and its error
   is shown. The private box resets to off after each accepted input, as the
-  CLI's `/private` applies to one line.
+  CLI's `/private` applies to one line. While a send awaits its reply, the
+  text and private box are locked, so the reply clears only what was sent.
 
 ## 9. Sending, retrying and refreshing
 
