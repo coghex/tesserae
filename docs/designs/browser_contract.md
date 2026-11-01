@@ -171,11 +171,13 @@ identity, with a readable reason. A dropped connection does not (section 7).
 to join, so the host's 10-second join timeout never runs out on an idle page.
 The first message is `join`. The `snapshot` reply sets the participant, the
 module, the view and the referee projection (`state`, `choices`, `last_seq`,
-`your_last_input`). The page then sends `messages` with `after_seq` set to
-the seq through which its history is known complete: 0 for a new identity.
-That point moves to the highest seq held when a `messages` reply arrives, and
-with each `message` received after that reply on the same connection, so a
-connection lost before its history reply never leaves a hole.
+`your_last_input`). The page then sends `messages` with `after_seq` 0, on
+every join and reconnect alike, and merges the reply into what it holds
+(below). It keeps no "complete through" cursor: messages can arrive out of seq
+order (an exact replay's stored reply can come before earlier messages still
+queued for delivery), so the highest seq held proves nothing about the ones
+before it. The whole visible history is one reply, which is small at this
+scale.
 
 **Pairing.** The host answers each text message with exactly one reply, in
 order, so the session keeps a first-in, first-out queue of what it sent and
@@ -197,8 +199,10 @@ unsolicited and never pair. Several requests may be outstanding at once.
 
 **Conversation.** Messages are kept by seq. Each arriving `message`, `messages`
 entry or replayed reply is inserted in seq order, and a seq already held is
-ignored. Seqs a player cannot see are legitimately missing, so a gap is
-never treated as loss. The page asks for history only at join and reconnect.
+ignored, so arrival order never matters. Seqs a player cannot see are
+legitimately missing, so a gap is never treated as loss. The page asks for
+history only at join and reconnect; in between, the open connection delivers
+everything stored after the history was read.
 
 **Busy.** The shown state is a hint. The host decides: a `say` refused with
 `referee_busy` keeps the text in the composer and shows who the referee is
@@ -254,10 +258,17 @@ privacy. Only a new intention gets a new ID. The input is then:
 | None, the connection closed first | The input is **unconfirmed**: shown with its text, kept in memory with its ID and privacy |
 
 After a reconnect, an unconfirmed input whose ID equals
-`your_last_input.request_id` was accepted, and is shown as such. Otherwise the
-page says the host has no record of accepting it, and offers **Resend
-exactly** and **Edit**. Editing makes it a draft again, and sending it then is
-a new input with a new ID. Nothing is ever resent automatically.
+`your_last_input.request_id` was accepted, and is shown as such. Any other
+unconfirmed input stays **unconfirmed**: `your_last_input` is only the
+participant's latest accepted input, and a newer one from another page or the
+CLI can replace it, so not being latest does not mean not accepted. The page
+says it does not know whether the referee received it, and offers **Resend
+exactly**, which settles it: the host returns the recorded `accepted` and
+replies if it had accepted it, busy or not, and otherwise takes it as new. So
+a `referee_busy` reply to a resend proves it was never accepted, and it goes
+back to the composer as a draft. **Edit** makes it a draft again, warning that
+if the first was received, sending the edited text is a second input with a
+new ID. Nothing is ever resent automatically.
 
 **Resend exactly** sends the same request ID, text and privacy again. The
 target is the page's unconfirmed input if there is one; else its last
@@ -343,7 +354,7 @@ be unique.
 | WEB-2 (#84) | 2 to 5, 12 tooling | Python: section 3's table and headers, `serve` refusals, the CLI joining a browser-mode host, missing-asset startup failure, packaged resources installed. Browser: the page loads with Console selected; Settings and back; collapse and expand by keyboard with names kept; 320px collapsed layout; a disconnected Console with a join prompt and no simulated join |
 | WEB-3 (#85) | 6, 7, 8, 11 | Join with a pasted token and a chosen file; bad and revoked tokens; two players in two contexts; table and private delivery; JSON-looking text as words; busy refusal keeping the draft; Settings during a job keeps one socket and the draft with no extra `say`; change identity leaves nothing of the old one; a CLI player in the same game |
 | WEB-4 (#86) | 10, and 7's keeping current | Relay panel matches the stored projection; another player's worker absent from the payload and DOM; a pending question only its player sees, cleared once answered; a question arriving with no revision change; the generic tree on an unfamiliar view |
-| WEB-5 (#87) | 7's closed connections, 9 | Connection lost before and after `accepted`; unconfirmed input resolved by `your_last_input`, or resent exactly with no second job; refresh then rejoin showing the accepted input and the lost-draft notice, with nothing resent; busy refusal not replacing the resend target; history and live overlap; host restart and Reconnect; no late event from a closed session |
+| WEB-5 (#87) | 7's closed connections, 9 | Connection lost before and after `accepted`; an unconfirmed input matching `your_last_input` shown accepted; one replaced as latest by another connection's newer input still unconfirmed, and its exact resend returning the recorded reply with no second job; a replay delivered before earlier queued messages, then a reconnect, losing none of them; refresh then rejoin showing the accepted input and the lost-draft notice, with nothing resent; busy refusal not replacing the resend target; history and live overlap; host restart and Reconnect; no late event from a closed session |
 | WEB-6 (#88) | all | The tracker's live acceptance and runbook, with these checks green in CI |
 
 ## 14. Feasibility evidence (2026-11-01)
