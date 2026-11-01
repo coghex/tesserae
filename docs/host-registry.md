@@ -170,9 +170,10 @@ tesserae connect ws://127.0.0.1:8765/ --token-file alice.token --lobby
   [referee runbook](referee-runbook.md): typed lines are your words, with
   `/private`, `/status`, `/history`, `/retry` and the rest. A campaign without
   a referee takes JSON commands, one per line.
-- `/retry` belongs to the campaign you sent the input in. Leaving keeps it with
-  that campaign, and joining it again restores it; it is never resent
-  anywhere else.
+- `/retry` belongs to the campaign you sent the input in, as the player you
+  were there. Leaving keeps it with that campaign, and joining it again
+  restores it; it is never resent anywhere else, or as a new participant
+  after the host relinks you.
 - If your access to the campaign ends, the client says so and you are back in
   the lobby. If your host token is revoked, the client stops.
 - `--campaign ID` enters a campaign as soon as you log in, and `--json` prints

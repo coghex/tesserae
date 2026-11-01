@@ -167,6 +167,33 @@ class LobbyClientTests(unittest.TestCase):
             (self.jobs("harbor"), self.jobs("bridge")), ([("completed",)], [])
         )
 
+    def test_retry_is_recovered_on_entry_and_never_crosses_participants(self):
+        alice = self.client("alice", "--campaign", self.campaigns["harbor"])
+        alice.until("[status]")
+        alice.type("Hello")
+        alice.until("[idle]")
+        self.assertEqual(alice.finish(), 0)
+        # A new client recovers the accepted input before reading /retry.
+        alice = self.client("alice", "--campaign", self.campaigns["harbor"])
+        alice.type("/retry")
+        lines = alice.until("[table] Referee: Heard: Hello")
+        self.assertIn('[your last input] "Hello" completed', lines)
+        # Relinked, the host's player is a new participant there: neither the
+        # client nor the host has an input of theirs to retry.
+        alice.type("/leave")
+        alice.until("[lobby] /join")
+        with (
+            self.registry() as registry,
+            GameStore(self.root / "harbor.sqlite3") as store,
+        ):
+            store.unlink_host_player(registry.host_id, self.players["alice"])
+        alice.type("/join Harbor", "/retry")
+        self.assertEqual(
+            alice.until("[retry]")[-1], "[retry] There is no input to retry."
+        )
+        self.assertEqual(alice.finish(), 0)
+        self.assertEqual(self.jobs("harbor"), [("completed",)])
+
     def test_empty_catalogs_reserved_commands_and_help(self):
         bob = self.client("bob")
         self.assertEqual(

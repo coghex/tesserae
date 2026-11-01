@@ -548,7 +548,8 @@ sends text that starts with `/`. It prints readable lines:
 ```
 
 On joining it asks for `referee_status`, so it shows the player's last input
-and its state (`[your last input] "Yes, go." completed`). `/retry` resends the
+and its state (`[your last input] "Yes, go." completed`), and reads no more
+input until the answer arrives. `/retry` resends the
 client's input still waiting for its reply, else its last accepted input (a
 later input refused as busy does not replace it), else that reported input, with
 its original request ID: the host returns its recorded state and reply, never

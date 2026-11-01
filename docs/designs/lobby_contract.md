@@ -197,7 +197,8 @@ campaign message is tied to the selection it was produced for:
 `your_last_input` belong to the campaign's participant. A client keeps any
 unconfirmed input with the campaign it was sent to and never resends it after
 selecting another campaign; it may resend it unchanged after selecting the
-same campaign again, which replays the recorded outcome. The host cannot
+same campaign again as the same participant, which replays the recorded
+outcome. The host cannot
 recognise a misdirected retry (another campaign is another namespace), so this
 is a client rule, and HOST-3 and HOST-4 test it.
 

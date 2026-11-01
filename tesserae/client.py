@@ -99,7 +99,8 @@ class _Client:
         self.unanswered = deque()  # lines sent, oldest first; replies come in order
         self.replied = asyncio.Event()
         # Lobby mode (--lobby): the catalog last shown, the selected campaign,
-        # and each campaign's retry state while the client is elsewhere.
+        # and the retry state of each campaign and participant while the client
+        # is elsewhere.
         self.lobby = False
         self.campaign_wanted = None
         self.catalog = []
@@ -169,8 +170,6 @@ class _Client:
         lines = asyncio.Queue()
         if self.campaign_wanted is not None:
             lines.put_nowait(f"/join {self.campaign_wanted}".encode())
-        elif self.referee:  # show the player's last input and its state first
-            lines.put_nowait(b"/status")
         _start_stdin_reader(asyncio.get_running_loop(), lines)
         receiver = asyncio.create_task(self._receive(connection))
         try:
@@ -261,6 +260,8 @@ class _Client:
         next line is read, so each line is understood in the campaign (or the
         lobby) it was typed in.
         """
+        if self.referee:
+            await self._recover(connection, receiver)
         while (line := await self._until_closed(lines.get(), receiver)) is not None:
             text = _decode_line(line)
             if text is not None and self.lobby:
@@ -272,11 +273,18 @@ class _Client:
             await self._send_line(connection, text)
             if self.lobby and _sent_type(text) in ("select", "leave"):
                 await self._until_closed(self._all_answered(), receiver)
-                if self.entered and self.referee:  # its last input, as on joining
-                    await self._send_line(
-                        connection, json.dumps({"version": 1, "type": "referee_status"})
-                    )
+                if self.entered and self.referee:
+                    await self._recover(connection, receiver)
                 self.entered = False
+
+    async def _recover(self, connection, receiver):
+        """Show the player's last input and the referee's state, and wait for
+        them before reading on, so a /retry typed next can resend an input the
+        host accepted before this connection."""
+        await self._send_line(
+            connection, json.dumps({"version": 1, "type": "referee_status"})
+        )
+        await self._until_closed(self._all_answered(), receiver)
 
     async def _send_line(self, connection, text: str):
         self.unanswered.append(text)
@@ -398,7 +406,7 @@ class _Client:
         self.session = _session_of(snapshot)
         self.referee = isinstance(snapshot.get("referee"), dict)
         self.sending, self.last_say, self.reported_input = self.saved.pop(
-            campaign["campaign_id"], ({}, None, None)
+            self._retry_key(), ({}, None, None)
         )
         self.entered = True
         if self.json_output:
@@ -416,12 +424,17 @@ class _Client:
         if not self.referee:
             _print(snapshot)
 
+    def _retry_key(self) -> tuple:
+        """Retry state belongs to one campaign and one participant in it: an
+        input is never resent as someone else, even after a relink."""
+        return self.selection["campaign_id"], self.session[1]
+
     def _back_in_lobby(self, quiet: bool = False):
         """Keep the campaign's retry state with it, and stop using it."""
         if self.selection is None:
             return
         campaign = self.selection
-        self.saved[campaign["campaign_id"]] = (
+        self.saved[self._retry_key()] = (
             self.sending,
             self.last_say,
             self.reported_input,
