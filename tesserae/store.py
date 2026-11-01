@@ -300,11 +300,13 @@ class ParticipantView:
     """One participant's view, read with the revision it belongs to.
 
     `view` is the module's projection for that participant, or None when the
-    module shows only metadata (as `dice` does).
+    module shows only metadata (as `dice` does). `name` is the participant's
+    own display label (None for the development participant).
     """
 
     revision: int
     view: dict | None
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -544,19 +546,22 @@ class GameStore:
         """
         _check_context(context)
         runtime = self._loaded_runtime()
-        query = "SELECT revision, state FROM game, module"
-        parameters = ()
+        query = (
+            "SELECT revision, state, (SELECT name FROM participants"
+            " WHERE participant_id = ?) FROM game, module"
+        )
+        parameters = (context.participant_id,)
         if context.credential_id is not None:
             query += (
                 " WHERE EXISTS (SELECT 1 FROM credentials"
                 " WHERE id = ? AND participant_id = ? AND revoked_at IS NULL)"
             )
-            parameters = (context.credential_id, context.participant_id)
+            parameters += (context.credential_id, context.participant_id)
         row = self._connection.execute(query, parameters).fetchone()
         if row is None:
             return None
         return ParticipantView(
-            row[0], runtime.view(json.loads(row[1]), context.participant_id)
+            row[0], runtime.view(json.loads(row[1]), context.participant_id), row[2]
         )
 
     def runtime(self) -> Runtime:

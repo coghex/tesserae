@@ -138,7 +138,8 @@ class RelayViewTests(RelayHostCase):
         self.assertEqual(
             {key: snapshot[key] for key in snapshot if key != "view"},
             {"version": 1, "type": "snapshot", "game_id": self.game_id,
-             "participant_id": self.ids["alice"], "revision": 0, "module": MODULE},
+             "participant_id": self.ids["alice"], "revision": 0,
+         "participant_name": "Alice", "module": MODULE},
         )  # fmt: skip
         self.assertEqual(
             set(snapshot["view"]), {"scene", "rules", "character", "commands"}

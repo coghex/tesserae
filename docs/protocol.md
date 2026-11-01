@@ -200,7 +200,7 @@ sync, and is the recipient's whole view. In a `dice` game it is metadata only:
 
 ```json
 {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37",
- "participant_id": "p_7h3k9q2m", "revision": 4}
+ "participant_id": "p_7h3k9q2m", "revision": 4, "participant_name": "Alice"}
 ```
 
 A game whose module projects views, such as [Relay](relay.md#what-players-see),
@@ -208,7 +208,7 @@ adds the module's identity and this participant's `view`:
 
 ```json
 {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37",
- "participant_id": "p_7h3k9q2m", "revision": 4,
+ "participant_id": "p_7h3k9q2m", "revision": 4, "participant_name": "Alice",
  "module": {"id": "relay", "version": "1", "state_version": 1},
  "view": {"scene": {"id": "relay_station", "restored": false, "...": "..."},
           "character": null, "commands": ["relay.enlist"], "rules": {"...": "..."}}}
@@ -241,9 +241,12 @@ unchanged, and no message carries a client-asserted identity or role.
 - Structure and types are checked first (`invalid_request`), then the version
   (`unsupported_version`). The same strict JSON rules apply as for commands.
   Any other `type` is judged as a command, so its errors are unchanged.
-- `snapshot` contains `game_id`, the recipient's own `participant_id`, and
-  the current mechanical `revision`. It has no roster, history, dice results,
-  credentials, or operator view.
+- `snapshot` contains `game_id`, the recipient's own `participant_id` and
+  `participant_name` (its display label, added in
+  [#85](https://github.com/coghex/tesserae/issues/85) so a client can say who
+  it joined as), and the current mechanical `revision`. It has no roster,
+  history, dice results, credentials, or operator view. Clients ignore fields
+  they do not use.
 - A module game's snapshot also has both `module` (exactly `id`, `version` and
   `state_version`) and `view`, a JSON object; a `dice` snapshot has neither.
   The module builds `view` for that participant from the game state at
@@ -385,14 +388,14 @@ Initial join:
 
 ```
 > {"version": 1, "type": "join", "token": "ALICE-TOKEN"}
-< {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37", "participant_id": "p_alice", "revision": 0}
+< {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37", "participant_id": "p_alice", "revision": 0, "participant_name": "Alice"}
 ```
 
 Synchronization:
 
 ```
 > {"version": 1, "type": "sync"}
-< {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37", "participant_id": "p_alice", "revision": 0}
+< {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37", "participant_id": "p_alice", "revision": 0, "participant_name": "Alice"}
 ```
 
 Alice's private result, and the shared update Bob sees. Alice's connection:
@@ -414,7 +417,7 @@ Reconnect and retry. Alice's connection dropped before she saw her reply to
 
 ```
 > {"version": 1, "type": "join", "token": "ALICE-TOKEN"}
-< {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37", "participant_id": "p_alice", "revision": 3}
+< {"version": 1, "type": "snapshot", "game_id": "6f1c2a9e-3b7d-4c51-9a2e-8d0f4b6c1e37", "participant_id": "p_alice", "revision": 3, "participant_name": "Alice"}
 > {"version": 1, "type": "command", "request_id": "r2", "expected_revision": 1, "command": "roll", "args": {"expression": "1d20"}}
 < {"version": 1, "type": "result", "request_id": "r2", "revision": 2, "result": {"schema_version": 1, "expression": "1d20", "terms": [{"kind": "dice", "count": 1, "sides": 20, "rolls": [17], "sign": 1, "subtotal": 17}], "total": 17}}
 ```

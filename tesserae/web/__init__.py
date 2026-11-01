@@ -11,6 +11,7 @@ ASSETS = {
     "/": "index.html",
     "/app.css": "app.css",
     "/app.js": "app.js",
+    "/session.js": "session.js",
     "/favicon.svg": "favicon.svg",
 }
 CONTENT_TYPES = {

@@ -379,6 +379,7 @@ class GameHost:
             None if current.view is None else self.module,
             current.view,
             referee,
+            current.name if self.authenticated else None,
         )
 
     def _publish(self, revision: int):
