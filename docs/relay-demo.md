@@ -69,6 +69,7 @@ the current `revision`, the module and your `view`.
 
 ```json
 {"version": 1, "type": "snapshot", "game_id": "GAME_ID", "participant_id": "p_alice", "revision": 0,
+ "participant_name": "Alice",
  "module": {"id": "relay", "version": "1", "state_version": 1},
  "view": {"scene": {"id": "relay_station", "title": "The storm-damaged relay", "description": "...", "restored": false},
           "rules": {"relay.enlist": "...", "relay.repair": "..."},

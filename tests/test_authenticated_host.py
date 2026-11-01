@@ -145,6 +145,7 @@ class JoiningTests(AuthenticatedHostCase):
                 "game_id": self.game_id,
                 "participant_id": self.ids["alice"],
                 "revision": 0,
+                "participant_name": "Alice",
             },
         )
         result = await exchange(alice, request("r1", 0))

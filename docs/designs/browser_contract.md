@@ -4,7 +4,11 @@ Status: specification for [#83](https://github.com/coghex/tesserae/issues/83)
 under tracker [#82](https://github.com/coghex/tesserae/issues/82). Implemented
 so far: serving, the request rules and the shell (sections 2 to 5) in
 `tesserae/browser.py`, `tesserae/web/` and `serve --browser` (#84), with the
-browser test tooling of section 12. It turns the
+browser test tooling of section 12; joining, identity and conversation
+(sections 6, 7 and 8's status line, conversation and composer) and the
+snapshot's `participant_name` (section 11) in `tesserae/web/session.js` and
+`app.js` (#85). Until WEB-5, a dropped connection clears the identity like a
+refusal, and the player joins again. It turns the
 [M2-1 delivery plan](browser_player_design.md) into exact contracts for WEB-2
 to WEB-6 ([#84](https://github.com/coghex/tesserae/issues/84) to
 [#88](https://github.com/coghex/tesserae/issues/88)). The wire messages are the
@@ -324,7 +328,7 @@ be unique.
 - It is additive: the CLI already ignores unknown snapshot fields
   (`_is_snapshot` checks only the fields it uses), and it does not join the
   fields a session must keep constant.
-- WEB-3 implements it, with a test, and documents it in
+- Implemented in WEB-3 (#85) and documented in
   [protocol.md](../protocol.md#authenticated-sessions).
 
 ## 12. Tests and tooling

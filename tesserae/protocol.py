@@ -417,12 +417,14 @@ def snapshot_message(
     module: Module | None = None,
     view: dict | None = None,
     referee: dict | None = None,
+    participant_name: str | None = None,
 ) -> dict:
     """The recipient's view: the reply to a join or a sync.
 
     A game whose module projects views adds `module` and that participant's
     `view`, read with `revision`. Otherwise the snapshot is metadata only. A
-    game in referee mode adds the recipient's `referee` projection.
+    game in referee mode adds the recipient's `referee` projection, and an
+    authenticated host the recipient's own `participant_name` (never a roster).
     """
     _check_identifier(game_id, "game_id")
     _check_identifier(participant_id, "participant_id")
@@ -434,6 +436,10 @@ def snapshot_message(
         "participant_id": participant_id,
         "revision": revision,
     }
+    if participant_name is not None:
+        if not isinstance(participant_name, str):
+            raise ValueError("A participant name is a string.")
+        message["participant_name"] = participant_name
     if (module is None) != (view is None):
         raise ValueError("A snapshot has both a module and a view, or neither.")
     if view is not None:

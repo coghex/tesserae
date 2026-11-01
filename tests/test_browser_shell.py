@@ -1,12 +1,13 @@
 """The packaged page in a real browser (#84, WEB-2): Console by default, the
 two-item navigation, collapsing it by keyboard, a narrow window, and no
-connection or script error. docs/designs/browser_contract.md sections 4 and 5.
+connection or script error before joining. docs/designs/browser_contract.md sections 4 and 5.
 
 Needs the `browser-test` extra and Chromium (`python -m playwright install
 chromium`). Without them these tests skip; with TESSERAE_BROWSER_TESTS=1 (CI's
 browser job) they fail instead."""
 
 import asyncio
+import json
 import os
 import tempfile
 import threading
@@ -36,7 +37,8 @@ class BackgroundHost:
     """A browser-mode host on its own event loop thread, so the synchronous
     Playwright API can drive the page from the test's thread."""
 
-    def __init__(self, database: Path):
+    def __init__(self, database: Path, executor=never):
+        self.executor = executor
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
@@ -50,7 +52,7 @@ class BackgroundHost:
         host = GameHost(
             database,
             authenticated=True,
-            referee_executor=never,
+            referee_executor=self.executor,
             browser_assets=load_assets(),
         )
         self.stop, ready = self.loop.create_future(), self.loop.create_future()
@@ -71,18 +73,14 @@ class BackgroundHost:
 
 
 class BrowserCase(unittest.TestCase):
+    """One Chromium per class; a fresh game and browser-mode host per test."""
+
     @classmethod
     def setUpClass(cls):
         if sync_playwright is None:
             if REQUIRED:
                 raise RuntimeError("TESSERAE_BROWSER_TESTS=1 but Playwright is missing")
             raise unittest.SkipTest("the browser-test extra is not installed")
-        directory = tempfile.TemporaryDirectory()
-        cls.addClassCleanup(directory.cleanup)
-        database = Path(directory.name) / "game.sqlite3"
-        with GameStore(database) as store:
-            store.add_participant("Alice", new_token())
-            RefereeStore(store).enable()
         cls.playwright = sync_playwright().start()
         cls.addClassCleanup(cls.playwright.stop)
         try:
@@ -92,25 +90,56 @@ class BrowserCase(unittest.TestCase):
                 raise
             raise unittest.SkipTest("Chromium is not installed for Playwright")
         cls.addClassCleanup(cls.browser.close)
-        cls.host = BackgroundHost(database)
-        cls.addClassCleanup(cls.host.close)
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.database = self.directory / "game.sqlite3"
+        with GameStore(self.database) as store:
+            self.make_game(store)
+            RefereeStore(store).enable()
+        self.host = BackgroundHost(self.database, self.executor)
+        self.addCleanup(self.host.close)
+        self.errors, self.sockets = [], {}
+
+    def make_game(self, store):
+        store.add_participant("Alice", new_token())
+
+    async def executor(self, job):
+        return await never(job)
 
     def open(self, width=1024, height=768):
-        """A fresh page on the host, recording script errors and sockets."""
+        """A fresh page on the host, recording script errors, and each socket
+        it opens with the types of the messages it sends (never their
+        content, which would include a token)."""
         context = self.browser.new_context(viewport={"width": width, "height": height})
         self.addCleanup(context.close)
         page = context.new_page()
-        self.errors, self.sockets = [], []
+        sockets = self.sockets[page] = []
+
+        def opened(socket):
+            sent = []
+            sockets.append(sent)
+            socket.on("framesent", lambda payload: sent.append(_type_of(payload)))
+
         page.on("console", lambda m: m.type == "error" and self.errors.append(m.text))
         page.on("pageerror", lambda e: self.errors.append(str(e)))
-        page.on("websocket", lambda s: self.sockets.append(s.url))
+        page.on("websocket", opened)
         page.goto(self.host.page)
         return page
 
     def assert_quiet(self):
         """No script error or CSP violation, and no connection was opened."""
         self.assertEqual(self.errors, [])
-        self.assertEqual(self.sockets, [])
+        self.assertEqual([s for sockets in self.sockets.values() for s in sockets], [])
+
+
+def _type_of(payload) -> str:
+    try:
+        return json.loads(payload)["type"]
+    except (ValueError, TypeError, KeyError):
+        return "?"
 
 
 class ShellTests(BrowserCase):
@@ -123,9 +152,7 @@ class ShellTests(BrowserCase):
         expect(settings).not_to_have_attribute("aria-current", "page")
         expect(page.locator("#screen-settings")).to_be_hidden()
         expect(page.get_by_role("status")).to_have_text("Not connected")
-        expect(
-            page.locator("#screen-console").get_by_role("button", name="Join")
-        ).to_be_disabled()
+        expect(page.locator("#console-play")).to_be_hidden()
         self.assertEqual(
             page.get_by_role("navigation").get_by_role("button").count(), 3
         )

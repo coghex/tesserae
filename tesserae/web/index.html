@@ -43,55 +43,73 @@
     <main class="main">
       <section class="screen" id="screen-console" aria-labelledby="console-title">
         <h1 id="console-title">Console</h1>
-        <p class="status" role="status">
-          <span class="badge">Not connected</span>
-        </p>
-        <div class="panel join">
+        <p class="status" role="status" id="console-status">Not connected</p>
+        <p class="notice" id="console-notice" aria-live="polite" hidden></p>
+        <div class="panel join" id="console-join">
           <h2>Join the game</h2>
           <p>Paste your personal token or choose your token file, then join.</p>
-          <fieldset class="token-entry" disabled>
+          <fieldset class="token-entry">
             <legend class="visually-hidden">Your token</legend>
             <label>Token
-              <input type="password" autocomplete="off" spellcheck="false">
+              <input type="password" id="console-token" autocomplete="off"
+                     spellcheck="false">
             </label>
             <label>Token file
-              <input type="file">
+              <input type="file" id="console-token-file">
             </label>
-            <button type="button">Join</button>
+            <button type="button" class="join-button">Join</button>
           </fieldset>
-          <p class="note">Joining from the browser is not available yet. Use
-            <code>tesserae connect</code> to play.</p>
+        </div>
+        <div class="play" id="console-play" hidden>
+          <ol class="conversation" id="conversation" role="log"
+              aria-label="Conversation"></ol>
+          <div class="composer">
+            <label for="composer-text">Say to the referee</label>
+            <textarea id="composer-text" rows="3" maxlength="2000"
+                      spellcheck="true"></textarea>
+            <div class="composer-actions">
+              <label class="check">
+                <input type="checkbox" id="composer-private">
+                Private: only the referee sees this
+              </label>
+              <button type="button" id="composer-send">Send</button>
+            </div>
+            <p class="note" id="composer-note" aria-live="polite"></p>
+            <p class="note">Enter sends; Shift+Enter starts a new line.</p>
+          </div>
         </div>
       </section>
 
       <section class="screen" id="screen-settings" aria-labelledby="settings-title"
                hidden>
         <h1 id="settings-title">Settings</h1>
+        <p class="notice" id="settings-notice" aria-live="polite" hidden></p>
         <div class="panel">
           <h2>Connection</h2>
           <dl class="facts">
-            <dt>Status</dt><dd>Not connected</dd>
+            <dt>Status</dt><dd id="settings-status">Not connected</dd>
             <dt>Host</dt><dd id="settings-host"></dd>
-            <dt>Game</dt><dd>Shown after joining</dd>
-            <dt>Joined as</dt><dd>Shown after joining</dd>
-            <dt>Module</dt><dd>Shown after joining</dd>
+            <dt>Game</dt><dd id="settings-game">Shown after joining</dd>
+            <dt>Joined as</dt><dd id="settings-name">Shown after joining</dd>
+            <dt>Module</dt><dd id="settings-module">Shown after joining</dd>
           </dl>
         </div>
         <div class="panel">
           <h2>Identity</h2>
-          <fieldset class="token-entry" disabled>
+          <fieldset class="token-entry">
             <legend class="visually-hidden">Your token</legend>
             <label>Token
-              <input type="password" autocomplete="off" spellcheck="false">
+              <input type="password" id="settings-token" autocomplete="off"
+                     spellcheck="false">
             </label>
             <label>Token file
-              <input type="file">
+              <input type="file" id="settings-token-file">
             </label>
-            <button type="button">Join</button>
+            <button type="button" class="join-button">Join</button>
           </fieldset>
           <div class="actions">
-            <button type="button" disabled>Disconnect</button>
-            <button type="button" disabled>Change identity</button>
+            <button type="button" id="settings-disconnect" disabled>Disconnect</button>
+            <button type="button" id="settings-change" disabled>Change identity</button>
           </div>
           <p class="note">Your token stays in this page's memory only. After a
             refresh you provide it again.</p>
