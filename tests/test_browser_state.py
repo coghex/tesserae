@@ -129,7 +129,7 @@ class RelayStateTests(RelayCase):
             )
         )
         self.expect_revision(alice, 1)
-        self.expect_status(alice, "The referee is ready.")
+        self.expect_answered(alice, "Done.")
 
         question = "Spend 1 effort for Wren to try the repair?"
         self.say(alice, "Can Wren fix the relay?")
@@ -143,7 +143,7 @@ class RelayStateTests(RelayCase):
         )
         expect(alice.locator("#console-last-state")).to_have_text("answered")
         self.expect_revision(alice, 1)  # a question changes no revision
-        self.expect_status(bob, "The referee is ready.")
+        self.expect_answered(bob, "Wren can try.")
         expect(bob.locator("#console-question")).to_be_hidden()
         self.assertNotIn(question, bob.content())
         self.assertFalse([frame for frame in self.received[bob] if question in frame])

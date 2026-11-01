@@ -120,7 +120,7 @@ class UnconfirmedTests(RecoveryCase):
         expect(page.locator("#console-unconfirmed")).to_be_hidden()
         expect(page.locator("#composer-text")).to_have_value("")
         self.replies.put(reply(("table", "Hello, Alice.")))
-        self.expect_status(page, "The referee is ready.")
+        self.expect_answered(page, "Hello, Alice.")
         self.expect_no_job()
         self.quiet()
 
@@ -190,7 +190,7 @@ class RefreshTests(RecoveryCase):
         self.say(page, "Hello.")
         self.job()
         self.replies.put(reply(("table", "Hello, Alice.")))
-        self.expect_status(page, "The referee is ready.")
+        self.expect_answered(page, "Hello, Alice.")
         page.locator("#composer-text").fill("Never sent.")
 
         page.reload()
@@ -217,13 +217,13 @@ class RefreshTests(RecoveryCase):
         self.say(alice, "First.")
         self.job()
         self.replies.put(reply(("table", "One.")))
-        self.expect_status(bob, "The referee is ready.")
+        self.expect_answered(bob, "One.")
         self.say(bob, "My turn.")
         self.job()
         self.say(alice, "Second.")
         expect(alice.locator("#composer-note")).to_contain_text("still answering Bob")
         self.replies.put(reply(("table", "Bob's answer.")))
-        self.expect_status(alice, "The referee is ready.")
+        self.expect_answered(alice, "Bob's answer.")
 
         expect(alice.locator("#console-last-text")).to_have_text("“First.”")
         alice.locator("#console-resend").click()
@@ -238,7 +238,8 @@ class RestartTests(RecoveryCase):
         self.say(alice, "Before.")
         self.job()
         self.replies.put(reply(("table", "Noted before.")))
-        self.expect_status(bob, "The referee is ready.")
+        for page in (alice, bob):  # both have it before the host stops
+            self.expect_answered(page, "Noted before.")
         alice.locator("#composer-text").fill("Still typing")
 
         self.host.stop()
