@@ -8,8 +8,9 @@ before its implementation and implemented with it in `tesserae/lobby.py`,
 [host lobby design](host_lobby_design.md) into exact rules for the
 registry-backed host: the lobby messages, how a host player becomes a
 campaign participant, and how access checks are ordered against game commits.
-The CLI (`tesserae connect --lobby`, #98) implements its client rules; the
-browser (#99) will too. The
+The CLI (`tesserae connect --lobby`, #98) implements its client rules, and the
+browser page (#99, `serve --registry --browser`) does too, under section 10.
+The
 [registry guide](../host-registry.md) covers the HOST-1 operator tools it uses.
 
 Inside a selected campaign every message is the existing
@@ -30,8 +31,9 @@ Owner decisions (D-24 and tracker #95, confirmed 2026-11-01):
 - An existing participant is linked to a host player only by an explicit
   operator action; otherwise admission creates a stable participant without
   another bearer token.
-- Localhost only. No browser login, LAN, TLS or remembered credentials in
-  this slice.
+- Localhost only. No LAN, TLS or remembered credentials in this slice; the
+  browser page logs in with a host token kept in page memory only, as M2-1's
+  page keeps a game token.
 - **Revocation while the referee is answering** (owner, 2026-11-01): an input
   accepted before a revocation keeps its job, which finishes and commits as
   usual, exactly as when a game token is revoked today. The revoked player
@@ -62,9 +64,10 @@ tesserae serve --registry host.sqlite3 --port PORT [--module-dir DIR ...]
 - `--registry` names an existing host registry (HOST-1); it is never created.
   It replaces `--database` and implies authentication. `--database` with
   `--registry` exits 2, as do `--authenticated` (redundant, refused so the
-  mode is unambiguous), `--browser` (until HOST-4), `--tls-cert`, `--tls-key`
-  and any `--host` other than `127.0.0.1`. A refusal exits before anything
-  listens. A missing or invalid registry exits 1.
+  mode is unambiguous), `--tls-cert`, `--tls-key` and any `--host` other
+  than `127.0.0.1`. A refusal exits before anything listens. A missing or
+  invalid registry exits 1. `--browser` also serves the browser page
+  (section 10).
 - `--module-dir` may be given more than once. Each package is loaded once at
   startup (as with a single game) and is available to every campaign; a
   campaign uses the bundled catalog or the loaded package whose module ID its
@@ -75,8 +78,11 @@ tesserae serve --registry host.sqlite3 --port PORT [--module-dir DIR ...]
   session in it, keyed by game ID, exactly as for a single game, so
   `tesserae referee stop --database DB` reaches the lobby host's job for that
   campaign.
-- Every handshake follows the existing request policy: an `Origin` header
-  gets 403 (there is no page yet), and command-line clients send none.
+- Every handshake follows the existing request policy: without `--browser`
+  an `Origin` header gets 403, and command-line clients send none. With
+  `--browser` the [browser contract](browser_contract.md)'s request rules
+  apply unchanged (section 3 there: `Host` check, the page's two origins,
+  asset headers and CSP).
 
 The ready line names the mode and the registry, not a game:
 
@@ -345,8 +351,8 @@ holds another game, the connection gets `left` instead.
 clients are unchanged. A game opened by this version is upgraded to schema
 version 6, which older Tesserae versions refuse to open, as with earlier
 upgrades. The CLI's lobby mode (#98, `tesserae connect --lobby`) and the
-browser's login and picker (#99) are separate deliveries; HOST-2's own tests
-drive the lobby over raw WebSocket messages.
+browser's login and picker (#99, section 10) are separate deliveries;
+HOST-2's own tests drive the lobby over raw WebSocket messages.
 
 ## 9. Tests
 
@@ -363,3 +369,75 @@ drive the lobby over raw WebSocket messages.
   revoked player gets nothing); missing, moved and replaced files and a bad
   module refused without creating a game; and single-game mode unchanged.
 - `serve --registry` refusals and a real process start and stop.
+
+## 10. The browser page (HOST-4)
+
+`tesserae serve --registry R --port P --browser` serves the M2-1 page on the
+same port. Serving, requests and assets follow the
+[browser contract](browser_contract.md) sections 2 to 4, with two
+differences: a lobby host has no `--authenticated` or referee-mode
+requirement, and its ready output's second line is `Browser:
+http://127.0.0.1:PORT/ (this computer only; log in with a host token)`.
+
+**Which host.** The page is the same files for both hosts except one line of
+`index.html`, `<meta name="tesserae-host" content="game">`, which a lobby host
+serves as `content="lobby"`. It is set once at startup, carries nothing about
+the registry or a campaign, and tells the page to send `login` instead of
+`join`. A packaged page without that line is an incomplete installation.
+
+**Logging in.** The Console's entry panel says "Log in" and takes the host
+token by paste or token file, under the browser contract's token rules
+(memory only, entry fields emptied when it is sent, cleared by Disconnect,
+Change identity and refusals). `authentication_failed` and `session_revoked`
+clear the identity with a reason, as there.
+
+**The picker.** After the `lobby` reply the Console shows "Choose a campaign":
+the player's name and one button per catalog entry, by name, in the host's
+order. An empty catalog says no campaigns are open yet and offers "Refresh the
+list", which sends `lobby`, as does every return to the picker after lost
+access. The page never offers a campaign that is not in the catalog.
+
+**Inside a campaign.** Choosing one sends `select`; its snapshot opens the
+Console exactly as a joined game (browser contract sections 7 to 10), with
+the status line naming the campaign (`Harbor · Joined as Alice · ...`) and a
+"Leave campaign" button beside it. Settings adds Player and Campaign rows
+(name and ID) in place of Game, and the same "Leave campaign" button. Console
+and Settings stay the only screens. A campaign without a referee opens
+read-only: its state panel and a note pointing to `tesserae connect --lobby`,
+with no composer and no `messages` request, since the browser only talks to
+the referee (an engineering choice within M2-1's plain-text-only decision).
+
+**Boundaries.** The page's campaign state is the conversation, view, referee
+projection, last and unconfirmed inputs, the draft and the private box. It is
+all cleared, and replies to anything asked before are dropped, when:
+
+- the player leaves: cleared as the `leave` is sent, so nothing the campaign
+  still sends before the host's `lobby` reply can appear;
+- the host ends the campaign: a `left`, or `campaign_unavailable` answering
+  any campaign request, returns the page to the picker with the host's reason
+  and refreshes the catalog;
+- a reconnect's `select` finds a different participant (below).
+
+Between the `leave` and its reply the page shows nothing from any campaign;
+`message`, `referee` and `revision` are acted on only inside a campaign.
+Every reply is tied to the connection and the campaign entry it was asked in,
+so a request outstanding at a boundary never touches the next campaign. The
+page does not keep a campaign's inputs across a leave, so it never resends
+one after selecting again; that is stricter than section 4 allows.
+
+**Reconnecting.** A dropped connection keeps the page as the browser contract
+says, inside a campaign or at the picker. Reconnect logs in again with the
+held token and, if the page was in a campaign, selects the same campaign ID
+(selecting plays nothing). The same participant keeps the draft and settles
+an unconfirmed input exactly as a reconnected game does. A different
+participant (the operator relinked the player) clears the campaign state
+first. A refused selection returns to the picker with its reason. One page
+holds one connection; another page or the CLI chooses its own campaign.
+
+**Tests.** `tests/test_browser_lobby.py` drives Chromium against a lobby host
+with scripted referees: login, the catalog and its empty state, play, leaving
+and switching on one connection with a reply held back past the leave, a
+campaign without a referee, two pages in different campaigns, lost access by
+request and by `left`, credential revocation, and reconnecting into the same
+campaign, as a new participant, and after access ended. Python tests cover
+the lobby page's request rules and the `serve --registry --browser` process.

@@ -24,7 +24,7 @@ from tesserae.referee import runner
 from tesserae.referee.store import RefereeStore
 from tesserae.server import GameHost, HostConfigError
 from tesserae.store import GameStore, StoreError
-from tesserae.web import ASSETS, AssetsError, load_assets
+from tesserae.web import ASSETS, GAME_HOST, LOBBY_HOST, AssetsError, load_assets
 
 PACKAGE = Path(__file__).resolve().parents[1] / "tesserae" / "web"
 
@@ -276,6 +276,14 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(AssetsError, "app.js .*installation is incomplete"):
             load_assets(partial)
         self.assertEqual(set(load_assets()), set(ASSETS))  # the real package
+        (partial / "app.js").write_bytes((PACKAGE / "app.js").read_bytes())
+        page = (PACKAGE / "index.html").read_bytes()
+        (partial / "index.html").write_bytes(page.replace(GAME_HOST, b""))
+        with self.assertRaisesRegex(AssetsError, "does not name its host"):
+            load_assets(partial)
+        # A lobby host's page differs from a game's only in naming its host.
+        game, lobby = load_assets()["/"][1], load_assets(lobby=True)["/"][1]
+        self.assertEqual(lobby.replace(LOBBY_HOST, GAME_HOST), game)
 
 
 def _option(options, name, default=None):

@@ -3,8 +3,9 @@
 Status: owner-approved direction (2026-11-01). The local registry (HOST-1,
 #96) and the registry-backed lobby host (HOST-2, #97, exact rules in the
 [lobby contract](lobby_contract.md)) and CLI selection (HOST-3, #98,
-`tesserae connect --lobby`) are implemented; browser selection (#99) and the
-acceptance (#100) are not yet. M2-1 is complete
+`tesserae connect --lobby`) and browser selection (HOST-4, #99,
+`serve --registry --browser`) are implemented; the acceptance (#100) is not
+yet. M2-1 is complete
 through PR #94. Tracker: [#95](https://github.com/coghex/tesserae/issues/95);
 children #96–#100. [Operator guide and API limits](../host-registry.md).
 

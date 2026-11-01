@@ -9,7 +9,10 @@ kinds of player can share one game. The rules the page follows are in the
 
 The page is for this computer only. Players on other computers keep using the
 encrypted CLI ([LAN runbook](lan-runbook.md)); browser access over the network
-is later work. Paths, names and ports below are placeholders.
+is later work. Paths, names and ports below are placeholders. This runbook
+serves one game; a lobby host serves the same page for its campaigns, with a
+login and a campaign list first
+([registry guide](host-registry.md#play-in-the-browser)).
 
 ## 1. Before you start
 

@@ -2,12 +2,17 @@
 // (docs/designs/browser_contract.md sections 4 to 8). Screens only render it;
 // changing screens or collapsing the navigation never touches a connection.
 // Strings go into the page as text only, never as markup. The token is held
-// only while a join is being sent, and never stored or logged.
+// in memory only, to reconnect, and never stored or logged.
+//
+// A lobby host's page (docs/designs/lobby_contract.md section 10) logs in
+// with a host token, lists the player's campaigns and enters one. Everything
+// of a campaign is cleared when the page leaves it.
 
 import { Session, newRequestId } from "/session.js";
 import { viewNode } from "/views.js";
 
 const NARROW = "(max-width: 40rem)";
+const LOBBY = document.querySelector('meta[name="tesserae-host"]')?.content === "lobby";
 const MAX_TEXT = 2000;
 
 const JOB_STATES = {
@@ -26,24 +31,37 @@ const EDIT_NOTE =
 
 const SETTINGS_STATUS = {
   out: "Not connected",
-  joining: "Joining…",
-  joined: "Joined",
+  joining: LOBBY ? "Logging in…" : "Joining…",
+  lobby: "Logged in, choosing a campaign",
+  selecting: "Opening the campaign…",
+  leaving: "Leaving the campaign…",
+  joined: LOBBY ? "In a campaign" : "Joined",
   lost: "Disconnected",
   reconnecting: "Reconnecting…",
 };
 
 const REFUSALS = {
-  authentication_failed:
-    "That token was not accepted. Check it, or ask the host for a new one.",
-  session_revoked: "Your access to this game was revoked.",
-  join_timeout: "The host stopped waiting for the join. Try again.",
+  authentication_failed: LOBBY
+    ? "That token was not accepted. Use your host token, or ask the host for a new one."
+    : "That token was not accepted. Check it, or ask the host for a new one.",
+  session_revoked: LOBBY
+    ? "Your host token is no longer valid. Ask the host for a new one."
+    : "Your access to this game was revoked.",
+  join_timeout: LOBBY
+    ? "The host stopped waiting for the login. Try again."
+    : "The host stopped waiting for the join. Try again.",
 };
 
 const state = {
   screen: "console",
   navExpanded: !window.matchMedia(NARROW).matches,
-  phase: "out", // "out", "joining" or "joined"
+  // "out", "joining", "joined", "lost" or "reconnecting"; a lobby host's page
+  // also has "lobby" (logged in), "selecting" and "leaving".
+  phase: "out",
   notice: "",
+  player: null, // a lobby host's logged-in player: {id, name}
+  catalog: [], // the campaigns open to that player, as last listed
+  campaign: null, // the selected campaign: {campaignId, name}
   me: null, // {gameId, participantId, name, module}
   referee: null, // the host's referee projection for this participant
   view: null, // this participant's view, as the host projected it
@@ -61,9 +79,11 @@ const state = {
 
 let session = null; // the one live Session, shared by both screens
 let heldToken = null; // in memory only, to reconnect the joined identity
-let firstJoin = true; // no join yet since this page loaded
+let scope = {}; // replaced whenever the game or campaign state is cleared
+const seenGames = new Set(); // games joined since this page loaded
 let statusRead = null; // a referee_status in flight, and whether to read again
 let syncRead = null; // a sync in flight, and whether to read again
+let renderedCatalog = null; // the catalog the picker shows
 let renderedView = null; // the view object the state panel shows
 const fileTokens = new WeakMap(); // token-entry fieldset to a chosen file's token
 let entryGeneration = 0; // bumped on every clear, so an older file read is dropped
@@ -73,7 +93,7 @@ const $ = (id) => document.getElementById(id);
 // ---- Joining and leaving -------------------------------------------------
 
 async function join(token) {
-  if (session) leave();
+  if (session) closeSession();
   clearIdentity();
   heldToken = token;
   state.phase = "joining";
@@ -101,34 +121,42 @@ async function connect(again) {
   session = current;
   let reply;
   try {
-    reply = await current.join(heldToken);
+    reply = LOBBY ? await current.login(heldToken) : await current.join(heldToken);
   } catch {
     return; // the socket closed; lost() reports why
   }
   if (current !== session) return;
-  if (reply.type !== "snapshot") {
+  if (reply.type !== (LOBBY ? "lobby" : "snapshot")) {
     state.notice = refusalText(reply.code, reply.message);
     return; // the host closes next; lost() clears the identity
   }
-  if (again && state.me && reply.participant_id !== state.me.participantId) {
-    const token = heldToken; // never another identity's data
-    clearIdentity();
-    heldToken = token;
+  if (LOBBY) await loggedIn(current, reply, again);
+  else await entered(current, reply, again);
+}
+
+// After a game's join or a campaign's select. A reconnect that finds another
+// participant clears the old one's state first.
+async function entered(current, snapshot, again) {
+  if (again && state.me && snapshot.participant_id !== state.me.participantId) {
+    clearGame(); // never another identity's data
   }
-  applySnapshot(reply);
+  const here = scope;
+  applySnapshot(snapshot);
   state.phase = "joined";
   settleUnconfirmed();
-  if (firstJoin && state.referee && state.referee.your_last_input) {
+  if (!seenGames.has(state.me.gameId) && state.referee && state.referee.your_last_input) {
     state.composerNote = REFRESH_NOTE;
   }
-  firstJoin = false;
+  seenGames.add(state.me.gameId);
   render();
-  if (!again) $("composer-text").focus();
+  if (!again) $(state.referee ? "composer-text" : "console-leave").focus();
+  if (!state.referee) return; // a campaign without a referee has no conversation
   try {
     // The whole visible history, on every join: merged by seq, so whatever
     // arrived live or out of order is never duplicated or lost.
     const history = await current.history(0);
-    if (current === session && history.type === "messages") {
+    if (!live(current, here) || leftCampaign(history)) return;
+    if (history.type === "messages") {
       merge(history.messages);
       render();
     }
@@ -137,17 +165,130 @@ async function connect(again) {
   }
 }
 
-function leave() {
+function closeSession() {
   const current = session;
   session = null;
   if (current) current.close();
 }
 
 function disconnect(notice) {
-  leave();
+  closeSession();
   clearIdentity();
   state.notice = notice;
   render();
+}
+
+// True while `current` is the live session and nothing it was asked for has
+// been cleared since: a reply for a game or campaign the page has left, or
+// from a closed connection, is dropped.
+function live(current, here) {
+  return current === session && here === scope;
+}
+
+// ---- A lobby host's campaigns ---------------------------------------------
+
+// After the login reply. A reconnect from inside a campaign enters that
+// campaign again; selecting plays nothing, and the host decides whether the
+// player still has it.
+async function loggedIn(current, lobby, again) {
+  applyLobby(lobby);
+  const wanted = again ? state.campaign : null;
+  if (!wanted) {
+    state.phase = "lobby";
+    render();
+    if (!again) focusPicker();
+    return;
+  }
+  await select(wanted.campaignId, true);
+}
+
+function applyLobby(lobby) {
+  state.player = { id: lobby.player_id, name: lobby.player_name };
+  state.catalog = Array.isArray(lobby.campaigns) ? lobby.campaigns : [];
+}
+
+// Enters a campaign from the picker, or again after a reconnect (`again`),
+// when what was shown stays until the host answers.
+async function select(campaignId, again = false) {
+  const current = session;
+  if (!current || state.phase !== (again ? "reconnecting" : "lobby")) return;
+  if (!again) state.phase = "selecting";
+  state.notice = "";
+  render();
+  let reply;
+  try {
+    reply = await current.select(campaignId);
+  } catch {
+    return; // the connection closed; lost() has already said so
+  }
+  if (current !== session) return;
+  if (reply.type === "snapshot" && reply.campaign) {
+    await entered(current, reply, again);
+    return;
+  }
+  backInLobby(reply.message || "That campaign cannot be opened right now.");
+}
+
+// Returns to the picker. Everything of the campaign is cleared at once, so
+// nothing it still sends before the host's reply can appear.
+async function leaveCampaign() {
+  const current = session;
+  if (!current || state.phase !== "joined" || !LOBBY) return;
+  clearGame();
+  state.phase = "leaving";
+  render();
+  let reply;
+  try {
+    reply = await current.leave();
+  } catch {
+    return; // the connection closed; lost() has already said so
+  }
+  if (current !== session || state.phase !== "leaving") return;
+  state.phase = "lobby";
+  // Access may have ended first (no_campaign): the page is in the lobby anyway.
+  if (reply.type === "lobby") applyLobby(reply);
+  render();
+  if (reply.type !== "lobby") listCampaigns();
+  focusPicker();
+}
+
+// The host ended the campaign for this connection (a `left`, or a request
+// answered `campaign_unavailable`): back to the picker, with the reason.
+function backInLobby(notice) {
+  clearGame();
+  state.phase = "lobby";
+  state.notice = notice;
+  render();
+  listCampaigns();
+}
+
+// A reply that says the campaign is gone takes the page back to the picker.
+function leftCampaign(reply) {
+  if (!LOBBY || reply.type !== "error" || reply.code !== "campaign_unavailable") {
+    return false;
+  }
+  backInLobby(reply.message || "That campaign is no longer available to you.");
+  return true;
+}
+
+async function listCampaigns() {
+  const current = session;
+  if (!current || state.phase !== "lobby") return;
+  let reply;
+  try {
+    reply = await current.lobby();
+  } catch {
+    return; // the connection closed; lost() has already said so
+  }
+  if (current === session && reply.type === "lobby") {
+    applyLobby(reply);
+    render();
+  }
+}
+
+function focusPicker() {
+  const first = $("campaign-list").querySelector("button");
+  (first || $("lobby-refresh")).focus();
 }
 
 // A dropped connection keeps everything shown, marked out of date, with the
@@ -156,8 +297,11 @@ function disconnect(notice) {
 function lost(closed) {
   session = null;
   const refused = closed && closed.refused;
-  const live = state.me !== null && ["joined", "reconnecting"].includes(state.phase);
-  if (!refused && live) {
+  const connected = LOBBY
+    ? state.player !== null &&
+      ["lobby", "selecting", "leaving", "joined", "reconnecting"].includes(state.phase)
+    : state.me !== null && ["joined", "reconnecting"].includes(state.phase);
+  if (!refused && connected) {
     const reconnecting = state.phase === "reconnecting";
     if (state.sending && state.sending.fromComposer) {
       state.unconfirmed = { ...state.sending, fresh: false };
@@ -188,8 +332,19 @@ function refusalText(code, message) {
 // Clears everything that belongs to the joined participant, so another
 // identity never sees it.
 function clearIdentity() {
+  clearGame();
+  Object.assign(state, { phase: "out", player: null, catalog: [] });
+  heldToken = null;
+  clearTokenEntries();
+}
+
+// Clears everything of the game or campaign joined: its participant, view,
+// conversation, inputs and draft. Replies to anything asked before are then
+// dropped (live()).
+function clearGame() {
+  scope = {};
   Object.assign(state, {
-    phase: "out",
+    campaign: null,
     me: null,
     referee: null,
     view: null,
@@ -204,12 +359,10 @@ function clearIdentity() {
     composerNote: "",
     noteIsBusy: false,
   });
-  heldToken = null;
   statusRead = null;
   syncRead = null;
   $("composer-text").value = "";
   $("composer-private").checked = false;
-  clearTokenEntries();
 }
 
 // Empties every token field and file choice, forgets file tokens, and makes
@@ -232,12 +385,23 @@ function applySnapshot(snapshot) {
     name: snapshot.participant_name || snapshot.participant_id,
     module: snapshot.module || null,
   };
+  if (snapshot.campaign) {
+    state.campaign = { campaignId: snapshot.campaign.campaign_id, name: snapshot.campaign.name };
+  }
   state.referee = snapshot.referee || null;
   state.view = snapshot.view ?? null;
   state.revision = snapshot.revision;
 }
 
 function receive(message) {
+  if (message.type === "left") {
+    if (state.phase === "joined" && state.campaign) {
+      backInLobby(`You no longer have access to ${state.campaign.name}.`);
+    }
+    return;
+  }
+  // Inside a lobby host, only a campaign the page is in can speak to it.
+  if (LOBBY && state.phase !== "joined") return;
   if (message.type === "message") {
     merge([message]);
   } else if (message.type === "referee") {
@@ -259,22 +423,23 @@ async function readView() {
     return;
   }
   const current = session;
-  syncRead = { again: false };
+  const here = scope;
+  const mine = (syncRead = { again: false });
   try {
     do {
-      syncRead.again = false;
+      mine.again = false;
       const reply = await current.sync();
-      if (current !== session) return;
+      if (!live(current, here) || leftCampaign(reply)) return;
       if (reply.type === "snapshot" && reply.revision >= state.revision) {
         applySnapshot(reply);
         if (state.referee && state.referee.state === "idle") becameIdle();
         render();
       }
-    } while (syncRead && syncRead.again);
+    } while (syncRead === mine && mine.again);
   } catch {
     // The connection closed; lost() has already said so.
   } finally {
-    if (current === session) syncRead = null;
+    if (syncRead === mine) syncRead = null;
   }
 }
 
@@ -304,23 +469,24 @@ async function readStatus() {
     return;
   }
   const current = session;
-  statusRead = { again: false };
+  const here = scope;
+  const mine = (statusRead = { again: false });
   try {
     do {
-      statusRead.again = false;
+      mine.again = false;
       const reply = await current.status();
-      if (current !== session) return;
+      if (!live(current, here) || leftCampaign(reply)) return;
       if (reply.type === "referee_status") {
         const { version, type, ...projection } = reply;
         state.referee = projection;
         if (projection.state === "idle") becameIdle();
         render();
       }
-    } while (statusRead && statusRead.again);
+    } while (statusRead === mine && mine.again);
   } catch {
     // The connection closed; lost() has already said so.
   } finally {
-    if (current === session) statusRead = null;
+    if (statusRead === mine) statusRead = null;
   }
 }
 
@@ -347,6 +513,7 @@ async function send() {
 // the composer holds its text; `fresh` means it was never sent before.
 async function submit(input) {
   const current = session;
+  const here = scope;
   state.sending = input;
   state.composerNote = "";
   state.noteIsBusy = false;
@@ -357,7 +524,7 @@ async function submit(input) {
   } catch {
     return; // the connection closed; lost() has already said so
   }
-  if (current !== session) return;
+  if (!live(current, here) || leftCampaign(reply)) return;
   state.sending = false;
   const wasUnconfirmed = state.unconfirmed && state.unconfirmed.requestId === input.requestId;
   if (reply.type === "accepted") {
@@ -445,9 +612,12 @@ function renderShell() {
 }
 
 function statusText() {
-  if (state.phase === "joining") return "Joining…";
+  if (state.phase === "joining") return LOBBY ? "Logging in…" : "Joining…";
   if (state.phase === "reconnecting") return "Reconnecting…";
   if (state.phase === "lost") return "Disconnected. What you see may be out of date.";
+  if (state.phase === "lobby") return `Logged in as ${state.player.name}`;
+  if (state.phase === "selecting") return "Opening the campaign…";
+  if (state.phase === "leaving") return "Leaving the campaign…";
   if (state.phase !== "joined") return "Not connected";
   let referee = "";
   if (state.referee && state.referee.state === "busy") {
@@ -457,21 +627,34 @@ function statusText() {
   } else if (state.referee) {
     referee = " · The referee is ready.";
   }
-  return `Joined as ${state.me.name}${referee}`;
+  const where = state.campaign ? `${state.campaign.name} · ` : "";
+  return `${where}Joined as ${state.me.name}${referee}`;
+}
+
+// Inside a game or campaign, connected or showing it while disconnected.
+function inGame() {
+  return state.me !== null && ["joined", "lost", "reconnecting"].includes(state.phase);
 }
 
 function renderConsole() {
   const joined = state.phase === "joined";
-  const shown = ["joined", "lost", "reconnecting"].includes(state.phase);
+  const shown = inGame();
+  const picking = LOBBY && !shown && state.player !== null;
   $("console-status").textContent = statusText();
   $("console-reconnect").hidden = state.phase !== "lost";
+  $("console-leave").hidden = !LOBBY || !joined;
   showNotice($("console-notice"));
-  $("console-join").hidden = shown;
+  $("console-join").hidden = shown || picking;
+  $("console-lobby").hidden = !picking;
   $("console-play").hidden = !shown;
   $("console-play").classList.toggle("stale", shown && !joined);
   for (const button of document.querySelectorAll(".join-button")) {
     button.disabled = state.phase === "joining" || state.phase === "reconnecting";
   }
+  renderPicker();
+  const talking = !shown || state.referee !== null;
+  $("console-no-referee").hidden = talking;
+  $("console-composer").hidden = !talking;
   // Locked while a send awaits its reply, so the reply clears only what was
   // sent, never text typed meanwhile, and while an unconfirmed input is
   // being settled.
@@ -485,6 +668,32 @@ function renderConsole() {
   renderUnconfirmed();
   renderLastInput();
   renderView();
+}
+
+// The player's campaigns, each a button that enters it.
+function renderPicker() {
+  const player = state.player;
+  $("lobby-player").textContent = player ? `Logged in as ${player.name}.` : "";
+  $("lobby-empty").hidden = state.catalog.length > 0;
+  const list = $("campaign-list");
+  if (renderedCatalog !== state.catalog) {
+    renderedCatalog = state.catalog;
+    list.replaceChildren(
+      ...state.catalog.map((campaign) => {
+        const item = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "campaign";
+        button.textContent = String(campaign.name);
+        button.dataset.campaignId = String(campaign.campaign_id);
+        item.append(button);
+        return item;
+      }),
+    );
+  }
+  const usable = state.phase === "lobby";
+  for (const button of list.querySelectorAll("button")) button.disabled = !usable;
+  $("lobby-refresh").disabled = !usable;
 }
 
 function renderUnconfirmed() {
@@ -572,6 +781,16 @@ function renderSettings() {
   const joined = state.phase === "joined";
   showNotice($("settings-notice"));
   $("settings-status").textContent = SETTINGS_STATUS[state.phase];
+  const { player, campaign } = state;
+  $("settings-player").textContent = player
+    ? `${player.name} (${player.id})`
+    : "Shown after logging in";
+  $("settings-campaign").textContent = campaign
+    ? `${campaign.name} (${campaign.campaignId})`
+    : player
+      ? "None: choose one in the Console"
+      : "Shown after choosing one";
+  $("settings-leave").disabled = !joined;
   const me = state.me;
   $("settings-game").textContent = me ? me.gameId : "Shown after joining";
   $("settings-name").textContent = me ? `${me.name} (${me.participantId})` : "Shown after joining";
@@ -622,6 +841,16 @@ function wireTokenEntry(entry) {
 
 function start() {
   $("settings-host").textContent = window.location.host;
+  if (LOBBY) {
+    for (const node of document.querySelectorAll(".lobby-only")) node.hidden = false;
+    for (const node of document.querySelectorAll(".game-only")) node.hidden = true;
+    for (const button of document.querySelectorAll(".join-button")) {
+      button.textContent = "Log in";
+    }
+    $("console-join-title").textContent = "Log in";
+    $("console-join-text").textContent =
+      "Paste your host token or choose your token file, then log in.";
+  }
   $("nav-toggle").addEventListener("click", () => {
     state.navExpanded = !state.navExpanded;
     render();
@@ -650,12 +879,20 @@ function start() {
   $("composer-send").addEventListener("click", send);
 
   $("console-reconnect").addEventListener("click", reconnect);
+  for (const button of document.querySelectorAll(".leave-button")) {
+    button.addEventListener("click", leaveCampaign);
+  }
+  $("campaign-list").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-campaign-id]");
+    if (button) select(button.dataset.campaignId);
+  });
+  $("lobby-refresh").addEventListener("click", listCampaigns);
   $("unconfirmed-resend").addEventListener("click", () => resend(state.unconfirmed, true));
   $("unconfirmed-edit").addEventListener("click", editUnconfirmed);
   $("console-resend").addEventListener("click", () => resend(resendTarget(), false));
   $("settings-disconnect").addEventListener("click", () => disconnect("Disconnected."));
   $("settings-change").addEventListener("click", () => {
-    disconnect("Disconnected. Join with the other token.");
+    disconnect(`Disconnected. ${LOBBY ? "Log in" : "Join"} with the other token.`);
     $("settings-token").focus();
   });
   render();

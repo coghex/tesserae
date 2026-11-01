@@ -1,9 +1,11 @@
-// One joined WebSocket session (docs/designs/browser_contract.md section 7).
-// Protocol only: no page access. The host answers each message with exactly
-// one reply, in order, so replies pair first-in, first-out with requests;
-// `revision`, `message` and `referee` are unsolicited and never pair.
+// One joined WebSocket session (docs/designs/browser_contract.md section 7),
+// or one logged-in session of a lobby host (docs/designs/lobby_contract.md
+// sections 3 and 10). Protocol only: no page access. The host answers each
+// message with exactly one reply, in order, so replies pair first-in,
+// first-out with requests; `revision`, `message`, `referee` and `left` are
+// unsolicited and never pair.
 
-const UNSOLICITED = new Set(["revision", "message", "referee"]);
+const UNSOLICITED = new Set(["revision", "message", "referee", "left"]);
 
 export class SessionClosed extends Error {
   constructor(code, reason, error) {
@@ -51,6 +53,25 @@ export class Session {
   async join(token) {
     await this.opened;
     return this.request({ version: 1, type: "join", token });
+  }
+
+  // Logs in to a lobby host with a host token; resolves with the `lobby`
+  // reply or rejects as join() does. The token is sent once and kept nowhere.
+  async login(token) {
+    await this.opened;
+    return this.request({ version: 1, type: "login", token });
+  }
+
+  lobby() {
+    return this.request({ version: 1, type: "lobby" });
+  }
+
+  select(campaignId) {
+    return this.request({ version: 1, type: "select", campaign_id: campaignId });
+  }
+
+  leave() {
+    return this.request({ version: 1, type: "leave" });
   }
 
   request(message) {

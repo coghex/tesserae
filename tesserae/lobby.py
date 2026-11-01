@@ -55,6 +55,7 @@ from .server import (
     _SlowConsumer,
 )
 from .store import GameStore, StoreError
+from .web import AssetsError, load_assets
 
 REGISTRY_THREADS = 4
 # Messages a campaign sends without being asked; every other one is a reply.
@@ -76,7 +77,8 @@ class LobbyHost:
     `runtimes` are externally loaded module runtimes (tesserae.external),
     offered to every campaign bound to their module. Each referee-mode
     campaign gets a CodexReferee in `referee_dir`, or, for tests,
-    `referee_executor_for(campaign_id)`'s executor.
+    `referee_executor_for(campaign_id)`'s executor. `browser_assets` also
+    serves the browser page, under the browser contract's request rules.
     """
 
     def __init__(
@@ -90,6 +92,7 @@ class LobbyHost:
         randint=None,
         join_timeout: float = JOIN_TIMEOUT_SECONDS,
         write_timeout: float = WRITE_TIMEOUT_SECONDS,
+        browser_assets=None,
     ):
         self.registry = Path(registry).expanduser().resolve()
         with HostRegistry(self.registry) as opened:  # RegistryError if not one
@@ -110,7 +113,9 @@ class LobbyHost:
         self._services: dict[str, CampaignService] = {}
         self._starting: dict[str, asyncio.Lock] = {}
         self._closing = False
-        self._requests = RequestPolicy(None)  # no page: any Origin gets 403
+        # With browser_assets (tesserae.web.load_assets(lobby=True)) the page
+        # is served on this port too; without, any Origin gets 403.
+        self._requests = RequestPolicy(browser_assets)
         self._executor = ThreadPoolExecutor(
             REGISTRY_THREADS, thread_name_prefix="tesserae-registry"
         )
@@ -615,9 +620,15 @@ def run_foreground(
     module_dirs=(),
     referee_dir=None,
     referee_timeout: float = DEFAULT_TIMEOUT,
+    browser: bool = False,
 ) -> int:
-    """Serve the registry's campaigns until Ctrl-C, then exit cleanly."""
+    """Serve the registry's campaigns until Ctrl-C, then exit cleanly; with
+    `browser`, the browser page too."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    try:
+        assets = load_assets(lobby=True) if browser else None
+    except AssetsError as error:
+        return _fail(str(error))
     runtimes = []
     for module_dir in module_dirs:
         try:
@@ -630,6 +641,7 @@ def run_foreground(
             runtimes=runtimes,
             referee_dir=referee_dir or DEFAULT_REFEREE_DIR,
             referee_timeout=referee_timeout,
+            browser_assets=assets,
         )
     except HostConfigError as error:
         return _fail(f"{error}; nothing was started", code=2)
@@ -643,6 +655,12 @@ def run_foreground(
             "this computer only). Press Ctrl-C to stop.",
             flush=True,
         )
+        if browser:
+            page = "http://" + uri.removeprefix("ws://")
+            print(
+                f"Browser: {page} (this computer only; log in with a host token)",
+                flush=True,
+            )
 
     async def main():
         loop = asyncio.get_running_loop()
