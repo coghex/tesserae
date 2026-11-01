@@ -17,6 +17,21 @@ const JOB_STATES = {
   interrupted: "interrupted before an answer; say it again",
 };
 
+const REFRESH_NOTE =
+  "Anything you had typed but not sent, or that the referee never accepted, " +
+  "is not kept when the page reloads. Your last accepted input is shown above.";
+const EDIT_NOTE =
+  "Editing makes this a new input. If the referee did receive the first one, " +
+  "sending this is a second input.";
+
+const SETTINGS_STATUS = {
+  out: "Not connected",
+  joining: "Joining…",
+  joined: "Joined",
+  lost: "Disconnected",
+  reconnecting: "Reconnecting…",
+};
+
 const REFUSALS = {
   authentication_failed:
     "That token was not accepted. Check it, or ask the host for a new one.",
@@ -37,12 +52,16 @@ const state = {
   messages: new Map(), // seq to conversation message
   draft: "",
   private: false,
-  sending: false,
+  sending: false, // the input awaiting its reply: {requestId, text, private, ...}
+  unconfirmed: null, // sent, then the connection dropped before any reply
+  lastAccepted: null, // this page's last input the host accepted
   composerNote: "",
   noteIsBusy: false, // the note is a busy refusal, cleared once the referee is idle
 };
 
 let session = null; // the one live Session, shared by both screens
+let heldToken = null; // in memory only, to reconnect the joined identity
+let firstJoin = true; // no join yet since this page loaded
 let statusRead = null; // a referee_status in flight, and whether to read again
 let syncRead = null; // a sync in flight, and whether to read again
 let renderedView = null; // the view object the state panel shows
@@ -56,9 +75,24 @@ const $ = (id) => document.getElementById(id);
 async function join(token) {
   if (session) leave();
   clearIdentity();
+  heldToken = token;
   state.phase = "joining";
   state.notice = "";
   render();
+  await connect(false);
+}
+
+// Joins the same identity again after a dropped connection. What is shown,
+// the draft and any unconfirmed input stay until the host answers.
+async function reconnect() {
+  if (state.phase !== "lost" || heldToken === null) return;
+  state.phase = "reconnecting";
+  state.notice = "";
+  render();
+  await connect(true);
+}
+
+async function connect(again) {
   const url = `ws://${window.location.host}/`;
   const current = new Session(url, {
     onEvent: (message) => current === session && receive(message),
@@ -67,7 +101,7 @@ async function join(token) {
   session = current;
   let reply;
   try {
-    reply = await current.join(token);
+    reply = await current.join(heldToken);
   } catch {
     return; // the socket closed; lost() reports why
   }
@@ -76,11 +110,23 @@ async function join(token) {
     state.notice = refusalText(reply.code, reply.message);
     return; // the host closes next; lost() clears the identity
   }
+  if (again && state.me && reply.participant_id !== state.me.participantId) {
+    const token = heldToken; // never another identity's data
+    clearIdentity();
+    heldToken = token;
+  }
   applySnapshot(reply);
   state.phase = "joined";
+  settleUnconfirmed();
+  if (firstJoin && state.referee && state.referee.your_last_input) {
+    state.composerNote = REFRESH_NOTE;
+  }
+  firstJoin = false;
   render();
-  $("composer-text").focus();
+  if (!again) $("composer-text").focus();
   try {
+    // The whole visible history, on every join: merged by seq, so whatever
+    // arrived live or out of order is never duplicated or lost.
     const history = await current.history(0);
     if (current === session && history.type === "messages") {
       merge(history.messages);
@@ -104,16 +150,31 @@ function disconnect(notice) {
   render();
 }
 
+// A dropped connection keeps everything shown, marked out of date, with the
+// token and draft, and offers Reconnect; an input sent without an answer
+// becomes unconfirmed. A refusal or revocation (close 1008) clears it all.
 function lost(closed) {
   session = null;
-  const wasJoined = state.phase === "joined";
+  const refused = closed && closed.refused;
+  const live = state.me !== null && ["joined", "reconnecting"].includes(state.phase);
+  if (!refused && live) {
+    const reconnecting = state.phase === "reconnecting";
+    if (state.sending && state.sending.fromComposer) {
+      state.unconfirmed = { ...state.sending, fresh: false };
+    }
+    state.sending = false;
+    statusRead = null;
+    syncRead = null;
+    state.phase = "lost";
+    state.notice = reconnecting ? "Could not reach the host. Try again once it is running." : "";
+    render();
+    return;
+  }
   clearIdentity();
-  if (closed && closed.refused) {
+  if (refused) {
     const code = (closed.error && closed.error.code) || closed.reason;
     const message = closed.error && closed.error.message;
     state.notice = state.notice || refusalText(code, message);
-  } else if (wasJoined) {
-    state.notice = "The connection to the host was lost. Join again to continue.";
   } else {
     state.notice = state.notice || "Could not reach the host. Is it still running?";
   }
@@ -138,9 +199,12 @@ function clearIdentity() {
     draft: "",
     private: false,
     sending: false,
+    unconfirmed: null,
+    lastAccepted: null,
     composerNote: "",
     noteIsBusy: false,
   });
+  heldToken = null;
   statusRead = null;
   syncRead = null;
   $("composer-text").value = "";
@@ -263,8 +327,7 @@ async function readStatus() {
 // ---- Talking -------------------------------------------------------------
 
 async function send() {
-  const current = session;
-  if (!current || state.phase !== "joined" || state.sending) return;
+  if (!session || state.phase !== "joined" || state.sending || state.unconfirmed) return;
   const text = state.draft;
   if (!text.trim()) {
     state.composerNote = "Type what you want to say first.";
@@ -276,33 +339,86 @@ async function send() {
     render();
     return;
   }
-  state.sending = true;
+  const input = { requestId: newRequestId(), text, private: state.private };
+  await submit({ ...input, fromComposer: true, fresh: true });
+}
+
+// Sends one input and settles it by the host's reply. `fromComposer` means
+// the composer holds its text; `fresh` means it was never sent before.
+async function submit(input) {
+  const current = session;
+  state.sending = input;
   state.composerNote = "";
   state.noteIsBusy = false;
   render();
   let reply;
   try {
-    reply = await current.say(newRequestId(), text, state.private);
+    reply = await current.say(input.requestId, input.text, input.private);
   } catch {
     return; // the connection closed; lost() has already said so
   }
   if (current !== session) return;
   state.sending = false;
+  const wasUnconfirmed = state.unconfirmed && state.unconfirmed.requestId === input.requestId;
   if (reply.type === "accepted") {
-    state.draft = "";
-    state.private = false;
-    $("composer-text").value = "";
-    $("composer-private").checked = false;
-    state.busyFor = state.me.name;
+    if (wasUnconfirmed) state.unconfirmed = null;
+    acceptedInput(input);
+    if (input.fresh) state.busyFor = state.me.name;
   } else if (reply.type === "error" && reply.code === "referee_busy") {
     state.busyFor = (reply.job && reply.job.for) || null;
     if (state.referee) state.referee.state = "busy";
-    state.composerNote = `${reply.message} Your text is still here.`;
+    // An exact resend of an accepted input is answered `accepted`, busy or
+    // not, so a busy refusal proves this one was never accepted.
+    if (wasUnconfirmed) state.unconfirmed = null;
+    const where = input.fromComposer ? " Your text is still here." : "";
+    state.composerNote = `${reply.message}${where}`;
     state.noteIsBusy = true;
   } else {
     state.composerNote = reply.message || "The host could not take that.";
   }
   render();
+}
+
+function acceptedInput(input) {
+  state.lastAccepted = { requestId: input.requestId, text: input.text, private: input.private };
+  if (input.fromComposer) {
+    state.draft = "";
+    state.private = false;
+    $("composer-text").value = "";
+    $("composer-private").checked = false;
+  }
+}
+
+// After a reconnect: an unconfirmed input the host reports as the latest
+// accepted was accepted. Any other stays unconfirmed: a newer input from
+// another page or the CLI can be the latest, so it may still have been.
+function settleUnconfirmed() {
+  const pending = state.unconfirmed;
+  const last = state.referee && state.referee.your_last_input;
+  if (pending && last && last.request_id === pending.requestId) {
+    state.unconfirmed = null;
+    acceptedInput(pending);
+  }
+}
+
+// What Resend exactly sends from the last-input panel: this page's last
+// accepted input, else the one the host reports (the CLI's /retry rule).
+function resendTarget() {
+  if (state.lastAccepted) return state.lastAccepted;
+  const last = state.referee && state.referee.your_last_input;
+  return last ? { requestId: last.request_id, text: last.text, private: last.private } : null;
+}
+
+function resend(input, fromComposer) {
+  if (!session || state.phase !== "joined" || state.sending || !input) return;
+  submit({ ...input, fromComposer, fresh: false });
+}
+
+function editUnconfirmed() {
+  state.unconfirmed = null;
+  state.composerNote = EDIT_NOTE;
+  render();
+  $("composer-text").focus();
 }
 
 // ---- Rendering -----------------------------------------------------------
@@ -330,6 +446,8 @@ function renderShell() {
 
 function statusText() {
   if (state.phase === "joining") return "Joining…";
+  if (state.phase === "reconnecting") return "Reconnecting…";
+  if (state.phase === "lost") return "Disconnected. What you see may be out of date.";
   if (state.phase !== "joined") return "Not connected";
   let referee = "";
   if (state.referee && state.referee.state === "busy") {
@@ -344,23 +462,40 @@ function statusText() {
 
 function renderConsole() {
   const joined = state.phase === "joined";
+  const shown = ["joined", "lost", "reconnecting"].includes(state.phase);
   $("console-status").textContent = statusText();
+  $("console-reconnect").hidden = state.phase !== "lost";
   showNotice($("console-notice"));
-  $("console-join").hidden = joined;
-  $("console-play").hidden = !joined;
+  $("console-join").hidden = shown;
+  $("console-play").hidden = !shown;
+  $("console-play").classList.toggle("stale", shown && !joined);
   for (const button of document.querySelectorAll(".join-button")) {
-    button.disabled = state.phase === "joining";
+    button.disabled = state.phase === "joining" || state.phase === "reconnecting";
   }
   // Locked while a send awaits its reply, so the reply clears only what was
-  // sent, never text typed meanwhile.
-  $("composer-send").disabled = !joined || state.sending;
-  $("composer-text").readOnly = state.sending;
-  $("composer-private").disabled = state.sending;
+  // sent, never text typed meanwhile, and while an unconfirmed input is
+  // being settled.
+  const locked = Boolean(state.sending || state.unconfirmed);
+  $("composer-send").disabled = !joined || locked;
+  $("composer-text").readOnly = locked;
+  $("composer-private").disabled = locked;
   $("composer-note").textContent = state.composerNote;
   renderConversation();
   renderQuestion();
+  renderUnconfirmed();
   renderLastInput();
   renderView();
+}
+
+function renderUnconfirmed() {
+  const pending = state.unconfirmed;
+  $("console-unconfirmed").hidden = !pending;
+  $("console-unconfirmed-text").textContent = pending
+    ? `“${pending.text}”${pending.private ? " (private)" : ""}`
+    : "";
+  const usable = state.phase === "joined" && !state.sending;
+  $("unconfirmed-resend").disabled = !usable;
+  $("unconfirmed-edit").disabled = !usable;
 }
 
 // Only the viewer's own pending choice is ever in the projection.
@@ -372,7 +507,6 @@ function renderQuestion() {
 
 function renderLastInput() {
   const last = state.referee && state.referee.your_last_input;
-  $("console-last").hidden = !last;
   // Emptied, not just hidden, so no other identity's text stays in the page.
   $("console-last-text").textContent = last
     ? `“${last.text}”${last.private ? " (private)" : ""}`
@@ -380,16 +514,24 @@ function renderLastInput() {
   $("console-last-state").textContent = last
     ? JOB_STATES[last.job_state] || String(last.job_state)
     : "";
+  const target = resendTarget();
+  $("console-resend").hidden = !target || Boolean(state.unconfirmed);
+  $("console-resend").disabled = state.phase !== "joined" || Boolean(state.sending);
+  // Say what Resend sends when it is not the input shown above.
+  const other = target && (!last || last.request_id !== target.requestId);
+  $("console-resend-target").textContent = other ? `Resend sends “${target.text}”.` : "";
+  $("console-last").hidden = !last && !target;
 }
 
 function renderView() {
   const panel = $("console-state-body");
+  const stale = state.phase !== "joined" ? " It may be out of date." : "";
+  $("console-state-revision").textContent =
+    state.revision === null ? "" : `As of revision ${state.revision}.${stale}`;
   if (renderedView === state.view && panel.dataset.revision === String(state.revision)) return;
   renderedView = state.view;
   panel.dataset.revision = String(state.revision);
   panel.replaceChildren(viewNode(state.me && state.me.module, state.view));
-  $("console-state-revision").textContent =
-    state.revision === null ? "" : `As of revision ${state.revision}.`;
 }
 
 function renderConversation() {
@@ -429,8 +571,7 @@ function messageItem(message) {
 function renderSettings() {
   const joined = state.phase === "joined";
   showNotice($("settings-notice"));
-  $("settings-status").textContent =
-    state.phase === "joined" ? "Joined" : state.phase === "joining" ? "Joining…" : "Not connected";
+  $("settings-status").textContent = SETTINGS_STATUS[state.phase];
   const me = state.me;
   $("settings-game").textContent = me ? me.gameId : "Shown after joining";
   $("settings-name").textContent = me ? `${me.name} (${me.participantId})` : "Shown after joining";
@@ -508,6 +649,10 @@ function start() {
   });
   $("composer-send").addEventListener("click", send);
 
+  $("console-reconnect").addEventListener("click", reconnect);
+  $("unconfirmed-resend").addEventListener("click", () => resend(state.unconfirmed, true));
+  $("unconfirmed-edit").addEventListener("click", editUnconfirmed);
+  $("console-resend").addEventListener("click", () => resend(resendTarget(), false));
   $("settings-disconnect").addEventListener("click", () => disconnect("Disconnected."));
   $("settings-change").addEventListener("click", () => {
     disconnect("Disconnected. Join with the other token.");
