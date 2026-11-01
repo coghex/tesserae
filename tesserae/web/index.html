@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tesserae</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="app" id="app">
+    <nav class="nav" aria-label="Main">
+      <button class="nav-button nav-toggle" id="nav-toggle" type="button"
+              aria-expanded="true" aria-controls="nav-items">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+        <span class="label" id="nav-toggle-label">Collapse navigation</span>
+      </button>
+      <ul class="nav-items" id="nav-items">
+        <li>
+          <button class="nav-button" type="button" data-screen="console"
+                  aria-current="page">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 5h16v11H9l-5 4z"/>
+            </svg>
+            <span class="label">Console</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-button" type="button" data-screen="settings">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>
+            </svg>
+            <span class="label">Settings</span>
+          </button>
+        </li>
+      </ul>
+    </nav>
+
+    <main class="main">
+      <section class="screen" id="screen-console" aria-labelledby="console-title">
+        <h1 id="console-title">Console</h1>
+        <p class="status" role="status">
+          <span class="badge">Not connected</span>
+        </p>
+        <div class="panel join">
+          <h2>Join the game</h2>
+          <p>Paste your personal token or choose your token file, then join.</p>
+          <fieldset class="token-entry" disabled>
+            <legend class="visually-hidden">Your token</legend>
+            <label>Token
+              <input type="password" autocomplete="off" spellcheck="false">
+            </label>
+            <label>Token file
+              <input type="file">
+            </label>
+            <button type="button">Join</button>
+          </fieldset>
+          <p class="note">Joining from the browser is not available yet. Use
+            <code>tesserae connect</code> to play.</p>
+        </div>
+      </section>
+
+      <section class="screen" id="screen-settings" aria-labelledby="settings-title"
+               hidden>
+        <h1 id="settings-title">Settings</h1>
+        <div class="panel">
+          <h2>Connection</h2>
+          <dl class="facts">
+            <dt>Status</dt><dd>Not connected</dd>
+            <dt>Host</dt><dd id="settings-host"></dd>
+            <dt>Game</dt><dd>Shown after joining</dd>
+            <dt>Joined as</dt><dd>Shown after joining</dd>
+            <dt>Module</dt><dd>Shown after joining</dd>
+          </dl>
+        </div>
+        <div class="panel">
+          <h2>Identity</h2>
+          <fieldset class="token-entry" disabled>
+            <legend class="visually-hidden">Your token</legend>
+            <label>Token
+              <input type="password" autocomplete="off" spellcheck="false">
+            </label>
+            <label>Token file
+              <input type="file">
+            </label>
+            <button type="button">Join</button>
+          </fieldset>
+          <div class="actions">
+            <button type="button" disabled>Disconnect</button>
+            <button type="button" disabled>Change identity</button>
+          </div>
+          <p class="note">Your token stays in this page's memory only. After a
+            refresh you provide it again.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

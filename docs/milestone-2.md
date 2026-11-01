@@ -1,7 +1,8 @@
 # Milestone 2: browser player interface
 
-Status: in progress. Milestone 1 is complete through PR #80; no browser
-runtime has been delivered yet. The first agreed browser tracker is M2-1
+Status: in progress. Milestone 1 is complete through PR #80. So far the host
+serves the browser page shell (`serve --browser`, #84); joining and play
+from the browser come next. The first agreed browser tracker is M2-1
 ([#82](https://github.com/coghex/tesserae/issues/82)), the
 [localhost Console/Settings client](designs/browser_player_design.md), with
 its exact contracts in the [browser contract](designs/browser_contract.md).

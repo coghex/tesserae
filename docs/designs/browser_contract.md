@@ -1,8 +1,10 @@
 # M2-1 browser contract (WEB-1)
 
 Status: specification for [#83](https://github.com/coghex/tesserae/issues/83)
-under tracker [#82](https://github.com/coghex/tesserae/issues/82). Nothing in
-it is implemented yet. It turns the
+under tracker [#82](https://github.com/coghex/tesserae/issues/82). Implemented
+so far: serving, the request rules and the shell (sections 2 to 5) in
+`tesserae/browser.py`, `tesserae/web/` and `serve --browser` (#84), with the
+browser test tooling of section 12. It turns the
 [M2-1 delivery plan](browser_player_design.md) into exact contracts for WEB-2
 to WEB-6 ([#84](https://github.com/coghex/tesserae/issues/84) to
 [#88](https://github.com/coghex/tesserae/issues/88)). The wire messages are the
@@ -45,10 +47,11 @@ Engineering choices made here, within that scope:
 
 `tesserae serve --authenticated --browser --database DB --port PORT`
 
-- `--browser` requires `--authenticated` and a game in referee mode. It refuses
-  `--tls-cert`/`--tls-key` and any `--host` other than the default
-  `127.0.0.1`: browser certificate trust is later work. Each refusal exits 2
-  before anything is opened or bound, with a message naming the conflict.
+- `--browser` requires `--authenticated` and an existing game in referee
+  mode; it never creates a database, even to refuse one (a missing one exits
+  1). It refuses `--tls-cert`/`--tls-key` and any `--host` other than the
+  default `127.0.0.1`: browser certificate trust is later work. Each refusal
+  exits 2 before the host listens, with a message naming the conflict.
 - Without `--browser`, `serve` behaves exactly as today, except for the Origin
   rule in section 3.
 - The existing listening line is unchanged (scripts read it). Browser mode

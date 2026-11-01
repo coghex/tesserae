@@ -91,6 +91,12 @@ def main(argv: list[str] | None = None) -> int:
         "'tesserae referee setup' (default ~/.local/share/tesserae/referee).",
     )
     serve.add_argument(
+        "--browser",
+        action="store_true",
+        help="Also serve the browser page on this port, for players on this "
+        "computer. Needs --authenticated and a game in referee mode.",
+    )
+    serve.add_argument(
         "--referee-timeout",
         type=float,
         default=300.0,
@@ -276,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             module_dir=args.module_dir,
             referee_dir=args.referee_dir,
             referee_timeout=args.referee_timeout,
+            browser=args.browser,
         )
     try:
         result = roll_expression(args.expression)

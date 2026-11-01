@@ -160,6 +160,20 @@ See [tls.md](tls.md). The messages are the same with or without TLS.
   connections receive shared `revision` notifications
   ([#16](https://github.com/coghex/tesserae/issues/16)).
 
+**Browser origins.** Every host refuses, with HTTP 403, a WebSocket handshake
+whose `Origin` header is anything but browser mode's own page (below), so a
+web page elsewhere cannot open a socket to it. Command-line clients send no
+`Origin` and are unaffected.
+
+**Browser mode** is `tesserae serve --authenticated --browser`, for an existing
+game in referee mode (it never creates a database) ([#84](https://github.com/coghex/tesserae/issues/84)). The same
+port also serves the packaged browser page at `http://127.0.0.1:PORT/`, for
+players on this computer: no TLS and no other `--host`. Every request must
+name the host as `127.0.0.1:PORT` or `localhost:PORT` (otherwise 421), the
+page's own origins may open sockets, and only the page's packaged files are
+served. The page uses the same messages as any client. The exact rules are in
+the [browser contract](designs/browser_contract.md#2-serving), sections 2 to 4.
+
 At startup the host loads the game's bound module and providers exactly
 ([#41](https://github.com/coghex/tesserae/issues/41)). If they are unknown or
 do not match, `serve` exits 1 before listening, with no fallback to `dice`. A
