@@ -254,6 +254,24 @@ class LobbyMessageTests(Lobby):
         await alice.send(SYNC)  # still in Harbor
         self.assertEqual((await self.next(alice))["game_id"], self.campaigns["harbor"])
 
+    async def test_malformed_types_are_invalid_requests_in_and_out_of_campaigns(self):
+        await self.start_host()
+        alice, _ = await self.login("alice")
+        bad = [message(kind) for kind in ([], {}, 1, None, True)] + ['{"version": 1}']
+        for selected in (False, True):
+            if selected:
+                self.assertEqual(
+                    (await self.select(alice, "harbor"))["type"], "snapshot"
+                )
+            for sent in bad:
+                with self.subTest(selected=selected, sent=sent):
+                    await alice.send(sent)
+                    self.assertEqual(
+                        (await self.next(alice))["code"], "invalid_request"
+                    )
+            await alice.send(LOBBY)  # still open and answering
+            self.assertEqual((await self.next(alice))["type"], "lobby")
+
     async def test_inaccessible_campaigns_are_indistinguishable(self):
         with self.registry() as registry:
             registry.set_campaign_active(self.campaigns["bridge"], False)
@@ -447,6 +465,59 @@ class AccessTests(Lobby):
         stale = await self.open()
         await stale.send(message("login", token=self.tokens["alice"]))
         self.assertEqual((await self.next(stale))["code"], "authentication_failed")
+
+    async def test_every_request_notices_a_revoked_host_token(self):
+        command = json.dumps({"version": 1, "type": "command", "request_id": "c1",
+                              "expected_revision": 0, "command": "roll",
+                              "args": {"expression": "1d6"}})  # fmt: skip
+        in_lobby = [
+            SYNC,
+            say("s1", "Hello"),
+            LEAVE,
+            b"binary",
+            message("login", token=new_token()),
+            message("join", token=new_token()),
+            message("select", campaign_id="has space"),
+            message([]),
+        ]
+        in_campaign = [
+            b"binary",
+            message("select", campaign_id=self.campaigns["bridge"]),
+            message("login", token=new_token()),
+            command,  # referee_mode, if the token were still valid
+        ]
+        cases = [(False, m) for m in in_lobby] + [(True, m) for m in in_campaign]
+        await self.start_host()
+        for selected, sent in cases:
+            with self.subTest(selected=selected, sent=sent[:40]):
+                self.tokens["alice"] = new_token()
+                with self.registry() as registry:
+                    registry.rotate_credential(
+                        self.players["alice"], self.tokens["alice"]
+                    )
+                if selected:
+                    connection, _ = await self.entered("alice", "harbor")
+                else:
+                    connection, _ = await self.login("alice")
+                with self.registry() as registry:
+                    registry.revoke_credential(self.players["alice"])
+                await connection.send(sent)
+                self.assertEqual(
+                    (await self.next(connection))["code"], "session_revoked"
+                )
+                self.assertEqual(
+                    await self.closed(connection), (1008, "session_revoked")
+                )
+
+    async def test_store_free_campaign_replies_notice_lost_access(self):
+        await self.start_host()
+        alice, _ = await self.entered("alice", "harbor")
+        with self.registry() as registry:
+            registry.revoke_access(self.campaigns["harbor"], self.players["alice"])
+        await alice.send(b"binary")
+        self.assertEqual((await self.next(alice))["code"], "campaign_unavailable")
+        await alice.send(SYNC)
+        self.assertEqual((await self.next(alice))["code"], "no_campaign")
 
     async def test_a_delivery_notices_lost_access_and_sends_left(self):
         await self.start_host()

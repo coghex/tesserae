@@ -178,8 +178,7 @@ class LobbyHost:
         has been closed."""
         if isinstance(raw, bytes):
             if client.selection is None:
-                await client.send(_BINARY_REPLY)
-                return True
+                return await self._refusal(client, _BINARY_REPLY)
             return await self._in_campaign(client, raw)
         kind = _type_of(raw)
         if kind not in LOBBY_TYPES and kind != "join" and client.selection is not None:
@@ -187,29 +186,37 @@ class LobbyHost:
         try:
             request = parse_lobby_message(raw)
         except ProtocolError as error:
-            await client.send(error.to_message())
-            return True
+            return await self._refusal(client, error.to_message())
         if request is None:
             if kind == "join":
-                await client.send(lobby_error("already_logged_in"))
-            else:  # a campaign's message, in the lobby
-                await client.send(_no_campaign(raw))
-            return True
+                return await self._refusal(client, lobby_error("already_logged_in"))
+            return await self._refusal(client, _no_campaign(raw))  # in the lobby
         if isinstance(request, LoginRequest):
-            await client.send(lobby_error("already_logged_in"))
-            return True
+            return await self._refusal(client, lobby_error("already_logged_in"))
         if isinstance(request, SelectRequest):
             if client.selection is not None:
-                await client.send(lobby_error("campaign_selected"))
-                return True
+                return await self._refusal(client, lobby_error("campaign_selected"))
             return await self._select(client, request.campaign_id)
         if isinstance(request, LeaveRequest):
             if client.selection is None:
-                await client.send(lobby_error("no_campaign"))
-                return True
+                return await self._refusal(client, lobby_error("no_campaign"))
             async with client.lock:
                 client.end_selection()  # nothing from it after this point
         return await self._send_lobby(client)
+
+    async def _refusal(self, client: "_Client", reply: dict) -> bool:
+        """A lobby error, unless the host credential has gone: then
+        session_revoked and close, as for any request (contract section 3)."""
+        try:
+            active = await self._registry_call(_credential_active, client.context)
+        except Exception:
+            logger.exception("Could not recheck a host credential")
+            await client.send(error_message("internal_error", _HOST_FAILED))
+            return True
+        if not active:
+            return await client.revoke()
+        await client.send(reply)
+        return True
 
     async def _send_lobby(self, client: "_Client") -> bool:
         """The reply to `lobby` and `leave`: the catalog and the selection."""
@@ -371,6 +378,11 @@ def _catalog(path, context, registry=None):
         with HostRegistry(path) as opened:
             return _catalog(path, context, opened)
     return registry.player_name(context), registry.visible_campaigns(context)
+
+
+def _credential_active(path, context) -> bool:
+    with HostRegistry(path) as registry:
+        return registry.credential_active(context)
 
 
 def _authorized(path, context, campaign_id) -> dict:
@@ -564,7 +576,8 @@ def _type_of(raw: str):
         data = json.loads(raw)
     except (ValueError, RecursionError):
         return None
-    return data.get("type") if isinstance(data, dict) else None
+    kind = data.get("type") if isinstance(data, dict) else None
+    return kind if isinstance(kind, str) else None
 
 
 def _no_campaign(raw: str) -> dict:

@@ -240,6 +240,8 @@ def parse_lobby_message(text: str | bytes):
     """
     data = _decode(text)
     kind = data.get("type")
+    if not isinstance(kind, str):
+        raise ProtocolError("invalid_request", "'type' must be a string.")
     if kind == "login":
         return LoginRequest(_parse_join(data, "Login").token)
     if kind in ("lobby", "leave"):

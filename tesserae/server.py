@@ -340,6 +340,7 @@ class CampaignService:
 
     async def _answer(self, session: "_Session", message) -> dict:
         """Send exactly one reply to one message from a joined connection."""
+        checked = False  # whether the reply came from a store call
         if isinstance(message, bytes):
             reply = _BINARY_REPLY
         else:
@@ -347,6 +348,7 @@ class CampaignService:
                 parsed = parse_client_message(message, self._runtime)
             except ProtocolError as error:
                 reply = await self._rejection(session, error)
+                checked = True
             else:
                 if isinstance(parsed, SyncRequest):
                     return await session.send_read(lambda: self._sync(session))
@@ -363,6 +365,7 @@ class CampaignService:
                         return await self._say(session, parsed)
                     else:
                         reply = await self._referee_read(session, parsed)
+                        checked = True
                 elif isinstance(parsed, JoinRequest):
                     reply = session_error("already_joined")
                 elif self.referee_mode:
@@ -375,8 +378,23 @@ class CampaignService:
                     )
                 else:
                     reply = await self._execute(session.context, message, session)
+                    checked = True
+        if not checked and session.guard is not None:
+            # A lobby session's every request rechecks access (lobby
+            # contract section 3), even one answered without the store.
+            reply = await self._recheck(session, reply)
         await session.send(reply)
         return reply
+
+    async def _recheck(self, session: "_Session", reply: dict) -> dict:
+        """`reply`, or session_revoked if the session's access has gone."""
+        try:
+            revision = await self._call(
+                GameStore.session_revision, session.context, session=session
+            )
+        except Exception:
+            return self._failure(reply["request_id"])
+        return reply if revision is not None else session_error("session_revoked")
 
     async def _say(self, session: "_Session", request: SayRequest) -> dict:
         """Accept, replay or refuse one input and send its reply; an accepted
