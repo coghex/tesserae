@@ -283,9 +283,11 @@ With M1-6 complete, the owner selected localhost-only browser delivery and
 console first on 2026-11-01. The page has a collapsible left column with
 exactly two navigation items for Milestone 2: Console and Settings. Console
 is selected and open by default. Browser LAN access and interactive maps
-follow this first browser tracker. The
+follow this first browser tracker. The owner also selected memory-only browser
+tokens initially; remembered login is a later design. The
 [browser delivery draft](designs/browser_player_design.md) records the proposed
-children and remaining engineering boundaries; it implements no runtime.
+children and remaining engineering boundaries, under
+[Milestone 2](milestone-2.md); it implements no runtime.
 
 ## Proposed implementation boundaries
 

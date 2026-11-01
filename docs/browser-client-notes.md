@@ -20,9 +20,10 @@ The [File API](https://developer.mozilla.org/en-US/docs/Web/API/File_API/Using_f
 allows reading a user-selected file; the page cannot silently read a token from
 an arbitrary filesystem path. The
 [first-message authentication pattern](https://websockets.readthedocs.io/en/stable/topics/authentication.html#first-message)
-fits the existing join protocol. Token persistence or a later remembered session
-is a separate future product decision; do not assume localStorage or a cloud
-account system.
+fits the existing join protocol. For the initial M2-1 slice, the owner selected
+memory-only tokens: select/paste again after a refresh. Remembered login,
+potentially via server-managed cookies, remains later design work; do not
+assume localStorage or a cloud account system.
 
 ## Certificate trust is separate
 
