@@ -1,8 +1,11 @@
 # Browser client notes for a later milestone
 
-Status: deferred beyond Milestone 1 by the owner's instruction. These notes
-preserve the browser discussion and prior slice goals; they are not current
-implementation requirements for tracker #25 or Milestone 1.
+Status: Milestone 1 is complete. The owner selected localhost-only browser
+delivery, console first, on 2026-11-01. The current
+[browser console design](designs/browser_player_design.md) adds a collapsible
+left navigation with Console (the default screen) and Settings. These notes
+preserve the earlier browser discussion; LAN trust and interactive maps remain
+later work, and do not expand tracker #25 or the completed Milestone 1.
 
 ## Joining and identity
 
@@ -43,7 +46,8 @@ trust experience remain open for that later milestone.
 ## Retained browser-slice goals
 
 - Show the original demo's map/token, character summary and action result.
-- Submit the same server commands already exercised by the CLI.
+- Submit player intent through the existing referee path. The M1-6 authority
+  contract supersedes the earlier raw-command browser proposal.
 - Construct deliberate player views; do not ship referee secrets hidden by CSS.
 - Refresh/reopen and recover authoritative state without duplicate actions.
 - Keep private state directories out of general static file serving.
