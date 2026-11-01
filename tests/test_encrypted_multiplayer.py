@@ -9,6 +9,7 @@ import signal
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tesserae.credentials import new_token, write_token_file
 from tesserae.store import GameStore
@@ -46,7 +47,15 @@ class EncryptedMultiplayerTests(unittest.TestCase):
             openssl, self.directory, "IP:127.0.0.1", "unrelated"
         )
         self.tokens, self.token_files = {}, {}
-        with GameStore(self.database) as store:
+        # Bob's valid ID deliberately contains Alice's dice expression. Privacy
+        # assertions must inspect messages, not search opaque identity strings.
+        with (
+            GameStore(self.database) as store,
+            patch(
+                "tesserae.store.secrets.token_hex",
+                side_effect=["a" * 16, "3d6" + "b" * 13],
+            ),
+        ):
             for name in ("alice", "bob"):
                 self.tokens[name] = new_token()
                 store.add_participant(name.title(), self.tokens[name])
@@ -118,8 +127,22 @@ class EncryptedMultiplayerTests(unittest.TestCase):
         self.assertEqual(alice.finish(), 0)
         self.stop_host()
 
-        bob_output = "".join(bob.stdout)
-        self.assertNotIn("3d6", bob_output)  # Alice's roll stayed hers
+        # Bob receives his snapshot, revision notices and only his own reply.
+        # Inspect structured messages: opaque IDs may legitimately contain 3d6.
+        bob_messages = [json.loads(line) for line in bob.stdout]
+        self.assertEqual(
+            [message for message in bob_messages if message["type"] != "revision"],
+            [bob_view, replies[1]],
+        )
+        self.assertEqual(replies[1]["request_id"], "b2")
+        if replies[1]["type"] == "result":
+            self.assertEqual(replies[1]["result"]["expression"], "1d20")
+        for message in bob_messages:
+            if message["type"] == "revision":
+                self.assertEqual(
+                    set(message), {"version", "type", "game_id", "revision"}
+                )
+                self.assertEqual(message["game_id"], bob_view["game_id"])
         for process in self.processes:
             output = "".join(process.stdout) + process.stderr
             for secret in (*self.tokens.values(), "PRIVATE KEY"):
