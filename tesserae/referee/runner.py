@@ -138,6 +138,10 @@ class RefereeDir:
     def socket_path(self, game_id: str) -> Path:
         return self.run / f"{game_id}.sock"
 
+    def host_lock_path(self, game_id: str) -> Path:
+        """Held by the one host serving this game, before it opens any socket."""
+        return self.run / f"{game_id}.host"
+
     def control_path(self, game_id: str) -> Path:
         """The running host's socket for `tesserae referee stop`."""
         return self.run / f"{game_id}.ctl"

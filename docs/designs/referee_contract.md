@@ -485,6 +485,14 @@ must be complete; the referee is told to read every page on a new session.
   While serving it holds the bridge socket and the control socket (section 4),
   finishes any job an earlier host run left `running` (section 4), and tells
   every player of each revision the referee commits.
+- One host per game: before opening either socket, the host takes an
+  exclusive lock on `run/<game_id>.host` for as long as it serves. A second
+  host for the same game exits ("another host is already serving") without
+  touching the first host's sockets.
+- On shutdown the host first stops accepting input (a `say` then gets
+  `internal_error`, nothing stored), lets an acceptance already under way
+  finish scheduling its job, then stops every job of its run and waits for
+  each, and finally marks any job of its run still `running` `interrupted`.
 - Every gameplay `command` from a player is refused with `referee_mode`. Joins,
   `sync`, `referee_status`, `messages` and the operator's local commands work.
 - The referee's `act` and `referee_act` are the only gameplay writers, through

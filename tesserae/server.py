@@ -51,7 +51,7 @@ from .protocol import (
 )
 from .referee.orchestrator import CodexReferee, RefereeJobFailed
 from .referee.runner import DEFAULT_DIR as DEFAULT_REFEREE_DIR
-from .referee.runner import DEFAULT_TIMEOUT, RefereeDir
+from .referee.runner import DEFAULT_TIMEOUT, RefereeDir, RunnerError
 from .referee.store import REFEREE, RefereeError, RefereeStore
 from .store import GameStore, ParticipantContext, StoreBusy, StoreError
 from .transport import TransportConfigError, check_server, server_context
@@ -161,6 +161,7 @@ class GameHost:
         )
         self._host_run = "h-" + secrets.token_hex(6)
         self._jobs: set[asyncio.Task] = set()
+        self._closing = False  # shutting down: no new referee input is accepted
         self._outbox = None  # ordered unsolicited deliveries, while running
         # Held across each referee transition (accepting an input, settling a
         # job) and the outbox items it queues, so the outbox order is the
@@ -191,10 +192,7 @@ class GameHost:
                 if on_ready is not None:
                     on_ready(f"{scheme}://{address}:{bound_port}/")
                 await stop
-                # A running job ends `interrupted` before the store closes.
-                for job in list(self._jobs):
-                    job.cancel()
-                await asyncio.gather(*self._jobs, return_exceptions=True)
+                await self._end_jobs()
         finally:
             deliveries.cancel()
             if recovery is not None:
@@ -206,6 +204,21 @@ class GameHost:
                 )
             # Finish in-flight store calls: each commits or rolls back whole.
             self._executor.shutdown(wait=True)
+
+    async def _end_jobs(self):
+        """Close admission, then end every job of this host run `interrupted`
+        before the store closes."""
+        self._closing = True
+        async with self._lifecycle:
+            pass  # an acceptance under way has scheduled its job by now
+        for job in list(self._jobs):
+            job.cancel()
+        await asyncio.gather(*self._jobs, return_exceptions=True)
+        if self.referee_mode:
+            try:  # a job cancelled before its task ever ran never ended itself
+                await self._call(_end_unfinished, self._host_run)
+            except Exception:
+                logger.exception("Could not end this host's referee job")
 
     async def _recover_referee(self):
         """Finish a job an earlier host run left `running` once nothing of it
@@ -430,6 +443,13 @@ class GameHost:
 
         async def decide() -> dict:
             async with self._lifecycle:
+                if self._closing:
+                    return error_message(
+                        "internal_error",
+                        "The host is shutting down; nothing was stored. Say it again "
+                        "once it is back.",
+                        request_id=request.request_id,
+                    )
                 try:
                     outcome = await self._call(
                         _submit, session.context, request, self._host_run
@@ -619,6 +639,13 @@ def _submit(store: GameStore, context, request: SayRequest, host_run: str) -> tu
         return ("error", error.code, str(error))
     said = referee.input_message(submission.job.job_id)
     return (submission.outcome, submission, said, _names(store))
+
+
+def _end_unfinished(store: GameStore, host_run: str):
+    referee = RefereeStore(store)
+    job = referee.running_job()
+    if job is not None and job.host_run == host_run:
+        referee.finish(job.job_id, "interrupted", "shutdown")
 
 
 def _settle(store: GameStore, job_id: str, reply, state, error) -> tuple:
@@ -820,6 +847,8 @@ def run_foreground(
 
     try:
         asyncio.run(main())
+    except RunnerError as error:
+        return _fail(str(error))
     except OSError as error:
         return _fail(
             f"cannot listen on {transport.host}:{port}: {error.strerror or error}"

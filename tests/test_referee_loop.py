@@ -8,12 +8,14 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from websockets.asyncio.client import connect
 
+from tesserae import server
 from tesserae.builtin import CATALOG
 from tesserae.credentials import new_token
 from tesserae.referee import runner
@@ -90,13 +92,16 @@ class LoopCase(unittest.IsolatedAsyncioTestCase):
             "SELECT j.state, j.error FROM referee_jobs AS j ORDER BY j.input_id"
         )
 
+    def host(self) -> GameHost:
+        referee = CodexReferee(self.folder, self.game_id, codex=(sys.executable, str(FAKE)),
+                               timeout=30, grace=1, lock_retry=0.1)  # fmt: skip
+        return GameHost(self.path, authenticated=True, referee_executor=referee,
+                        randint=lambda low, high: 4)  # fmt: skip
+
     async def start_host(self):
         loop = asyncio.get_running_loop()
         stop, ready = loop.create_future(), loop.create_future()
-        referee = CodexReferee(self.folder, self.game_id, codex=(sys.executable, str(FAKE)),
-                               timeout=30, grace=1, lock_retry=0.1)  # fmt: skip
-        host = GameHost(self.path, authenticated=True, referee_executor=referee,
-                        randint=lambda low, high: 4)  # fmt: skip
+        host = self.host()
         task = asyncio.create_task(host.run(0, stop, on_ready=ready.set_result))
 
         async def shutdown():
@@ -410,6 +415,74 @@ class FailureTests(LoopCase):
         self.assertEqual(self.runs(), [])  # still waiting, still busy
         held.release()
         await self.until(alice, "message", text="Here now.")
+
+
+class HostLifecycleTests(LoopCase):
+    async def test_a_second_host_leaves_the_first_hosts_sockets_alone(self):
+        self.script(
+            {"calls": [call("get_context")], "reply": reply(("table", "Still here."))}
+        )
+        await self.start_host()
+        sockets = [
+            self.folder.socket_path(self.game_id),
+            self.folder.control_path(self.game_id),
+        ]
+        before = [path.stat().st_ino for path in sockets]
+        loop = asyncio.get_running_loop()
+        with self.assertRaisesRegex(runner.RunnerError, "another host"):
+            await asyncio.wait_for(self.host().run(0, loop.create_future()), 10)
+        served = await asyncio.to_thread(subprocess.run, [
+            sys.executable, "-m", "tesserae", "serve", "--database", str(self.path), "--port", "0",
+            "--authenticated", "--referee-dir", str(self.folder.root)],
+            capture_output=True, text=True, timeout=20)  # fmt: skip
+        self.assertEqual(served.returncode, 1)
+        self.assertIn("another host is already serving", served.stderr)
+        self.assertEqual([path.stat().st_ino for path in sockets], before)
+        alice, _ = await self.joined(
+            "alice"
+        )  # the first host still works, bridge and all
+        self.assertIn("Still here.", texts(await self.exchange(alice, "a-1", "Hello?")))
+        stopped = await asyncio.to_thread(subprocess.run, [
+            sys.executable, "-m", "tesserae", "referee", "stop", "--database", str(self.path),
+            "--referee-dir", str(self.folder.root)], capture_output=True, text=True, timeout=20)  # fmt: skip
+        self.assertEqual(stopped.stdout.strip(), "The host has no referee job running.")
+
+    async def test_shutdown_during_an_acceptance_leaves_nothing_running(self):
+        self.script({"calls": [call("get_context")], "pause_before": 0,
+                     "reply": reply(("table", "never"))})  # fmt: skip
+        submit, entered, release = server._submit, threading.Event(), threading.Event()
+
+        def slow_submit(*args):
+            outcome = submit(*args)  # the job is stored `running`
+            entered.set()
+            release.wait(20)
+            return outcome
+
+        shutdown = await self.start_host()
+        alice, _ = await self.joined("alice")
+        with mock.patch.object(server, "_submit", slow_submit):
+            await alice.send(say("a-1", "Hello?"))
+            self.assertTrue(await asyncio.to_thread(entered.wait, 20))
+            stopping = asyncio.create_task(shutdown())
+            await asyncio.sleep(0.3)  # shutdown has begun while it is accepted
+            release.set()
+            await stopping
+        self.assertEqual(self.jobs(), [("interrupted", "shutdown")])
+        self.assertFalse(runner.JobLock.held(self.folder.lock_path(self.game_id)))
+
+    async def test_shutdown_ends_a_job_of_this_run_whose_task_never_ran(self):
+        loop = asyncio.get_running_loop()
+        stop, ready = loop.create_future(), loop.create_future()
+        host = self.host()
+        task = asyncio.create_task(host.run(0, stop, on_ready=ready.set_result))
+        await asyncio.wait_for(ready, 5)
+        with GameStore(self.path) as store:  # stored, but no task will run it
+            RefereeStore(store).submit(ParticipantContext(self.ids["alice"]), "a-1",
+                                       "Hello?", False, host._host_run)  # fmt: skip
+        stop.set_result(None)
+        await asyncio.wait_for(task, 20)
+        self.assertEqual(self.jobs(), [("interrupted", "shutdown")])
+        self.assertEqual(self.runs(), [])
 
 
 class ServeTests(unittest.TestCase):

@@ -14,7 +14,9 @@ docs/designs/referee_contract.md sections 4, 6 and 10.
 """
 
 import asyncio
+import fcntl
 import json
+import os
 import threading
 from dataclasses import dataclass
 
@@ -25,6 +27,7 @@ from .runner import (
     CodexRun,
     JobLock,
     RefereeDir,
+    RunnerError,
     RunResult,
 )
 from .store import Job, RefereeStore
@@ -98,6 +101,7 @@ class CodexReferee:
         self._on_commit = None
         self._guard = threading.Lock()
         self._attempt = None
+        self._host_lock = None  # this host's claim on the game's endpoints
         self.tools = BridgeTools(self._open, on_commit=self._committed, log=self._note)
         self._bridge = BridgeServer(folder.socket_path(game_id), self.tools)
         self._control = BridgeServer(folder.control_path(game_id), _Control(self))
@@ -105,11 +109,22 @@ class CodexReferee:
     # --- The host's side ---------------------------------------------------------
 
     def open(self, host_run: str, open_store, on_commit):
-        self.host_run, self._open_store, self._on_commit = (
-            host_run,
-            open_store,
-            on_commit,
-        )
+        """Claim the game for this host, then open its sockets. A second host
+        for the same game fails here (RunnerError), before it touches the
+        first host's sockets."""
+        self.host_run, self._open_store = host_run, open_store
+        self._on_commit = on_commit
+        path = self.folder.host_lock_path(self.game_id)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            raise RunnerError(
+                "another host is already serving this game's referee; "
+                "nothing was changed"
+            ) from None
+        self._host_lock = fd  # never inherited by Codex (only the job lock is)
         self._bridge.start()
         self._control.start()
 
@@ -117,6 +132,9 @@ class CodexReferee:
         self.tools.revoke()
         self._control.close()
         self._bridge.close()
+        if self._host_lock is not None:  # last: the sockets are gone
+            os.close(self._host_lock)
+            self._host_lock = None
 
     def recover(self) -> str:
         """Finish a job an earlier host run left `running`, if nothing of it is
