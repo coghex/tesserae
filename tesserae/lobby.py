@@ -57,9 +57,15 @@ from .server import (
 from .store import GameStore, StoreError
 
 REGISTRY_THREADS = 4
+# Messages a campaign sends without being asked; every other one is a reply.
+_UNSOLICITED = frozenset({"revision", "message", "referee"})
 _CANNOT_OPEN = "That campaign cannot be opened right now; ask the host."
 _LOGIN_FAILED = error_message("internal_error", "The host could not check the login.")
 _HOST_FAILED = "The host failed; nothing was changed. Try again."
+
+_CAMPAIGN_GONE = error_message(  # a session error: no request ID
+    "campaign_unavailable", "That campaign is no longer available to you."
+)
 
 logger = logging.getLogger("tesserae.lobby")
 
@@ -276,8 +282,8 @@ class LobbyHost:
         reply = await session.send_read(lambda: _first_snapshot(service, session))
         if session.closing:
             return await client.close_revoked()
-        if reply["type"] != "snapshot":
-            session.detach()  # still in the lobby
+        if reply["type"] != "snapshot" or not session.active:
+            session.detach()  # still in the lobby (or already back in it)
             return True
         client.notifier = asyncio.create_task(service.deliver_notifications(session))
         return True
@@ -524,10 +530,17 @@ class _CampaignSession(_Session):
             # The grant, the campaign, its file or the participant link is
             # gone; the host credential is not.
             self.detach()
-            return error_message(  # a session error: no request ID
-                "campaign_unavailable", "That campaign is no longer available to you."
-            )
+            return _CAMPAIGN_GONE
         return message
+
+    async def _send(self, message: dict):
+        if not self.active and message["type"] not in _UNSOLICITED:
+            # A request still being answered when the connection left the
+            # campaign: it still gets exactly one reply, the lobby's, and
+            # nothing of the campaign's.
+            await self.client.send_locked(_CAMPAIGN_GONE)
+            return
+        await super()._send(message)
 
     async def revoked(self):
         if self.lost == "session_revoked":

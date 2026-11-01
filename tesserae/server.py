@@ -339,51 +339,60 @@ class CampaignService:
                 await asyncio.sleep(delay)
 
     async def _answer(self, session: "_Session", message) -> dict:
-        """Send exactly one reply to one message from a joined connection."""
-        checked = False  # whether the reply came from a store call
-        if isinstance(message, bytes):
-            reply = _BINARY_REPLY
-        else:
+        """Send exactly one reply to one message from a joined connection.
+
+        The reply is read and sent under the session's send lock, so nothing
+        sent to the connection (a notification, or a lobby session leaving
+        its campaign) lands between that read and its reply. A `say` does the
+        same in _say, which also sends its replayed messages after it.
+        """
+        parsed = None
+        if not isinstance(message, bytes):
             try:
                 parsed = parse_client_message(message, self._runtime)
             except ProtocolError as error:
-                reply = await self._rejection(session, error)
-                checked = True
+                parsed = error
+            if isinstance(parsed, SayRequest) and self.referee_mode:
+                return await self._say(session, parsed)
+        return await session.send_read(lambda: self._reply(session, message, parsed))
+
+    async def _reply(self, session: "_Session", message, parsed) -> dict:
+        """The reply to one message other than an accepted `say`."""
+        checked = False  # whether the reply came from a store call
+        if parsed is None:
+            reply = _BINARY_REPLY
+        elif isinstance(parsed, ProtocolError):
+            reply = await self._rejection(session, parsed)
+            checked = True
+        elif isinstance(parsed, SyncRequest):
+            return await self._sync(session)
+        elif isinstance(parsed, (SayRequest, RefereeStatusRequest, MessagesRequest)):
+            if not self.referee_mode:
+                reply = error_message(
+                    "referee_off",
+                    "This game is not in referee mode.",
+                    request_id=getattr(parsed, "request_id", None),
+                )
             else:
-                if isinstance(parsed, SyncRequest):
-                    return await session.send_read(lambda: self._sync(session))
-                if isinstance(
-                    parsed, (SayRequest, RefereeStatusRequest, MessagesRequest)
-                ):
-                    if not self.referee_mode:
-                        reply = error_message(
-                            "referee_off",
-                            "This game is not in referee mode.",
-                            request_id=getattr(parsed, "request_id", None),
-                        )
-                    elif isinstance(parsed, SayRequest):
-                        return await self._say(session, parsed)
-                    else:
-                        reply = await self._referee_read(session, parsed)
-                        checked = True
-                elif isinstance(parsed, JoinRequest):
-                    reply = session_error("already_joined")
-                elif self.referee_mode:
-                    # Every player action goes through the referee, busy or not.
-                    reply = error_message(
-                        "referee_mode",
-                        "This game has a referee: say what you want to do, and the "
-                        "referee runs the game's commands.",
-                        request_id=parsed.request_id,
-                    )
-                else:
-                    reply = await self._execute(session.context, message, session)
-                    checked = True
+                reply = await self._referee_read(session, parsed)
+                checked = True
+        elif isinstance(parsed, JoinRequest):
+            reply = session_error("already_joined")
+        elif self.referee_mode:
+            # Every player action goes through the referee, busy or not.
+            reply = error_message(
+                "referee_mode",
+                "This game has a referee: say what you want to do, and the "
+                "referee runs the game's commands.",
+                request_id=parsed.request_id,
+            )
+        else:
+            reply = await self._execute(session.context, message, session)
+            checked = True
         if not checked and session.guard is not None:
             # A lobby session's every request rechecks access (lobby
             # contract section 3), even one answered without the store.
             reply = await self._recheck(session, reply)
-        await session.send(reply)
         return reply
 
     async def _recheck(self, session: "_Session", reply: dict) -> dict:

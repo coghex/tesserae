@@ -155,7 +155,11 @@ existing `revision`, `message` and `referee`, plus one new type:
 
 `left` means the host returned the connection to the lobby because access to
 that campaign ended while no request was being answered (section 6). The
-client sends `lobby` to see what remains.
+client sends `lobby` to see what remains. A `left` never takes the place of a
+reply: a campaign request is read and answered under the connection's send
+lock, so a `left` noticed meanwhile waits for that reply, and a request still
+unanswered once the connection has left gets `campaign_unavailable` as its
+one reply.
 
 ## 4. Inside a campaign
 

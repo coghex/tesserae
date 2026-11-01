@@ -18,12 +18,13 @@ from unittest import mock
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-from tesserae import server
+from tesserae import lobby, server
 from tesserae.builtin import DICE_RUNTIME
 from tesserae.credentials import new_token
 from tesserae.lobby import LobbyHost
 from tesserae.referee.store import RefereeStore
 from tesserae.registry import HostRegistry
+from tesserae.server import CampaignService
 from tesserae.store import GameStore
 
 TIMEOUT = 5
@@ -572,6 +573,69 @@ class AccessTests(Lobby):
         await alice.send(SYNC)
         self.assertEqual((await self.reply_on(alice))["code"], "session_revoked")
         self.assertEqual(await self.closed(alice), (1008, "session_revoked"))
+
+    async def test_a_request_answered_while_access_ends_still_gets_its_reply(self):
+        await self.start_host()
+        alice, snapshot = await self.entered("alice", "harbor")
+        bob, _ = await self.entered("bob", "harbor")
+        reading, release = asyncio.Event(), asyncio.Event()
+        leaving = asyncio.Event()
+        read, left = CampaignService._referee_read, lobby._CampaignSession._left
+
+        async def held_read(service, session, request):
+            if session.context.participant_id == snapshot["participant_id"]:
+                reading.set()
+                await release.wait()
+            return await read(service, session, request)
+
+        async def noted_left(session):
+            leaving.set()
+            await left(session)
+
+        with (
+            mock.patch.object(CampaignService, "_referee_read", held_read),
+            mock.patch.object(lobby._CampaignSession, "_left", noted_left),
+        ):
+            await alice.send(message("referee_status"))
+            await asyncio.wait_for(reading.wait(), TIMEOUT)
+            with self.registry() as registry:
+                registry.revoke_access(self.campaigns["harbor"], self.players["alice"])
+            await bob.send(say("b1", "Anyone here?"))  # its delivery finds Alice gone
+            self.assertEqual((await self.reply_on(bob))["type"], "accepted")
+            await asyncio.wait_for(leaving.wait(), TIMEOUT)
+            release.set()
+            answer = await self.next(alice)  # the reply comes first, then nothing
+            self.assertEqual(
+                (answer["type"], answer["code"]), ("error", "campaign_unavailable")
+            )
+            await alice.send(LOBBY)
+            self.assertEqual((await self.next(alice))["type"], "lobby")
+
+    async def test_a_reply_after_leaving_is_the_lobbys_not_dropped(self):
+        await self.start_host()
+        alice, _ = await self.entered("alice", "harbor")
+        sessions = self.host._services[self.campaigns["harbor"]]._sessions
+        [alice_session] = list(sessions)
+        reading, release = asyncio.Event(), asyncio.Event()
+        read = CampaignService._referee_read
+
+        async def held_read(service, session, request):
+            reading.set()
+            await release.wait()
+            return await read(service, session, request)
+
+        with mock.patch.object(CampaignService, "_referee_read", held_read):
+            send = asyncio.create_task(alice.send(message("referee_status")))
+            await asyncio.wait_for(reading.wait(), TIMEOUT)
+            await send
+            alice_session.active = False  # as if it left before its reply
+            release.set()
+            self.assertEqual(
+                await self.next(alice),
+                {"version": 1, "type": "error", "request_id": None, "revision": None,
+                 "code": "campaign_unavailable",
+                 "message": "That campaign is no longer available to you."},
+            )  # fmt: skip
 
     async def test_revocation_while_busy_lets_the_accepted_job_finish(self):
         await self.start_host()
