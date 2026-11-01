@@ -37,6 +37,11 @@ ERROR_CODES = frozenset(
         "join_timeout",
         "already_joined",
         "session_revoked",
+        # Referee mode (docs/designs/referee_contract.md section 7).
+        "referee_busy",
+        "referee_mode",
+        "referee_off",
+        "referee_needs_rebuild",
     }
 )
 # One fixed message per session error, so failures never vary with the
@@ -53,6 +58,8 @@ _REQUEST_FIELDS = frozenset(
 )
 _JOIN_FIELDS = frozenset({"version", "type", "token"})
 _SYNC_FIELDS = frozenset({"version", "type"})
+_SAY_FIELDS = frozenset({"version", "type", "request_id", "text", "private"})
+_MESSAGES_FIELDS = frozenset({"version", "type", "after_seq"})
 
 
 class ProtocolError(ValueError):
@@ -100,6 +107,28 @@ class SyncRequest:
     """A read-only request for a fresh snapshot."""
 
 
+@dataclass(frozen=True)
+class SayRequest:
+    """Player input for the referee: words, never a command. The store checks
+    the text's length and characters."""
+
+    request_id: str
+    text: str
+    private: bool
+
+
+@dataclass(frozen=True)
+class RefereeStatusRequest:
+    """A read of the caller's referee projection."""
+
+
+@dataclass(frozen=True)
+class MessagesRequest:
+    """A read of the conversation the caller can see, after a message seq."""
+
+    after_seq: int
+
+
 def is_valid_request_id(value) -> bool:
     return (
         isinstance(value, str)
@@ -131,20 +160,68 @@ def parse_request(text: str | bytes, runtime: Runtime = DICE_RUNTIME) -> Command
     return _parse_command(_decode(text), runtime)
 
 
-def parse_client_message(
-    text: str | bytes, runtime: Runtime = DICE_RUNTIME
-) -> CommandRequest | JoinRequest | SyncRequest:
-    """Validate any client message in an authenticated session.
+def parse_client_message(text: str | bytes, runtime: Runtime = DICE_RUNTIME):
+    """Validate any client message in an authenticated session: a
+    CommandRequest, JoinRequest, SyncRequest, SayRequest, RefereeStatusRequest
+    or MessagesRequest.
 
     Commands are validated exactly as by parse_request. Error messages never
     include a presented token.
     """
     data = _decode(text)
-    if data.get("type") == "join":
+    kind = data.get("type")
+    if kind == "join":
         return _parse_join(data)
-    if data.get("type") == "sync":
+    if kind == "sync":
         return _parse_sync(data)
+    if kind == "say":
+        return _parse_say(data)
+    if kind == "referee_status":
+        _check_fields(data, _SYNC_FIELDS, "A referee_status request")
+        return RefereeStatusRequest()
+    if kind == "messages":
+        _check_fields(data, _MESSAGES_FIELDS, "A messages request")
+        if not is_valid_revision(data["after_seq"]):
+            raise ProtocolError(
+                "invalid_request", "'after_seq' must be a whole number, 0 or more."
+            )
+        return MessagesRequest(data["after_seq"])
     return _parse_command(data, runtime)
+
+
+def _parse_say(data: dict) -> SayRequest:
+    request_id = data.get("request_id")
+    request_id = request_id if is_valid_request_id(request_id) else None
+    try:
+        _check_fields(data, _SAY_FIELDS, "A say request")
+    except ProtocolError as error:
+        error.request_id = request_id
+        raise
+    if request_id is None:
+        raise ProtocolError(
+            "invalid_request",
+            f"'request_id' must be a string of 1 to {MAX_REQUEST_ID_LENGTH} "
+            "characters without whitespace.",
+        )
+    if not isinstance(data["text"], str) or not isinstance(data["private"], bool):
+        raise ProtocolError(
+            "invalid_request",
+            "'text' is a string and 'private' true or false.",
+            request_id,
+        )
+    return SayRequest(request_id, data["text"], data["private"])
+
+
+def _check_fields(data: dict, fields: frozenset, subject: str):
+    """Exactly these fields, at protocol version 1."""
+    missing = sorted(fields - data.keys())
+    extra = sorted(data.keys() - fields)
+    if missing or extra:
+        raise ProtocolError("invalid_request", describe_fields(missing, extra, subject))
+    if data["version"] != PROTOCOL_VERSION:
+        raise ProtocolError(
+            "unsupported_version", f"Protocol version {PROTOCOL_VERSION} only."
+        )
 
 
 def _decode(text: str | bytes) -> dict:
@@ -339,11 +416,13 @@ def snapshot_message(
     revision: int,
     module: Module | None = None,
     view: dict | None = None,
+    referee: dict | None = None,
 ) -> dict:
     """The recipient's view: the reply to a join or a sync.
 
     A game whose module projects views adds `module` and that participant's
-    `view`, read with `revision`. Otherwise the snapshot is metadata only.
+    `view`, read with `revision`. Otherwise the snapshot is metadata only. A
+    game in referee mode adds the recipient's `referee` projection.
     """
     _check_identifier(game_id, "game_id")
     _check_identifier(participant_id, "participant_id")
@@ -366,7 +445,61 @@ def snapshot_message(
             "state_version": module.state_version,
         }
         message["view"] = view
+    if referee is not None:
+        message["referee"] = referee
     return message
+
+
+def accepted_message(request_id: str, job_id: str, seq: int) -> dict:
+    """The reply to a `say`: its job, and the seq of the player's own message."""
+    _check_request_id(request_id)
+    return {"version": PROTOCOL_VERSION, "type": "accepted", "request_id": request_id,
+            "job_id": job_id, "seq": seq}  # fmt: skip
+
+
+def busy_message(request_id: str, revision: int, for_name: str) -> dict:
+    """`referee_busy`: another job is running, and nothing was stored."""
+    message = error_message(
+        "referee_busy",
+        f"The referee is still answering {for_name}. Try again when it finishes.",
+        request_id=request_id,
+        revision=revision,
+    )
+    message["job"] = {"state": "running", "for": for_name}
+    return message
+
+
+def conversation_message(
+    seq: int, sender_name: str | None, audience: str, text: str
+) -> dict:
+    """One conversation message, as its recipients see it: from the referee
+    (`sender_name` None) or a player, to the `table` or `private`."""
+    if audience not in ("table", "private"):
+        raise ValueError("A message's audience is table or private.")
+    sender = (
+        {"kind": "referee"}
+        if sender_name is None
+        else {"kind": "player", "name": sender_name}
+    )
+    return {"version": PROTOCOL_VERSION, "type": "message", "seq": seq, "from": sender,
+            "audience": audience, "text": text}  # fmt: skip
+
+
+def messages_message(messages: list) -> dict:
+    """The reply to `messages`: conversation messages the caller can see."""
+    return {"version": PROTOCOL_VERSION, "type": "messages", "messages": list(messages)}
+
+
+def referee_status_message(projection: dict) -> dict:
+    """The reply to `referee_status`: the caller's referee projection."""
+    return {"version": PROTOCOL_VERSION, "type": "referee_status", **projection}
+
+
+def referee_state_message(state: str) -> dict:
+    """Unsolicited, to everyone: a job started (`busy`) or ended (`idle`)."""
+    if state not in ("busy", "idle"):
+        raise ValueError("The referee is busy or idle.")
+    return {"version": PROTOCOL_VERSION, "type": "referee", "state": state}
 
 
 def revision_message(game_id: str, revision: int) -> dict:

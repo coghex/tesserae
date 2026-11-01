@@ -463,6 +463,15 @@ class RefereeStore:
                 visible.append(_message(seq, sender, audience, text))
         return visible
 
+    def input_message(self, job_id: str) -> dict:
+        """The message holding a job's input: the player's own words."""
+        [row] = self.store.query(
+            "SELECT seq, sender, audience, text FROM referee_messages "
+            "WHERE job_id = ? AND sender != ? ORDER BY seq LIMIT 1",
+            (job_id, REFEREE),
+        )
+        return _message(row[0], row[1], json.loads(row[2]), row[3])
+
     def transcript(self, after_seq: int = 0) -> tuple[list[dict], int | None]:
         """Referee only: the complete conversation, one page at a time, and the
         `after_seq` of the next page (None at the end). Never truncated."""

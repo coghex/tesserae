@@ -90,6 +90,10 @@ diagnostics only and may change; do not parse them.
 | `join_timeout` | No join arrived within 10 seconds of connecting | #13 |
 | `already_joined` | A joined connection sent another join | #13 |
 | `session_revoked` | The joined session's credential was revoked or rotated | #13 |
+| `referee_busy` | A new `say` while the referee answers another input; nothing was stored. Carries `job: {"state", "for"}` | #68 |
+| `referee_mode` | A gameplay `command` in a game with a referee, busy or not | #68 |
+| `referee_off` | A `say`, `referee_status` or `messages` in a game without a referee | #68 |
+| `referee_needs_rebuild` | A `say` while the referee's lost session awaits the operator's rebuild | #68 |
 
 The session codes are used only in [authenticated mode](#authenticated-sessions).
 Each has one fixed message (`SESSION_ERROR_MESSAGES`), and their `request_id`
@@ -452,3 +456,57 @@ the join is sent. See [tls.md](tls.md).
   session exits 1.
 - There is no automatic reconnection. Recovery is running the client again,
   as described under [Recovery](#recovery).
+
+## Referee mode
+
+A game with a referee (`tesserae referee enable`) is played by talking: the
+host refuses every gameplay `command` from a player (`referee_mode`), idle or
+busy, and the referee runs the module's commands. It needs an authenticated
+host. The [referee contract](designs/referee_contract.md) (sections 7, 8 and
+12) is the full reference; in short:
+
+| Client sends | Host replies |
+|---|---|
+| `{"version": 1, "type": "say", "request_id", "text", "private"}` | `{"type": "accepted", "request_id", "job_id", "seq"}`, or `referee_busy` (nothing stored), or another error |
+| `{"version": 1, "type": "referee_status"}` | `{"type": "referee_status", "state", "choices", "last_seq", "your_last_input"}` |
+| `{"version": 1, "type": "messages", "after_seq"}` | `{"type": "messages", "messages": [...]}`: only what the caller may see |
+
+Unsolicited, in order: `{"type": "message", "seq", "from": {"kind": "referee"}
+or {"kind": "player", "name"}, "audience": "table" or "private", "text"}` to
+each recipient (each session is rechecked first; a revoked one is closed and
+gets nothing), and `{"type": "referee", "state": "busy" or "idle"}` to everyone
+when a job starts or ends. Join and sync snapshots carry the caller's
+`referee` object, the same as `referee_status`; only the caller's own pending
+choice is in it.
+
+- One job at a time, with no queue: a `say` while busy is refused, and the
+  player types it again later.
+- An exact retry (same request ID, text and privacy) returns its recorded
+  `accepted`, busy or not, plus the stored reply messages to that connection;
+  it never starts a second job.
+- An unmarked `say` goes to the whole table; `"private": true` goes only to the
+  referee and the sender, and so does a reply to it.
+
+### The client in referee mode
+
+When the join snapshot carries `referee`, `tesserae connect` is a
+conversation: each typed line is the player's words, sent as a `say`, even if
+it looks like JSON or a command. Lines starting with `/` are plumbing:
+`/private TEXT`, `/status`, `/sync`, `/history`, `/retry` and `/help`; `//TEXT`
+sends text that starts with `/`. It prints readable lines:
+
+```text
+[joined] Type to talk to the referee; /help lists commands.
+[status] idle; nothing waiting for you; last message 0
+[table] Alice: Can Wren fix the relay?
+[busy] The referee is answering.
+[table] Referee: Wren can try: 1d6 plus repair 1, needing 5. Try now?
+[idle] The referee is ready.
+```
+
+On joining it asks for `referee_status`, so it shows the player's last input
+and its state (`[your last input] "Yes, go." completed`). `/retry` resends the
+client's last input that was not refused, or else that reported input, with
+its original request ID: the host returns its recorded state and reply, never
+a second job. `connect --json` prints JSON lines instead, for scripts and
+tests; input is still plain text. Games without a referee are unchanged.

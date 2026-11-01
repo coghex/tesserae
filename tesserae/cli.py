@@ -93,7 +93,9 @@ def main(argv: list[str] | None = None) -> int:
         "from the host as one JSON line. Diagnostics go to stderr. Exit status: "
         "0 when stdin ended and every request was answered, 1 when the client "
         "could not start or the host ended the session, 3 when some requests "
-        "got no reply (resend them unchanged), 130 on Ctrl-C.",
+        "got no reply (resend them unchanged), 130 on Ctrl-C. In a game with a "
+        "referee, each line is instead what you say (/help lists the few "
+        "commands), and output is readable lines unless --json.",
     )
     connect.add_argument(
         "uri",
@@ -116,6 +118,12 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=10.0,
         help="Seconds to wait for outstanding replies after stdin ends (default 10).",
+    )
+    connect.add_argument(
+        "--json",
+        action="store_true",
+        help="In a game with a referee, print JSON lines instead of readable lines "
+        "(input is still plain text). Other games always print JSON lines.",
     )
     game = commands.add_parser(
         "game",
@@ -203,7 +211,12 @@ def main(argv: list[str] | None = None) -> int:
         from .client import run
 
         return run(
-            args.uri, args.token_file, args.game_id, args.drain_timeout, args.ca_file
+            args.uri,
+            args.token_file,
+            args.game_id,
+            args.drain_timeout,
+            args.ca_file,
+            json_output=args.json,
         )
     if args.command == "participant":
         from .admin import run
