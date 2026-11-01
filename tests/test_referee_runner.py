@@ -95,6 +95,8 @@ class SetupTests(RunnerCase):
         self.assertEqual(
             bridge["env_vars"], ["TESSERAE_BRIDGE_SOCKET", "TESSERAE_BRIDGE_TOKEN"]
         )
+        # Only the bridge's tools are pre-approved; the host authorizes each call.
+        self.assertEqual(bridge["default_tools_approval_mode"], "approve")
         self.assertIn(
             "Do not start other agents",
             (self.folder.codex_home / "AGENTS.md").read_text(),

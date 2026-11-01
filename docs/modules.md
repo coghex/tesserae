@@ -73,6 +73,9 @@ dice operation and no `roll` command.
 | `tags` | Descriptive strings |
 | `requires_authentication` | Whether its games need authenticated participants |
 | `validate_seed(state, participant_ids)` | Optional. Checks imported state for a [seeded game](game_store.md#seeded-creation), including that every participant reference is one of `participant_ids`; raises `SeedError`. Without it, the module refuses seeds |
+| `referee_context(state)` | Optional, for [referee mode](designs/referee_contract.md#9-referee-authority). Everything the referee should know about the bounded scene, hidden preparation included; never sent to a player. Without it, the referee gets each participant's own view |
+| `referee_actions(state, participant_id)` | Optional. The commands that participant may use now, as a list of JSON objects with their arguments and stakes. Without it, the referee gets the command names |
+| `referee_commands` | Optional `Command`s that run only in the host's `referee` context, which no player can authenticate as: their executors see `participant_id == "referee"`, and a player's command path never includes them. Names must not repeat the module's other commands |
 
 A module definition is immutable and holds no game state, connection, or
 random source. One definition serves every game.

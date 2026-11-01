@@ -165,6 +165,14 @@ call committed a fresh command. The authenticated host announces a new
 revision only when the flag is true, never for replays, conflicts, stale or
 invalid requests, failures, or revoked sessions.
 
+`execute_command(context, raw, referee=True)` runs one of the module's
+referee-only commands, and only in the `referee` context
+(`REFEREE_PARTICIPANT`), which no token maps to. That context runs nothing else,
+and a player context never sees a referee-only command (`unsupported_command`);
+either mismatch raises `ValueError` before anything is read. Its records are
+kept like any participant's, under `referee`. Only the referee bridge uses it
+([referee contract](designs/referee_contract.md) section 9).
+
 ## Reads
 
 `revision()`, `session_revision(context)`, `participant_view(context)`,

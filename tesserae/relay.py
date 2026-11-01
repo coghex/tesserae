@@ -140,6 +140,45 @@ def view(state: dict, participant_id: str) -> dict:
     }
 
 
+def referee_context(state: dict) -> dict:
+    """Everything the referee needs: the scene, the rules, every worker, and
+    the hidden maintenance note, which no player view includes."""
+    return {
+        "scene": {**SCENE, "restored": state["relay"]["restored"]},
+        "rules": dict(RULES),
+        "workers": {pid: dict(worker) for pid, worker in state["workers"].items()},
+        "referee_only": dict(state["referee"]),
+    }
+
+
+def referee_actions(state: dict, participant_id: str) -> list:
+    """The commands `participant_id` may use now, with what each costs."""
+    worker = state["workers"].get(participant_id)
+    if worker is None:
+        return [
+            {
+                "command": "relay.enlist",
+                "args": {"name": "the worker's name, 1 to 40 characters"},
+                "description": RULES["relay.enlist"],
+                "stakes": "None: no dice, nothing spent. Only once per player.",
+            }
+        ]
+    if worker["effort"] > 0 and not state["relay"]["restored"]:
+        return [
+            {
+                "command": "relay.repair",
+                "args": {},
+                "description": RULES["relay.repair"],
+                "stakes": (
+                    f"Roll {REPAIR_DIE} + repair {worker['repair']} against "
+                    f"{REPAIR_TARGET}. Spends 1 of {worker['effort']} effort, "
+                    "success or not; success restores the relay."
+                ),
+            }
+        ]
+    return []
+
+
 RELAY_MODULE = Module(
     id="relay",
     version="1",
@@ -154,4 +193,6 @@ RELAY_MODULE = Module(
     providers=(ProviderChoice(DICE_OPERATION, "builtin.dice", "1"),),
     tags=frozenset({"demo", "original", "dice"}),
     requires_authentication=True,
+    referee_context=referee_context,
+    referee_actions=referee_actions,
 )

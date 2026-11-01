@@ -6,8 +6,9 @@ so far: the store (section 5, with the step journal of section 6 and the reply
 validation and audiences of section 7) in `tesserae/referee/store.py` (#65), and
 `tesserae referee enable`; the referee folder, its config, the job lock and the
 Codex runner (sections 2 to 4) in `tesserae/referee/runner.py` (#66), with
-`tesserae referee setup` and `check`. The bridge, host wiring, the CLI and
-`referee stop`/`rebuild` are not. It turns the [M1-6 delivery plan](codex_referee_design.md)
+`tesserae referee setup` and `check`; the bridge (section 6) and module hooks
+(section 9) in `tesserae/referee/tools.py` and `bridge.py` (#67), with Relay's
+hooks. Host wiring, the CLI and `referee stop`/`rebuild` are not. It turns the [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
 records how the CLI shows conversation (owner decision O-1).
 
@@ -88,6 +89,7 @@ command = "/path/to/python"          # the host's own interpreter, written by se
 args = ["-m", "tesserae.referee.bridge"]
 env_vars = ["TESSERAE_BRIDGE_SOCKET", "TESSERAE_BRIDGE_TOKEN"]
 tool_timeout_sec = 60
+default_tools_approval_mode = "approve"
 ```
 
 The result, verified on 0.166.0:
@@ -98,6 +100,11 @@ The result, verified on 0.166.0:
 - `apply_patch` remains listed but cannot write: the read-only sandbox rejects
   it. A spawned sub-agent, if Codex ever starts one, inherits the same config.
 - The only tools that touch the game are the bridge's (section 6).
+- `default_tools_approval_mode = "approve"` pre-approves the bridge's tools.
+  With `approval_policy = "never"`, Codex cannot ask anyone, so it refuses any
+  MCP call not marked read-only ("MCP tool call requires approval"): without
+  this line, `act` never runs (found by REF-4's real probe). The host still
+  authorizes every call (section 6); no other tool source exists to approve.
 
 ## 4. Running Codex
 
@@ -307,7 +314,7 @@ These are the only tools, and the only way Codex sees or changes the game.
 | Tool | Arguments | Result |
 |---|---|---|
 | `get_context` | none | The module's complete referee context for the bounded scene (`Module.referee_context(state)`), the participants (ID, name), this job's input and sender, every pending choice, all recorded rulings, the committed steps of every earlier job whose reply was never published, and the first page of the conversation transcript |
-| `get_transcript` | `after_seq` | The next page of the complete conversation transcript (up to 200 messages and `next_after_seq`), so nothing is ever cut off |
+| `get_transcript` | `after_seq` | The next page of the complete conversation transcript (up to 200 messages or about 32 KiB of encoded messages, whichever comes first, and `next_after_seq`), so nothing is ever cut off |
 | `get_view` | `participant_id` | That participant's own snapshot view, so the referee knows what they can see |
 | `list_actions` | none | The commands the job's sender may use now, with descriptions and stakes (`Module.referee_actions(state, participant_id)`), and any referee-only commands |
 | `act` | `step_id`, `command`, `args` | Runs a player command **as the job's sender** (never anyone else), through the normal store path, at the current revision |
@@ -330,7 +337,11 @@ These are the only tools, and the only way Codex sees or changes the game.
   1. Insert the step as `intended` (with its kind, context, command, arguments
      and mapped request ID) and commit. A conflicting row stops here.
   2. Run the command through `GameStore.execute`, which commits state, result,
-     history and revision atomically, or refuses with nothing changed.
+     history and revision atomically, or refuses with nothing changed. The
+     job's authorization is checked again inside that same transaction (its
+     token still granted, and the job still `running`), so a job interrupted
+     or revoked after step 1 commits nothing (`job_ended`; the step stays
+     `intended` and reconciles as `not_committed`).
   3. Record `committed` with the result, or `refused` with the error.
 
   A crash between 2 and 3 leaves an `intended` row. Reconciliation (at startup,
@@ -340,7 +351,20 @@ These are the only tools, and the only way Codex sees or changes the game.
   never committed is never reported as done.
 - **Errors** are tool results, not crashes: `action_rejected`,
   `unsupported_command`, `invalid_request` and `request_conflict` come back with
-  their messages so the referee can explain them.
+  their messages so the referee can explain them, and settle the step (retrying
+  it returns the same refusal). `stale_revision` (another commit landed between
+  reading the revision and running) does not: nothing ran, and the same step ID
+  may be retried. `job_ended` means the token is not the running job's;
+  `unsupported_tool` names no tool; `internal_error` leaves the step `intended`
+  for an exact retry or reconciliation. The bridge reports `host_unreachable`
+  when the socket is gone, and `internal_error` when an answer was cut off
+  (an exact retry then replays it). A response line is not held to a request's
+  256 KiB limit; large reads are paged instead.
+- **Revocation is final.** Revoking a job's access waits for an action already
+  committing to finish journaling it; once it returns, nothing more of that
+  job can commit.
+- Players are told of a fresh commit (`on_commit`) before its step is
+  journaled, so a failure to record it never hides a new revision.
 - Every call and result is recorded in the diagnostics file, and every mutation
   in `referee_steps` as above.
 
@@ -424,7 +448,9 @@ messages. Sync and joins never wait for a job.
 pending choices and `choices.resolve` ends them (section 5); both may be empty,
 and empty changes nothing. The host checks every named participant exists.
 `narrated` lists the earlier, unnarrated results (from `get_context`) that this
-reply tells their players about; a reply always narrates its own job's steps.
+reply tells their players about; a reply always narrates its own job's steps
+(listing one of them is allowed and changes nothing, but listing one that did
+not commit is refused).
 Each listed step's sender must be able to see at least one of the reply's
 messages, or the reply is refused: a result is only acknowledged once it can
 have reached its player, and anything not listed stays waiting. A

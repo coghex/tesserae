@@ -446,6 +446,18 @@ class ReviewRegressionTests(RefereeCase):
         )
         self.assertEqual(self.referee.unnarrated_steps(), [])
 
+    def test_a_reply_may_list_its_own_committed_steps(self):
+        job = self.ask(self.alice, "a-1", "Roll for me").job
+        step = self.referee.intend_step(job.job_id, "s1", "act", self.alice.participant_id, "roll",
+                                        {"expression": "1d6"})  # fmt: skip
+        own = reply(("table", "Rolled a 4."), narrated=[(job.job_id, "s1")])
+        # Not committed yet: claiming it is refused.
+        self.refused("malformed_reply", self.referee.publish_reply, job.job_id, own)
+        self.store.execute(self.alice, roll(step.request_id, 0))
+        self.referee.record_step(job.job_id, "s1", "committed", {"type": "result"})
+        self.referee.publish_reply(job.job_id, own)
+        self.assertEqual(self.referee.job(job.job_id).state, "completed")
+
     def test_a_reply_cannot_acknowledge_a_step_that_is_not_waiting(self):  # R75-2
         job = self.ask(self.alice, "a-1").job
         self.refused("malformed_reply", self.referee.publish_reply, job.job_id,

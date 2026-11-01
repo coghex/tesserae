@@ -240,6 +240,11 @@ _MIGRATIONS = {
 }
 
 
+# The host's context for a module's referee-only commands. It is not a
+# participant ID (those are p_ and hex digits), so no token can map to it.
+REFEREE_PARTICIPANT = "referee"
+
+
 class StoreError(RuntimeError):
     """The store cannot be used as requested; nothing was changed."""
 
@@ -421,15 +426,34 @@ class GameStore:
         return self.execute_command(context, raw)[0]
 
     def execute_command(
-        self, context: ParticipantContext, raw: str | bytes
+        self,
+        context: ParticipantContext,
+        raw: str | bytes,
+        *,
+        referee: bool = False,
+        precondition: Callable[[], None] | None = None,
     ) -> tuple[dict, bool]:
         """Like execute, plus whether this call committed a fresh command.
 
         Only a True outcome advanced the revision. Replays, conflicts, stale
         requests, invalid input, and revoked sessions are all False.
+
+        `referee=True` runs one of the module's referee-only commands, and only
+        in the `referee` context; that context runs nothing else. A player
+        context never sees a referee-only command (`unsupported_command`).
+
+        `precondition()`, if given, runs first inside the write transaction;
+        whatever it raises propagates with nothing changed. The referee bridge
+        uses it so a job's authorization holds until the command commits.
         """
         _check_context(context)
+        if referee != (context.participant_id == REFEREE_PARTICIPANT):
+            raise ValueError(
+                "Referee-only commands run in the referee context, and only they do."
+            )
         runtime = self._loaded_runtime()
+        if referee:
+            runtime = runtime.for_referee()
         try:
             request = parse_request(raw, runtime)
         except ProtocolError as error:
@@ -439,6 +463,8 @@ class GameStore:
             return error.to_message(revision=revision), False
         content = request.content()
         with self._write():
+            if precondition is not None:
+                precondition()
             if context.credential_id is not None and not self._credential_is_active(
                 context
             ):
