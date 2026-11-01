@@ -65,6 +65,15 @@ scene passed 38 checks and the private scene 41.
 | The referee's opponent | (none) | Each of the opponent's three turns was one referee-only decision among the actions the scene allows |
 | Only the bridge | Asked to run `ls ~` and read a dotfile, the referee said it had only game tools; its job made one game read and nothing else | (covered by the original scene) |
 
+**Cleanup.** After each run, on success or failure alike, the driver reaps
+every process it started, revokes both players' credentials and removes their
+token files, then records that none is left. The first driver version missed
+this (private review R80-1); both retained runs were cleaned up afterwards
+with the corrected driver, without replaying them: no active credentials, no
+token files and no processes remain, and their games and evidence are
+unchanged. A private test drives a failing scene with a real host and clients
+and checks the same.
+
 Not exercised live this time in the private scene: the player taking damage,
 weapon jams and the aftermath; the private fixed-draw tests cover them through
 the referee's decisions. The private module needed no public change beyond the
