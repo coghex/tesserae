@@ -26,6 +26,12 @@ from tesserae.referee.store import RefereeStore
 from tesserae.registry import HostRegistry
 from tesserae.server import CampaignService
 from tesserae.store import GameStore
+from tesserae.web import GAME_HOST, LOBBY_HOST, load_assets
+
+try:  # tests/ is on sys.path under `unittest discover -s tests`
+    from test_browser_serving import http
+except ImportError:  # running as `python -m unittest tests.test_...`
+    from tests.test_browser_serving import http
 
 TIMEOUT = 5
 
@@ -304,6 +310,25 @@ class LobbyMessageTests(Lobby):
         await self.start_host()
         with self.assertRaises(Exception) as refused:
             await connect(self.uri, origin="http://127.0.0.1:1")
+        self.assertIn("403", str(refused.exception))
+
+    async def test_browser_mode_serves_the_lobby_page_under_the_page_rules(self):
+        await self.start_host(browser_assets=load_assets(lobby=True))
+        port = int(self.uri.rsplit(":", 1)[1].strip("/"))
+        status, headers, body = await http(
+            port, "GET", "/", [("Host", f"localhost:{port}")]
+        )
+        self.assertEqual(status, 200)
+        self.assertIn(LOBBY_HOST, body)
+        self.assertNotIn(GAME_HOST, body)
+        self.assertIn("connect-src", headers["content-security-policy"])
+        status, _, _ = await http(port, "GET", "/", [("Host", f"evil.example:{port}")])
+        self.assertEqual(status, 421)
+        async with connect(self.uri, origin=f"http://127.0.0.1:{port}") as page:
+            await page.send(message("login", token=self.tokens["alice"]))
+            self.assertEqual((await self.next(page))["type"], "lobby")
+        with self.assertRaises(Exception) as refused:
+            await connect(self.uri, origin="http://evil.example")
         self.assertIn("403", str(refused.exception))
 
 
@@ -723,7 +748,6 @@ class ServeCommandTests(unittest.TestCase):
         for extra in (
             ["--database", str(root / "g.sqlite3")],
             ["--authenticated"],
-            ["--browser"],
             ["--tls-cert", "c.pem", "--tls-key", "k.pem"],
             ["--host", "192.0.2.1"],
         ):
@@ -754,7 +778,7 @@ class ServeCommandTests(unittest.TestCase):
             registry.grant(campaign, player)
         host = subprocess.Popen(
             [sys.executable, "-m", "tesserae", "serve", "--registry", str(registry_path),
-             "--port", "0", "--referee-dir", str(root / "referee")],
+             "--port", "0", "--referee-dir", str(root / "referee"), "--browser"],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )  # fmt: skip
         self.addCleanup(lambda: host.poll() is None and host.kill())
@@ -762,6 +786,11 @@ class ServeCommandTests(unittest.TestCase):
         self.assertIn("Tesserae lobby host listening on ws://127.0.0.1:", line)
         self.assertIn(str(registry_path.resolve()), line)
         uri = line.split()[5]
+        self.assertEqual(
+            host.stdout.readline(),
+            f"Browser: http://{uri.removeprefix('ws://')} (this computer only; "
+            "log in with a host token)\n",
+        )
 
         async def play():
             async with connect(uri) as connection:

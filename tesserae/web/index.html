@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="tesserae-host" content="game">
   <title>Tesserae</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/app.css">
@@ -46,11 +47,14 @@
         <div class="status-line">
           <p class="status" role="status" id="console-status">Not connected</p>
           <button type="button" id="console-reconnect" hidden>Reconnect</button>
+          <button type="button" class="leave-button" id="console-leave" hidden>Leave
+            campaign</button>
         </div>
         <p class="notice" id="console-notice" aria-live="polite" hidden></p>
         <div class="panel join" id="console-join">
-          <h2>Join the game</h2>
-          <p>Paste your personal token or choose your token file, then join.</p>
+          <h2 id="console-join-title">Join the game</h2>
+          <p id="console-join-text">Paste your personal token or choose your token
+            file, then join.</p>
           <fieldset class="token-entry">
             <legend class="visually-hidden">Your token</legend>
             <label>Token
@@ -63,7 +67,20 @@
             <button type="button" class="join-button">Join</button>
           </fieldset>
         </div>
+        <div class="panel lobby" id="console-lobby" hidden>
+          <h2 id="lobby-title">Choose a campaign</h2>
+          <p id="lobby-player"></p>
+          <ul class="campaigns" id="campaign-list" aria-labelledby="lobby-title"></ul>
+          <p class="note" id="lobby-empty" hidden>No campaigns are open to you yet. Ask
+            the host to give you access, then refresh the list.</p>
+          <div class="actions">
+            <button type="button" id="lobby-refresh">Refresh the list</button>
+          </div>
+        </div>
         <div class="play" id="console-play" hidden>
+          <p class="notice" id="console-no-referee" hidden>This campaign has no
+            referee, so the browser shows its state only. Play it from the command
+            line with <code>tesserae connect --lobby</code>.</p>
           <ol class="conversation" id="conversation" role="log"
               aria-label="Conversation"></ol>
           <div class="panel question" id="console-question" aria-live="polite" hidden>
@@ -97,7 +114,7 @@
             <div id="console-state-body"></div>
             <p class="note" id="console-state-revision"></p>
           </div>
-          <div class="composer">
+          <div class="composer" id="console-composer">
             <label for="composer-text">Say to the referee</label>
             <textarea id="composer-text" rows="3" maxlength="2000"
                       spellcheck="true"></textarea>
@@ -123,7 +140,13 @@
           <dl class="facts">
             <dt>Status</dt><dd id="settings-status">Not connected</dd>
             <dt>Host</dt><dd id="settings-host"></dd>
-            <dt>Game</dt><dd id="settings-game">Shown after joining</dd>
+            <dt class="lobby-only" hidden>Player</dt>
+            <dd class="lobby-only" id="settings-player" hidden>Shown after logging in</dd>
+            <dt class="lobby-only" hidden>Campaign</dt>
+            <dd class="lobby-only" id="settings-campaign" hidden>Shown after choosing
+              one</dd>
+            <dt class="game-only">Game</dt>
+            <dd class="game-only" id="settings-game">Shown after joining</dd>
             <dt>Joined as</dt><dd id="settings-name">Shown after joining</dd>
             <dt>Module</dt><dd id="settings-module">Shown after joining</dd>
           </dl>
@@ -142,6 +165,8 @@
             <button type="button" class="join-button">Join</button>
           </fieldset>
           <div class="actions">
+            <button type="button" class="leave-button lobby-only" id="settings-leave"
+                    disabled hidden>Leave campaign</button>
             <button type="button" id="settings-disconnect" disabled>Disconnect</button>
             <button type="button" id="settings-change" disabled>Change identity</button>
           </div>

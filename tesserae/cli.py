@@ -102,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         "--browser",
         action="store_true",
         help="Also serve the browser page on this port, for players on this "
-        "computer. Needs --authenticated and a game in referee mode.",
+        "computer. One game needs --authenticated and referee mode; with "
+        "--registry, players log in with their host tokens.",
     )
     serve.add_argument(
         "--referee-timeout",
@@ -343,7 +344,6 @@ def _serve(args) -> int:
     for given, option in (
         (args.database is not None, "--database"),
         (args.authenticated, "--authenticated (a lobby host always is)"),
-        (args.browser, "--browser (not yet for a lobby host)"),
         (args.tls_cert is not None or args.tls_key is not None, "--tls-cert/--tls-key"),
         (args.host != "127.0.0.1", "--host"),
     ):
@@ -359,6 +359,7 @@ def _serve(args) -> int:
         module_dirs=module_dirs,
         referee_dir=args.referee_dir,
         referee_timeout=args.referee_timeout,
+        browser=args.browser,
     )
 
 

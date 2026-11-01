@@ -12,7 +12,9 @@ campaigns with `tesserae serve --registry` ([below](#serve-the-campaigns));
 the exact rules are in the [lobby contract](designs/lobby_contract.md).
 Players use it from the CLI with `tesserae connect --lobby`
 ([#98](https://github.com/coghex/tesserae/issues/98),
-[below](#play-from-the-cli)); the browser's login and picker follow in #99.
+[below](#play-from-the-cli)) or from the browser on the host computer
+([#99](https://github.com/coghex/tesserae/issues/99),
+[below](#play-in-the-browser)).
 Existing `serve --database`, CLI connections and browser joins continue
 using game-specific participant tokens. A host token never joins those
 servers, and a game token never logs in to a lobby host. Character lifecycle
@@ -134,10 +136,10 @@ them as a participant of that campaign, named as in the registry, without any
 game token. Each campaign keeps its own state, history, busy state and
 referee session. Repeat `--module-dir` for each external module package the
 campaigns use; `--referee-dir` is the referee folder for every referee-mode
-campaign. `--database`, `--authenticated`, `--browser`, TLS and other
-`--host` values are refused (exit 2). Players connect with
-`tesserae connect --lobby` ([below](#play-from-the-cli)); the browser page does
-not log in to a lobby host yet (#99).
+campaign. `--browser` also serves the browser page
+([below](#play-in-the-browser)). `--database`, `--authenticated`, TLS and
+other `--host` values are refused (exit 2). Players connect with
+`tesserae connect --lobby` ([below](#play-from-the-cli)) or the page.
 
 A campaign is opened when first selected. If its file is missing, moved,
 replaced or bound to a module that is not loaded, the selection is refused as
@@ -181,6 +183,32 @@ tesserae connect ws://127.0.0.1:8765/ --token-file alice.token --lobby
   commands). Characters come in a later version; `/character` says so.
 - Without `--lobby`, `tesserae connect` joins one game with a game token, as
   before, and says so if you point it at a lobby host.
+
+## Play in the browser
+
+```sh
+tesserae serve --registry host.sqlite3 --port 8765 --browser
+```
+
+The host prints a second line, `Browser: http://127.0.0.1:8765/ (this
+computer only; log in with a host token)`. Open it on the host computer, paste
+your host token or choose your token file, and log in. The Console lists the
+campaigns open to you; choose one to play it. The page then works as in the
+[browser runbook](browser-runbook.md), with the campaign's name in the status
+line:
+
+- **Leave campaign**, beside the status line or in Settings, returns to the
+  list; choose another campaign from there. Leaving clears everything of that
+  campaign from the page, including any text you had typed and not sent.
+- If your access to the campaign ends, the page says so and shows the list
+  again. If your host token is revoked, it clears everything and asks you to
+  log in again.
+- After a dropped connection, **Reconnect** logs in again and returns to the
+  same campaign, keeping your draft. If the host has since linked you to a
+  different participant, the page starts that campaign afresh.
+- A campaign without a referee shows its state only; play it from the CLI.
+- Your token stays in the page's memory only, so a refresh asks for it again.
+  Each page (and each CLI connection) chooses its own campaign.
 
 ## Link existing participants
 
