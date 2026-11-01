@@ -4,7 +4,9 @@ script per run, from FAKE_REFEREE_DIR/script.json:
 
     {"calls": [{"tool": "act", "args": {...}}, ...],
      "pause_before": 1,          # optional: stop before call 1 and wait
-     "reply": {...} or "malformed" or null}
+     "reply": {...} or "malformed" or null,
+     "noise": true,              # optional: junk output lines first
+     "exit": 3}                  # optional: die after the calls, writing no reply
 
 Reply texts may contain {results}, replaced by the calls' results as JSON.
 Each run is logged to log.jsonl (argv, the prompt, its resume ID); sessions
@@ -44,7 +46,18 @@ thread = resume or f"thread-{runs + 1}"
 if resume is None:
     with sessions.open("a") as stream:
         stream.write(thread + "\n")
+if script.get("noise"):  # what a broken or newer Codex might print
+    for junk in (
+        "not json",
+        "[1, 2]",
+        '{"type": "thread.started"}',
+        '{"type": 7}',
+        "{",
+    ):
+        print(junk, flush=True)
+    print("x" * 2_000_000, flush=True)  # a line far over the kept length
 print(json.dumps({"type": "thread.started", "thread_id": thread}), flush=True)
+(state / "token").write_text(os.environ["TESSERAE_BRIDGE_TOKEN"])  # a test's own token
 
 results = []
 if script.get("calls") or "pause_before" in script:
@@ -79,6 +92,8 @@ if script.get("calls") or "pause_before" in script:
     bridge.stdin.close()
     bridge.wait()
 
+if "exit" in script:
+    sys.exit(script["exit"])
 reply = script.get("reply")
 if reply == "malformed":
     reply_path.write_text("{not json")

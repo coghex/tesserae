@@ -12,7 +12,9 @@ hooks; and the host's referee mode and the CLI (sections 7, 8 and 12) in
 `tesserae/server.py` and `client.py` (#68), with a pluggable executor for each
 accepted job; and the loop (#69): the Codex referee the host runs for each
 job, startup recovery, `serve --referee-dir`, `referee stop` and `rebuild`, in
-`tesserae/referee/orchestrator.py`. It turns the
+`tesserae/referee/orchestrator.py`. REF-8 (#71) added the
+[operator runbook](../referee-runbook.md) and the
+[acceptance record](../acceptance/referee.md). It turns the
 [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
 records how the CLI shows conversation (owner decision O-1).
