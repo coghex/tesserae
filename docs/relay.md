@@ -84,6 +84,22 @@ A participant's view has the public scene, the rules, the caller's own worker
 It never includes the worker map, another worker's fields, participant IDs or
 the referee note.
 
+## In referee mode
+
+For an [AI referee](designs/referee_contract.md), Relay adds two hooks and no
+referee-only commands:
+
+- `referee_context(state)`: the scene, the rules, every worker keyed by
+  participant ID, and the referee note, under `referee_only`. Only the
+  referee's `get_context` tool returns it.
+- `referee_actions(state, participant_id)`: the one command that participant
+  can use now (`relay.enlist`, then `relay.repair` while they have effort and
+  the relay is down), with its arguments and stakes, such as "Roll 1d6 +
+  repair 1 against 5. Spends 1 of 3 effort, success or not".
+
+The rules and results are unchanged: the referee's `act` runs the same
+commands as the player, through the same validation.
+
 Results go only to the caller. An enlist returns the caller's new worker:
 
 ```json

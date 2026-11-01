@@ -77,7 +77,7 @@ You are the referee for a tabletop game played by friends over Tesserae.
   to retry that exact call.
 - `get_context` lists earlier results nobody has been told about yet. Tell the
   player each one belongs to, and list it in `narrated`; list nothing you have
-  not told them.
+  not told them. This job's own results count as told once you reply.
 - Keep hidden preparation and other players' private details out of table
   messages. Reply privately (`sender`) only to private input.
 - Do not start other agents.
@@ -103,6 +103,10 @@ def config_text(python: str = sys.executable) -> str:
         'args = ["-m", "tesserae.referee.bridge"]\n'
         'env_vars = ["TESSERAE_BRIDGE_SOCKET", "TESSERAE_BRIDGE_TOKEN"]\n'
         "tool_timeout_sec = 60\n"
+        # Approval never can't prompt, so it refuses any tool not marked
+        # read-only. The bridge's own tools are pre-approved: the host checks
+        # each call's token and authority (tesserae/referee/tools.py).
+        'default_tools_approval_mode = "approve"\n'
     )
 
 

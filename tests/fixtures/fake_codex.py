@@ -69,6 +69,55 @@ if mode in ("slow", "slow_with_child"):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         Path(os.environ["FAKE_CODEX_CHILD"]).write_text(str(child.pid))
     time.sleep(60)
+if mode == "mcp":  # start the configured MCP server as Codex does, and use it
+    import tomllib
+
+    config = tomllib.loads((Path(os.environ["CODEX_HOME"]) / "config.toml").read_text())
+    server = config["mcp_servers"]["tesserae"]
+    bridge = subprocess.Popen(
+        [server["command"], *server["args"]],
+        env={name: os.environ[name] for name in server["env_vars"]} | {"PATH": os.environ.get("PATH", "")},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+
+    def rpc(number, method, params):
+        bridge.stdin.write(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": number, "method": method, "params": params}
+            )
+            + "\n"
+        )
+        bridge.stdin.flush()
+        return json.loads(bridge.stdout.readline())["result"]
+
+    def tool(number, name, arguments):
+        result = rpc(number, "tools/call", {"name": name, "arguments": arguments})
+        return result["isError"], json.loads(result["content"][0]["text"])
+
+    rpc(
+        1,
+        "initialize",
+        {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "fake"},
+        },
+    )
+    names = [entry["name"] for entry in rpc(2, "tools/list", {})["tools"]]
+    _, context = tool(3, "get_context", {})
+    failed, acted = tool(4, "act", {"step_id": "s1", "command": "relay.enlist",
+                                    "args": {"name": context["input"]["text"].split()[-1]}})  # fmt: skip
+    bridge.stdin.close()
+    bridge.wait()
+    worker = (
+        acted["result"]["result"]["worker"]["name"] if not failed else acted["code"]
+    )
+    reply_path.write_text(json.dumps({
+        "messages": [{"audience": "table", "text": f"{worker} signed up. Tools: {' '.join(names)}"}],
+        "choices": {"ask": [], "resolve": []}, "narrated": [],
+    }))  # fmt: skip
+    print(json.dumps({"type": "turn.completed"}), flush=True)
+    sys.exit(0)
 if mode == "nonzero_after_session":
     sys.exit(3)
 if mode == "malformed":

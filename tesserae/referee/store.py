@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..protocol import is_valid_request_id
-from ..store import GameStore, ParticipantContext, StoreError
+from ..store import REFEREE_PARTICIPANT, GameStore, ParticipantContext, StoreError
 
-REFEREE = "referee"  # the context for referee-only commands; no token maps to it
+REFEREE = REFEREE_PARTICIPANT  # the context for referee-only commands
 MAX_TEXT = 2000
 MAX_MESSAGE = 4000
 MAX_MESSAGES = 8
@@ -287,7 +287,7 @@ class RefereeStore:
                 row[0] for row in db.execute("SELECT participant_id FROM participants")
             }
             messages, asks, resolves = _validated_reply(reply, job, participants)
-            acknowledged = self._acknowledged(db, reply["narrated"], messages)
+            acknowledged = self._acknowledged(db, job_id, reply["narrated"], messages)
             now = _now()
             stored = []
             for audience, text in messages:
@@ -575,10 +575,26 @@ class RefereeStore:
             or job.participant_id in json.loads(audience)
         )
 
-    def _acknowledged(self, db, narrated, messages) -> list[tuple]:
-        """The (job, step) pairs a reply's `narrated` list may acknowledge."""
+    def _acknowledged(self, db, job_id: str, narrated, messages) -> list[tuple]:
+        """The (job, step) pairs a reply's `narrated` list may acknowledge.
+        Listing one of this job's own committed steps is allowed and changes
+        nothing (they are narrated anyway); one that did not commit is not."""
         pairs = []
         for entry in narrated:
+            if entry["job_id"] == job_id:
+                if (
+                    db.execute(
+                        "SELECT 1 FROM referee_steps WHERE job_id = ? AND step_id = ? "
+                        "AND status = 'committed'",
+                        (job_id, entry["step_id"]),
+                    ).fetchone()
+                    is None
+                ):
+                    raise RefereeError(
+                        "malformed_reply",
+                        "The reply lists a step of its own that did not commit.",
+                    )
+                continue
             row = db.execute(
                 "SELECT i.participant_id FROM referee_steps AS s "
                 "JOIN referee_jobs AS j ON j.job_id = s.job_id "
