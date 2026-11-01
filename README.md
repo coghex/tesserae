@@ -72,7 +72,13 @@ an [imported seed](docs/game_store.md#seeded-creation) (#53); the
 [external module runbook](docs/external-modules.md) walks through it with the
 original Beacon example. The private module itself stays private; its
 [sanitized acceptance](docs/acceptance/private-module.md) records the combined
-run. Next is M1-6, the AI referee.
+run. [M1-6 / tracker #63](https://github.com/coghex/tesserae/issues/63) added
+the AI referee: players type plain text, and a Codex referee, run by the host
+once per input, plays the game only through Tesserae's bridge
+([referee contract](docs/designs/referee_contract.md)). The
+[referee runbook](docs/referee-runbook.md) sets it up, and the
+[acceptance record](docs/acceptance/referee.md) shows both demonstration scenes
+played that way.
 
 ## Working together
 

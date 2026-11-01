@@ -1,8 +1,9 @@
 # M1-6: resumable Codex referee through the server and CLI
 
-Status: planned; tracker [#63](https://github.com/coghex/tesserae/issues/63)
-and children #64–#71 are filed. This document implements no runtime. Baseline:
-M1-5 completed through PR #62 at `dec450f`.
+Status: delivered; tracker [#63](https://github.com/coghex/tesserae/issues/63)
+and children #64–#71 (see the [acceptance record](../acceptance/referee.md)).
+This plan itself implements no runtime. Baseline: M1-5 completed through PR #62
+at `dec450f`.
 The owner's choices below supersede the earlier direct-model-API proposal.
 REF-1's exact contract is [referee_contract.md](referee_contract.md).
 

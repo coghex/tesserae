@@ -18,7 +18,7 @@ from websockets.asyncio.client import connect
 from tesserae import server
 from tesserae.builtin import CATALOG
 from tesserae.credentials import new_token
-from tesserae.referee import runner
+from tesserae.referee import bridge, runner
 from tesserae.referee.orchestrator import CodexReferee
 from tesserae.referee.store import RefereeStore
 from tesserae.server import GameHost
@@ -299,6 +299,46 @@ class FailureTests(LoopCase):
         [context] = json.loads(texts(seen)[-1])
         self.assertEqual([(s["step_id"], s["command"]) for s in context["result"]["earlier_results"]],
                          [("s1", "relay.enlist")])  # fmt: skip
+
+    async def test_codex_dying_after_a_commit_keeps_it_and_ends_its_access(self):
+        self.script(
+            {"calls": [act("s1", "relay.enlist", name="Wren")], "exit": 3},
+            {"calls": [call("get_context")], "reply": reply(("table", "{results}"))},
+        )  # fmt: skip
+        await self.start_host()
+        alice, _ = await self.joined("alice")
+        seen = await self.exchange(alice, "a-1", "Sign up Wren")
+        self.assertEqual(texts(seen), ["Sign up Wren"])
+        self.assertEqual(
+            (self.jobs(), self.store().revision()), ([("failed", "runner_failed")], 1)
+        )
+        self.assertFalse(
+            runner.JobLock.held(self.folder.lock_path(self.game_id))
+        )  # nothing left
+        old = {"TESSERAE_BRIDGE_SOCKET": str(self.folder.socket_path(self.game_id)),
+               "TESSERAE_BRIDGE_TOKEN": (self.fake / "token").read_text()}  # fmt: skip
+        with mock.patch.dict(os.environ, old):  # the dead run's token no longer works
+            refused = await asyncio.to_thread(bridge.call_host, "get_context", {})
+        self.assertEqual(refused["error"]["code"], "job_ended")
+        seen = await self.exchange(alice, "a-2", "Did it work?")
+        [context] = json.loads(texts(seen)[-1])
+        self.assertEqual(
+            [s["step_id"] for s in context["result"]["earlier_results"]], ["s1"]
+        )
+
+    async def test_a_lost_final_reply_and_junk_output_lines(self):
+        self.script(
+            {"calls": [call("get_context")], "reply": None},  # exits 0 with no reply
+            {"calls": [], "noise": True, "reply": reply(("table", "Despite the noise."))},
+        )  # fmt: skip
+        await self.start_host()
+        alice, _ = await self.joined("alice")
+        self.assertEqual(texts(await self.exchange(alice, "a-1", "Hello?")), ["Hello?"])
+        self.assertEqual(self.jobs(), [("failed", "malformed_reply")])
+        seen = await self.exchange(alice, "a-2", "Hello again")
+        self.assertIn("Despite the noise.", texts(seen))
+        self.assertEqual(self.jobs()[-1], ("completed", None))
+        self.assertEqual(RefereeStore(self.store()).session(), ("thread-1", "ok"))
 
     async def test_shutdown_before_a_commit_interrupts_with_nothing_changed(self):
         self.script({"calls": [act("s1", "relay.enlist", name="Wren")], "pause_before": 0,

@@ -138,7 +138,7 @@ encounter. The public support is the external package loader (#51), `game
 create`/`serve --module-dir` (#52) and seeded creation (#53); the
 specification, converter and module (#50, #53-#56) are private. The combined
 workflow passed: see the [acceptance record](acceptance/private-module.md) and
-the [external module runbook](external-modules.md). M1-6 is next.
+the [external module runbook](external-modules.md).
 
 - Load the private module/content from a configured directory outside the repo.
 - Implement a bounded rules subset with explicit recorded interpretations.
@@ -159,9 +159,11 @@ referee conversation per game, and rejection of new input while busy. This
 resolves the initial direction for Q-1/Q-7; direct API integration, queuing
 and custom selective context loading are deferred. The
 [M1-6 delivery plan](designs/codex_referee_design.md) records tracker
-[#63](https://github.com/coghex/tesserae/issues/63) and children #64–#71, starting
-with the concrete contracts. No runtime is implemented by that planning
-document.
+[#63](https://github.com/coghex/tesserae/issues/63) and children #64–#71, all
+delivered: the [referee contract](designs/referee_contract.md), the store, runner,
+bridge, host and CLI, the playable loop with recovery, and the private scene's
+adaptation. Both scenes passed; see the [acceptance record](acceptance/referee.md)
+and the [referee runbook](referee-runbook.md).
 
 - Use the shared command surface from the chosen conversation host.
 - Preserve player control, declared stakes before rolling, and recorded rulings.
@@ -214,5 +216,6 @@ conversion. No need to settle a model vendor or frontend framework in M1-1.
   (#38–#42 delivered). Two real CLI players passed the Relay demo, one of
   them on the Ubuntu VM; see the [acceptance record](acceptance/relay-demo.md).
   M1-5 then completed through tracker #49 and PR #62, including private
-  acceptance and the external-module runbook. M1-6 is next; its initial
-  referee direction and draft delivery plan are linked above.
+  acceptance and the external-module runbook.
+- M1-6's AI referee (#63, #64–#71) is complete: both scenes passed with real
+  Codex and two CLI players; see the [acceptance record](acceptance/referee.md).
