@@ -24,6 +24,10 @@ MAX_MESSAGES = 8
 MAX_CHOICES = 4
 MAX_QUESTION = 1000
 TRANSCRIPT_PAGE = 200
+# A page's encoded size, so a page fits in one tool result Codex shows the
+# model whole (it trims large tool outputs). A longer message still gets a
+# page of its own.
+TRANSCRIPT_PAGE_BYTES = 32 * 1024
 MAX_NARRATED = 16
 MAX_STEP_ID = 64  # so `ref:<job>:<step>` stays a valid request ID
 FINISHED = ("completed", "failed", "interrupted")
@@ -471,11 +475,14 @@ class RefereeStore:
             "ORDER BY seq LIMIT ?",
             (after_seq, TRANSCRIPT_PAGE + 1),
         )
-        page = [
-            _message(*row[:2], json.loads(row[2]), row[3])
-            for row in rows[:TRANSCRIPT_PAGE]
-        ]
-        return page, (page[-1]["seq"] if len(rows) > TRANSCRIPT_PAGE else None)
+        page, size = [], 0
+        for row in rows:
+            message = _message(*row[:2], json.loads(row[2]), row[3])
+            size += len(json.dumps(message))
+            if page and (len(page) == TRANSCRIPT_PAGE or size > TRANSCRIPT_PAGE_BYTES):
+                return page, page[-1]["seq"]
+            page.append(message)
+        return page, None
 
     def all_choices(self) -> list[dict]:
         """Referee only: every pending choice."""

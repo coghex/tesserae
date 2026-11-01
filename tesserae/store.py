@@ -426,7 +426,12 @@ class GameStore:
         return self.execute_command(context, raw)[0]
 
     def execute_command(
-        self, context: ParticipantContext, raw: str | bytes, *, referee: bool = False
+        self,
+        context: ParticipantContext,
+        raw: str | bytes,
+        *,
+        referee: bool = False,
+        precondition: Callable[[], None] | None = None,
     ) -> tuple[dict, bool]:
         """Like execute, plus whether this call committed a fresh command.
 
@@ -436,6 +441,10 @@ class GameStore:
         `referee=True` runs one of the module's referee-only commands, and only
         in the `referee` context; that context runs nothing else. A player
         context never sees a referee-only command (`unsupported_command`).
+
+        `precondition()`, if given, runs first inside the write transaction;
+        whatever it raises propagates with nothing changed. The referee bridge
+        uses it so a job's authorization holds until the command commits.
         """
         _check_context(context)
         if referee != (context.participant_id == REFEREE_PARTICIPANT):
@@ -454,6 +463,8 @@ class GameStore:
             return error.to_message(revision=revision), False
         content = request.content()
         with self._write():
+            if precondition is not None:
+                precondition()
             if context.credential_id is not None and not self._credential_is_active(
                 context
             ):

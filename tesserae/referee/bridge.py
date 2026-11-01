@@ -14,11 +14,12 @@ import os
 import socket
 import sys
 
-from .tools import MAX_REQUEST
-
 SERVER_INFO = {"name": "tesserae", "version": "1"}
 DEFAULT_PROTOCOL = "2025-06-18"
 SOCKET_TIMEOUT = 55.0  # inside the config's tool_timeout_sec of 60
+# The host is trusted and pages its large reads; this only stops a runaway line.
+# A request's own limit (tools.MAX_REQUEST) does not apply to responses.
+MAX_RESPONSE = 64 * 1024 * 1024
 
 _STEP = {
     "type": "object",
@@ -107,11 +108,19 @@ def call_host(tool: str, args: dict) -> dict:
             connection.connect(os.environ["TESSERAE_BRIDGE_SOCKET"])
             connection.sendall(json.dumps(request).encode() + b"\n")
             with connection.makefile("rb") as stream:
-                line = stream.readline(MAX_REQUEST + 1)
-        return json.loads(line)
-    except (OSError, KeyError, ValueError):
+                line = stream.readline(MAX_RESPONSE + 1)
+        if not line:
+            raise ConnectionResetError("no answer")
+    except (OSError, KeyError):
         return {"ok": False, "error": {"code": "host_unreachable",
                                        "message": "The game cannot be reached; this job may have ended."}}  # fmt: skip
+    try:
+        if len(line) > MAX_RESPONSE or not line.endswith(b"\n"):
+            raise ValueError("incomplete response")
+        return json.loads(line)
+    except ValueError:
+        return {"ok": False, "error": {"code": "internal_error",
+                                       "message": "The game's answer was cut off; retry the same call."}}  # fmt: skip
 
 
 def answer(message: dict) -> dict | None:

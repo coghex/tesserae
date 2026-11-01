@@ -56,7 +56,11 @@ class BridgeTools:
     """The tools for one game. `open_store()` returns a new GameStore for the
     calling thread; `on_commit(revision)` is called after each fresh commit, so
     the host can notify players; `log(entry)` receives every call and result
-    (never a token). Safe to call from several threads."""
+    (never a token). Safe to call from several threads.
+
+    An action is authorized again inside its own write transaction, and
+    revoke() waits for one already committing, so once revoke() returns no
+    action of the revoked job can commit."""
 
     def __init__(self, open_store, *, on_commit=None, log=None):
         self._open = open_store
@@ -64,6 +68,9 @@ class BridgeTools:
         self._log = log
         self._grant = None  # (job_id, token) of the running job
         self._guard = threading.Lock()
+        # Held from an action's command transaction until its step is
+        # recorded; revoke() takes it first. Order: _acting, then _guard.
+        self._acting = threading.Lock()
 
     def grant(self, job_id: str) -> str:
         """A new token for this job; any earlier job's token stops working."""
@@ -73,8 +80,9 @@ class BridgeTools:
         return token
 
     def revoke(self):
-        """End all bridge access, as when the job ends or the host stops."""
-        with self._guard:
+        """End all bridge access, as when the job ends or the host stops.
+        Waits for an action already committing to finish recording."""
+        with self._acting, self._guard:
             self._grant = None
 
     def handle(self, request) -> dict:
@@ -83,9 +91,9 @@ class BridgeTools:
         tool = request.get("tool") if isinstance(request, dict) else None
         args = request.get("args") if isinstance(request, dict) else None
         try:
-            job_id = self._authorize(request)
+            grant = self._authorize(request)
             with self._open() as store:
-                result = self._run(store, job_id, tool, args)
+                result = self._run(store, grant, tool, args)
             response = {"ok": True, "result": result}
         except ToolError as error:
             response = _error(error.code, error.message)
@@ -101,7 +109,7 @@ class BridgeTools:
             self._log({"tool": tool, "args": args, "response": response})
         return response
 
-    def _authorize(self, request) -> str:
+    def _authorize(self, request) -> tuple:
         if not isinstance(request, dict) or set(request) != {"token", "tool", "args"}:
             raise ToolError(
                 "invalid_request", "A request has exactly token, tool and args."
@@ -122,15 +130,15 @@ class BridgeTools:
         if not isinstance(args, dict) or set(args) != TOOL_ARGUMENTS[tool]:
             expected = ", ".join(sorted(TOOL_ARGUMENTS[tool])) or "no arguments"
             raise ToolError("invalid_request", f"{tool} takes exactly: {expected}.")
-        return grant[0]
+        return grant
 
-    def _run(self, store: GameStore, job_id: str, tool: str, args: dict) -> dict:
+    def _run(self, store: GameStore, grant: tuple, tool: str, args: dict) -> dict:
         referee = RefereeStore(store)
         job = referee.running_job()
-        if job is None or job.job_id != job_id:
+        if job is None or job.job_id != grant[0]:
             raise ToolError("job_ended", "This job's access has ended; nothing ran.")
         if tool in ("act", "referee_act"):
-            return self._act(store, referee, job, tool, args)
+            return self._act(store, referee, grant, job, tool, args)
         if tool == "record_ruling":
             referee.record_ruling(job.job_id, args["text"], args["scope"])
             return {"recorded": True}
@@ -194,7 +202,7 @@ class BridgeTools:
             "referee_commands": [c.name for c in runtime.module.referee_commands],
         }
 
-    def _act(self, store, referee, job: Job, tool: str, args: dict) -> dict:
+    def _act(self, store, referee, grant, job: Job, tool: str, args: dict) -> dict:
         if not isinstance(args["command"], str) or not isinstance(args["args"], dict):
             raise ToolError(
                 "invalid_request", "command is a string and args an object."
@@ -219,20 +227,35 @@ class BridgeTools:
             "version": PROTOCOL_VERSION, "type": "command", "request_id": step.request_id,
             "expected_revision": store.revision(), "command": step.command, "args": step.args,
         })  # fmt: skip
-        reply, committed = store.execute_command(
-            ParticipantContext(who), raw, referee=tool == "referee_act"
-        )
-        if reply["type"] == "error":
-            if reply["code"] in RETRYABLE:  # nothing ran; the step stays intended
+
+        def still_authorized():
+            # Inside the command's transaction: the job may have been
+            # interrupted, or its access revoked, since the step was intended.
+            with self._guard:
+                current = self._grant
+            running = referee.running_job()
+            if current is not grant or running is None or running.job_id != job.job_id:
                 raise ToolError(
-                    reply["code"], reply["message"] + " Retry with the same step_id."
+                    "job_ended", "This job's access has ended; nothing ran."
                 )
-            referee.record_step(job.job_id, step.step_id, "refused", reply)
-            raise ToolError(reply["code"], reply["message"])
-        if committed and self._on_commit is not None:
-            # First: players hear of the commit even if journaling it fails.
-            self._on_commit(reply["revision"])
-        referee.record_step(job.job_id, step.step_id, "committed", reply)
+
+        with self._acting:
+            reply, committed = store.execute_command(
+                ParticipantContext(who), raw, referee=tool == "referee_act",
+                precondition=still_authorized,
+            )  # fmt: skip
+            if reply["type"] == "error":
+                if reply["code"] in RETRYABLE:  # nothing ran; the step stays intended
+                    raise ToolError(
+                        reply["code"],
+                        reply["message"] + " Retry with the same step_id.",
+                    )
+                referee.record_step(job.job_id, step.step_id, "refused", reply)
+                raise ToolError(reply["code"], reply["message"])
+            if committed and self._on_commit is not None:
+                # First: players hear of the commit even if journaling it fails.
+                self._on_commit(reply["revision"])
+            referee.record_step(job.job_id, step.step_id, "committed", reply)
         return {"step_id": step.step_id, "status": "committed", "result": reply}
 
 

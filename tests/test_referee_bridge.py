@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,8 +23,8 @@ from tesserae.modules import (
     Module,
     Outcome,
 )
-from tesserae.referee import runner
-from tesserae.referee.store import REFEREE, RefereeStore
+from tesserae.referee import bridge, runner
+from tesserae.referee.store import REFEREE, TRANSCRIPT_PAGE_BYTES, RefereeStore
 from tesserae.referee.tools import BridgeServer, BridgeTools
 from tesserae.store import GameStore, ParticipantContext
 
@@ -265,6 +266,54 @@ class AuthorityTests(BridgeCase):
         self.refused("job_ended", newer, "get_context")
         self.assertEqual(self.store.revision(), 0)
 
+    def test_a_job_that_ends_after_intending_a_step_cannot_commit_it(self):
+        # The job ends between journaling the step and running its command:
+        # first by revocation alone, then in the database alone.
+        job, token = self.start_job()
+        ends = [lambda: self.tools.revoke(),
+                lambda: self.referee.finish(job.job_id, "interrupted")]  # fmt: skip
+        intend = RefereeStore.intend_step
+        for number, end in enumerate(ends):
+
+            def intend_then_end(referee, *args, end=end):
+                step = intend(referee, *args)
+                end()
+                return step
+
+            with mock.patch.object(RefereeStore, "intend_step", intend_then_end):
+                self.assertEqual(
+                    self.enlist(token, f"s{number}")["error"]["code"], "job_ended"
+                )
+            self.assertEqual((self.store.revision(), self.commits), (0, []))
+            step = self.referee._step(self.store, job.job_id, f"s{number}")
+            self.assertEqual(step.status, "intended")
+            token = self.tools.grant(job.job_id)  # access back, for the second way
+
+    def test_revoke_waits_for_an_action_already_committing(self):
+        committing, release = threading.Event(), threading.Event()
+
+        def on_commit(revision):
+            committing.set()
+            release.wait(10)
+
+        self.tools = BridgeTools(self.open, on_commit=on_commit)
+        job, token = self.start_job()
+        acting = threading.Thread(target=self.enlist, args=(token,))
+        acting.start()
+        self.assertTrue(committing.wait(10))
+        revoking = threading.Thread(target=self.tools.revoke)
+        revoking.start()
+        revoking.join(0.3)
+        self.assertTrue(revoking.is_alive())
+        release.set()
+        acting.join(10)
+        revoking.join(10)
+        self.assertFalse(revoking.is_alive())
+        # Once revoke() returned, the committed step was already journaled.
+        self.assertEqual(
+            self.referee._step(self.store, job.job_id, "s1").status, "committed"
+        )
+
 
 class RefereeCommandTests(BridgeCase):
     runtime = Catalog([WATCH], []).resolve("watch")
@@ -401,6 +450,46 @@ class SocketTests(BridgeCase):
             bridge.stdin.close()
             self.assertEqual(bridge.wait(10), 0)
         self.assertFalse(socket_path.exists())
+
+    def test_a_long_transcript_arrives_whole_in_bounded_pages(self):
+        text = "\u00e9" * 2000  # six bytes a character once encoded
+        for number in range(40):
+            job = self.referee.submit(self.alice, f"l-{number}", text, False).job
+            self.referee.finish(job.job_id, "failed", "test")
+        _, token = self.start_job(request_id="last")
+        socket_path = self.short_dir() / "game.sock"
+        environment = {
+            "TESSERAE_BRIDGE_SOCKET": str(socket_path),
+            "TESSERAE_BRIDGE_TOKEN": token,
+        }
+        with (
+            BridgeServer(socket_path, self.tools),
+            mock.patch.dict(os.environ, environment),
+        ):
+            response = bridge.call_host("get_context", {})
+            self.assertTrue(response["ok"], response)
+            page = response["result"]["transcript"]
+            seen, pages = list(page["messages"]), 1
+            self.assertLessEqual(len(json.dumps(seen)), TRANSCRIPT_PAGE_BYTES)
+            while page["next_after_seq"] is not None:
+                response = bridge.call_host(
+                    "get_transcript", {"after_seq": page["next_after_seq"]}
+                )
+                self.assertTrue(response["ok"], response)
+                page = response["result"]
+                seen += page["messages"]
+                pages += 1
+                self.assertLessEqual(
+                    len(json.dumps(page["messages"])), TRANSCRIPT_PAGE_BYTES
+                )
+            self.assertEqual(len(seen), 41)
+            self.assertGreater(pages, 10)
+            self.assertEqual([m["seq"] for m in seen], sorted({m["seq"] for m in seen}))
+            # A response far over a request's 256 KiB limit still arrives whole.
+            with mock.patch("tesserae.referee.store.TRANSCRIPT_PAGE_BYTES", 10**9):
+                response = bridge.call_host("get_transcript", {"after_seq": 0})
+            self.assertGreater(len(json.dumps(response)), 400_000)
+            self.assertEqual(len(response["result"]["messages"]), 41)
 
     def test_a_runner_job_reaches_the_game_only_through_the_bridge(self):
         job, token = self.start_job(text="I'd like to sign up Wren")
