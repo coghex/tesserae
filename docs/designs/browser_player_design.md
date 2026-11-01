@@ -4,10 +4,12 @@ Status: delivery plan, filed as tracker
 [#82](https://github.com/coghex/tesserae/issues/82) with children #83 to #88
 (WEB-1 to WEB-6, in the table below). The owner accepted localhost-only browser
 delivery, console first, and the navigation layout below on 2026-11-01. The
-exact contracts are in the [browser contract](browser_contract.md) (WEB-1);
-so far `serve --browser` serves the page shell (WEB-2, #84), and players cannot
-join from it yet. Baseline: M1-6 completed through PR #80
-at `b4384f2`. This is the first delivery tracker in
+exact contracts are in the [browser contract](browser_contract.md) (WEB-1).
+WEB-2 to WEB-5 (#84 to #87) delivered the page: serving and the shell, joining
+and conversation, state and questions, and recovery. WEB-6 (#88) adds the
+[browser runbook](../browser-runbook.md) and the
+[acceptance record](../acceptance/browser.md). Baseline: M1-6 completed
+through PR #80 at `b4384f2`. This is the first delivery tracker in
 [Milestone 2](../milestone-2.md).
 
 ## Outcome

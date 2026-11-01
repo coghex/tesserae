@@ -10,7 +10,9 @@ snapshot's `participant_name` (section 11) in `tesserae/web/session.js` and
 `app.js` (#85); the state panel, pending question and last input (sections 8
 and 10, and 7's revision-driven sync) in `views.js` and `app.js` (#86); and
 closed connections, Reconnect, unconfirmed inputs, Resend exactly and the
-refresh notice (sections 7 and 9) in `app.js` (#87). It turns the
+refresh notice (sections 7 and 9) in `app.js` (#87). WEB-6 (#88) published the
+[browser runbook](../browser-runbook.md) and the
+[acceptance record](../acceptance/browser.md). It turns the
 [M2-1 delivery plan](browser_player_design.md) into exact contracts for WEB-2
 to WEB-6 ([#84](https://github.com/coghex/tesserae/issues/84) to
 [#88](https://github.com/coghex/tesserae/issues/88)). The wire messages are the

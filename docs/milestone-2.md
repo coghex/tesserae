@@ -1,8 +1,12 @@
 # Milestone 2: browser player interface
 
-Status: in progress. Milestone 1 is complete through PR #80. So far the host
-serves the browser page shell (`serve --browser`, #84); joining and play
-from the browser come next. The first agreed browser tracker is M2-1
+Status: in progress. Milestone 1 is complete through PR #80. M2-1's page is
+delivered: `serve --browser` serves Console and Settings, and players at the
+host computer join, talk to the referee, see their state and recover from
+dropped connections and refreshes (#84 to #87). The
+[browser runbook](browser-runbook.md) explains it and the
+[acceptance record](acceptance/browser.md) shows both scenes played in the
+browser. Later browser work below is not yet selected. The first agreed browser tracker is M2-1
 ([#82](https://github.com/coghex/tesserae/issues/82)), the
 [localhost Console/Settings client](designs/browser_player_design.md), with
 its exact contracts in the [browser contract](designs/browser_contract.md).
