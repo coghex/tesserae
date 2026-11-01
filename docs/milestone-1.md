@@ -1,8 +1,15 @@
 # Milestone 1: one reliable playable loop
 
-Status: in progress. Milestone 1 targets the server and streaming CLI. At the
-owner's direction, the browser is deferred beyond this milestone; its notes are
-saved separately. Individual slice details remain proposals where noted.
+Status: complete through M1-6 / PR #80. Milestone 1 targets the server and
+streaming CLI. At the owner's direction, the browser is deferred beyond this
+milestone; its notes are saved separately. Individual slice details remain
+proposals where noted.
+
+The next agreed slice is the
+[localhost browser console](designs/browser_player_design.md), under
+[Milestone 2](milestone-2.md), with Console and Settings in a collapsible left
+navigation. Its design is a draft; browser implementation is not part of this
+completed milestone.
 
 ## Outcome
 

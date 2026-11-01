@@ -1,8 +1,11 @@
 # Browser client notes for a later milestone
 
-Status: deferred beyond Milestone 1 by the owner's instruction. These notes
-preserve the browser discussion and prior slice goals; they are not current
-implementation requirements for tracker #25 or Milestone 1.
+Status: Milestone 1 is complete. The owner selected localhost-only browser
+delivery, console first, on 2026-11-01. The current
+[browser console design](designs/browser_player_design.md) adds a collapsible
+left navigation with Console (the default screen) and Settings. These notes
+preserve the earlier browser discussion; LAN trust and interactive maps remain
+later work, and do not expand tracker #25 or the completed Milestone 1.
 
 ## Joining and identity
 
@@ -17,9 +20,10 @@ The [File API](https://developer.mozilla.org/en-US/docs/Web/API/File_API/Using_f
 allows reading a user-selected file; the page cannot silently read a token from
 an arbitrary filesystem path. The
 [first-message authentication pattern](https://websockets.readthedocs.io/en/stable/topics/authentication.html#first-message)
-fits the existing join protocol. Token persistence or a later remembered session
-is a separate future product decision; do not assume localStorage or a cloud
-account system.
+fits the existing join protocol. For the initial M2-1 slice, the owner selected
+memory-only tokens: select/paste again after a refresh. Remembered login,
+potentially via server-managed cookies, remains later design work; do not
+assume localStorage or a cloud account system.
 
 ## Certificate trust is separate
 
@@ -43,7 +47,8 @@ trust experience remain open for that later milestone.
 ## Retained browser-slice goals
 
 - Show the original demo's map/token, character summary and action result.
-- Submit the same server commands already exercised by the CLI.
+- Submit player intent through the existing referee path. The M1-6 authority
+  contract supersedes the earlier raw-command browser proposal.
 - Construct deliberate player views; do not ship referee secrets hidden by CSS.
 - Refresh/reopen and recover authoritative state without duplicate actions.
 - Keep private state directories out of general static file serving.

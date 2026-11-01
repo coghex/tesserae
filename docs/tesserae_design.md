@@ -39,8 +39,9 @@ combat, inventory, or turn model.
   authenticated localhost sessions and the streaming client are now implemented,
   with 77 tests at tracker #12's acceptance. A small catalog of bundled modules
   is in place for M1-4. External module loading and bounded private validation
-  completed in M1-5 through PR #62. Browser and model integration remain later
-  work; the next slice is the resumable Codex referee described below.
+  completed in M1-5 through PR #62. M1-6's resumable Codex referee and both
+  demonstrations completed through PR #80. The next agreed slice is the
+  [localhost browser console](designs/browser_player_design.md).
 
 ## Agreed direction
 
@@ -275,6 +276,18 @@ The
 [M1-6 delivery plan](designs/codex_referee_design.md) records tracker
 [#63](https://github.com/coghex/tesserae/issues/63), its filed children and the
 engineering contracts the first child specifies before implementation.
+
+### D-23. Localhost browser console and two-screen navigation
+
+With M1-6 complete, the owner selected localhost-only browser delivery and
+console first on 2026-11-01. The page has a collapsible left column with
+exactly two navigation items for Milestone 2: Console and Settings. Console
+is selected and open by default. Browser LAN access and interactive maps
+follow this first browser tracker. The owner also selected memory-only browser
+tokens initially; remembered login is a later design. The
+[browser delivery draft](designs/browser_player_design.md) records the proposed
+children and remaining engineering boundaries, under
+[Milestone 2](milestone-2.md); it implements no runtime.
 
 ## Proposed implementation boundaries
 
