@@ -149,6 +149,10 @@ class GameHost:
         self._host_run = "h-" + secrets.token_hex(6)
         self._jobs: set[asyncio.Task] = set()
         self._outbox = None  # ordered unsolicited deliveries, while running
+        # Held across each referee transition (accepting an input, settling a
+        # job) and the outbox items it queues, so the outbox order is the
+        # store's order.
+        self._lifecycle = None
         self._executor = ThreadPoolExecutor(
             WORKER_THREADS, thread_name_prefix="tesserae-store"
         )
@@ -156,6 +160,7 @@ class GameHost:
     async def run(self, port: int, stop: asyncio.Future, on_ready=None):
         """Serve until `stop` completes, then close connections and the store."""
         self._outbox = asyncio.Queue()
+        self._lifecycle = asyncio.Lock()
         deliveries = asyncio.create_task(self._deliver_outbox())
         try:
             async with serve(self._handle, self.host, port, ssl=self._ssl) as server:
@@ -369,40 +374,44 @@ class GameHost:
         return reply
 
     async def _say(self, session: "_Session", request: SayRequest) -> dict:
-        """Accept, replay or refuse one input; send its reply, then (through
-        the outbox) the player's message to its audience and `busy`."""
-        try:
-            outcome = await self._call(
-                _submit, session.context, request, self._host_run
-            )
-        except Exception:
-            reply = self._failure(request.request_id)
-            await session.send(reply)
-            return reply
-        kind = outcome[0]
-        if kind == "busy":
-            reply = busy_message(request.request_id, outcome[2], outcome[1])
-        elif kind == "error":
-            code, text = outcome[1], outcome[2]
-            if code == "session_revoked":
-                reply = session_error(code)
-            else:
-                reply = error_message(code, text, request_id=request.request_id)
-        else:
-            submission, said, names = outcome[1:]
-            reply = accepted_message(
-                request.request_id, submission.job.job_id, said["seq"]
-            )
-        await session.send(reply)
-        if kind == "accepted":
-            self._outbox.put_nowait(("conversation", ([said], names)))
-            self._outbox.put_nowait(("state", referee_state_message("busy")))
-            job = asyncio.create_task(self._run_job(submission.job))
-            self._jobs.add(job)
-            job.add_done_callback(self._jobs.discard)
-        elif kind == "replayed":  # its recorded reply, to this connection only
-            for stored in submission.messages:
-                await session.send(_wire(stored, names))
+        """Accept, replay or refuse one input and send its reply; an accepted
+        input's job is running, and its message and `busy` queued, before
+        that reply is sent, so a failed send never strands the job. Holding
+        the sender's send lock throughout keeps the reply ahead of them."""
+        replay = []
+
+        async def decide() -> dict:
+            async with self._lifecycle:
+                try:
+                    outcome = await self._call(
+                        _submit, session.context, request, self._host_run
+                    )
+                except Exception:
+                    return self._failure(request.request_id)
+                kind = outcome[0]
+                if kind == "busy":
+                    return busy_message(request.request_id, outcome[2], outcome[1])
+                if kind == "error":
+                    code, text = outcome[1], outcome[2]
+                    if code == "session_revoked":
+                        return session_error(code)
+                    return error_message(code, text, request_id=request.request_id)
+                submission, said, names = outcome[1:]
+                if kind == "accepted":
+                    self._outbox.put_nowait(("conversation", ([said], names)))
+                    self._outbox.put_nowait(("state", referee_state_message("busy")))
+                    job = asyncio.create_task(self._run_job(submission.job))
+                    self._jobs.add(job)
+                    job.add_done_callback(self._jobs.discard)
+                else:  # replayed: its recorded reply, to this connection only
+                    replay.extend(_wire(m, names) for m in submission.messages)
+                return accepted_message(
+                    request.request_id, submission.job.job_id, said["seq"]
+                )
+
+        reply = await session.send_read(decide)
+        for message in replay:
+            await session.send(message)
         return reply
 
     async def _run_job(self, job):
@@ -417,14 +426,17 @@ class GameHost:
         except Exception:
             logger.exception("A referee job failed")
             state, error = "failed", "runner_failed"
-        try:
-            stored, names = await self._call(_settle, job.job_id, reply, state, error)
-        except Exception:
-            logger.exception("Could not record how a referee job ended")
-            stored, names = (), {}
-        if stored:
-            self._outbox.put_nowait(("conversation", (list(stored), names)))
-        self._outbox.put_nowait(("state", referee_state_message("idle")))
+        async with self._lifecycle:  # no new job is accepted until this is queued
+            try:
+                stored, names = await self._call(
+                    _settle, job.job_id, reply, state, error
+                )
+            except Exception:
+                logger.exception("Could not record how a referee job ended")
+                stored, names = (), {}
+            if stored:
+                self._outbox.put_nowait(("conversation", (list(stored), names)))
+            self._outbox.put_nowait(("state", referee_state_message("idle")))
 
     async def _referee_read(self, context: ParticipantContext, request) -> dict:
         """`referee_status` or `messages`, for the caller only."""

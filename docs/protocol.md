@@ -475,7 +475,11 @@ Unsolicited, in order: `{"type": "message", "seq", "from": {"kind": "referee"}
 or {"kind": "player", "name"}, "audience": "table" or "private", "text"}` to
 each recipient (each session is rechecked first; a revoked one is closed and
 gets nothing), and `{"type": "referee", "state": "busy" or "idle"}` to everyone
-when a job starts or ends. Join and sync snapshots carry the caller's
+when a job starts or ends. These follow the store's order: a job's reply
+and `idle` are queued before the next input is accepted, so they never arrive
+after the next job's message or `busy`. The sender gets its `accepted` before
+its own message; an accepted job runs even if that reply cannot be delivered.
+Join and sync snapshots carry the caller's
 `referee` object, the same as `referee_status`; only the caller's own pending
 choice is in it.
 
@@ -506,7 +510,8 @@ sends text that starts with `/`. It prints readable lines:
 
 On joining it asks for `referee_status`, so it shows the player's last input
 and its state (`[your last input] "Yes, go." completed`). `/retry` resends the
-client's last input that was not refused, or else that reported input, with
+client's input still waiting for its reply, else its last accepted input (a
+later input refused as busy does not replace it), else that reported input, with
 its original request ID: the host returns its recorded state and reply, never
 a second job. `connect --json` prints JSON lines instead, for scripts and
 tests; input is still plain text. Games without a referee are unchanged.

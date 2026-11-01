@@ -71,7 +71,8 @@ class _Client:
     ):
         self.json_output = json_output
         self.referee = False  # set from the join snapshot
-        self.last_say = None  # this client's last input not refused, for /retry
+        self.sending = {}  # request ID to input, for says not yet answered
+        self.last_say = None  # this client's last accepted input, for /retry
         self.reported_input = None  # `your_last_input` from the host, for /retry
         self.ssl_context = ssl_context
         self.uri = uri
@@ -261,6 +262,8 @@ class _Client:
             return json.dumps({"version": 1, "type": "messages", "after_seq": 0})
         if command == "retry":
             target = self.last_say or self.reported_input
+            if self.sending:  # one still unanswered is the one to retry
+                target = list(self.sending.values())[-1]
             if target is None:
                 return self._note("[retry] There is no input to retry.")
             return self._say(target["text"], target["private"], target["request_id"])
@@ -271,7 +274,7 @@ class _Client:
     def _say(self, text: str, private: bool, request_id: str | None = None) -> str:
         said = {"request_id": request_id or "c-" + secrets.token_hex(6), "text": text,
                 "private": private}  # fmt: skip
-        self.last_say = said
+        self.sending[said["request_id"]] = said
         return json.dumps({"version": 1, "type": "say", **said})
 
     def _remember(self, message: dict, sent: str):
@@ -279,12 +282,12 @@ class _Client:
         line = json.loads(sent)
         if message.get("type") == "referee_status":
             self.reported_input = message.get("your_last_input")
-        elif line.get("type") == "say" and message.get("type") == "error":
-            if (
-                self.last_say is not None
-                and self.last_say["request_id"] == line["request_id"]
-            ):
-                self.last_say = None  # a refused input is typed again, never retried
+        elif line.get("type") == "say":
+            said = self.sending.pop(line["request_id"], None)
+            if said is not None and message.get("type") == "accepted":
+                self.last_say = said
+            # A refused input (busy or error) is typed again, never retried,
+            # and the last accepted input stays the one /retry resends.
 
     def _note(self, text: str) -> None:
         """A line from the client itself; stderr when stdout is JSON."""

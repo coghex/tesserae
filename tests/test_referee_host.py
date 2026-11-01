@@ -11,10 +11,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
+from tesserae import server
 from tesserae.credentials import new_token, write_token_file
 from tesserae.referee.store import RefereeStore
 from tesserae.server import GameHost, HostConfigError, RefereeJobFailed
@@ -279,6 +281,58 @@ class BusyAndRetryTests(HostCase):
         await self.job()
         self.assertEqual(len(self.jobs()), 2)
         self.script.put_nowait(reply(("table", "Your turn.")))
+
+    async def test_a_sender_gone_before_its_acknowledgement_strands_nothing(self):
+        await self.start_host()
+        alice, _ = await self.joined("alice")
+        bob, _ = await self.joined("bob")
+        send = server._Session._send
+
+        async def lose_acceptance(session, message):
+            if message["type"] == "accepted":
+                raise ConnectionClosed(None, None)
+            await send(session, message)
+
+        with mock.patch.object(server._Session, "_send", lose_acceptance):
+            await alice.send(say("a-1", "Hello?"))
+            await self.job()  # it runs although Alice never heard it was accepted
+        self.script.put_nowait(reply(("table", "Hello, all.")))
+        await self.until(bob, "message", text="Hello, all.")
+        await self.until(bob, "referee", state="idle")
+        await bob.send(say("b-1", "My turn"))
+        self.assertEqual((await self.reply_on(bob))["type"], "accepted")
+        await self.job()
+        self.script.put_nowait(reply(("table", "Yes.")))
+
+    async def test_a_job_ending_and_the_next_input_are_delivered_in_order(self):
+        await self.start_host()
+        alice, _ = await self.joined("alice")
+        bob, _ = await self.joined("bob")
+        await alice.send(say("a-1", "First"))
+        await self.job()
+        settle, settled, release = server._settle, threading.Event(), threading.Event()
+
+        def slow_settle(*args):
+            result = settle(*args)  # committed: the store is idle again
+            settled.set()
+            release.wait(TIMEOUT)
+            return result
+
+        with mock.patch.object(server, "_settle", slow_settle):
+            self.script.put_nowait(reply(("table", "One.")))
+            self.assertTrue(await asyncio.to_thread(settled.wait, TIMEOUT))
+            await bob.send(say("b-1", "Second"))
+            await asyncio.sleep(0.3)  # Bob's input reaches the host meanwhile
+            release.set()
+            await self.until(bob, "accepted")
+        await self.job()
+        seen = []
+        while len(seen) < 6:
+            message = await self.next(alice)
+            if message["type"] in ("message", "referee"):  # not her own reply
+                seen.append(message.get("seq", message.get("state")))
+        self.assertEqual(seen, [1, "busy", 2, "idle", 3, "busy"])
+        self.script.put_nowait(reply(("table", "Two.")))
 
     async def test_direct_commands_are_refused_idle_or_busy(self):
         await self.start_host()
@@ -547,6 +601,22 @@ class ClientTests(RefereeGame):
         )
         self.assertEqual(alice.finish(), 0)
         self.assertEqual(self.jobs(), [("completed", None)])  # one job, never a second
+
+    def test_retry_keeps_the_accepted_input_after_a_busy_refusal(self):
+        alice = self.client("alice")
+        alice.until("[status]")
+        alice.type("hold")
+        alice.until("[busy]")
+        alice.type("Me again")
+        self.assertTrue(
+            alice.line().startswith("[busy] The referee is still answering")
+        )
+        self.host.release.set()
+        alice.until("[idle]")
+        alice.type("/retry")  # still "hold", replayed, never a second job
+        self.assertEqual(alice.line(), "[table] Referee: Heard: hold")
+        self.assertEqual(alice.finish(), 0)
+        self.assertEqual(self.jobs(), [("completed", None)])
 
     def test_json_output_for_scripts(self):
         alice = self.client("alice", "--json")
