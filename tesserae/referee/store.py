@@ -256,6 +256,16 @@ class RefereeStore:
     def job(self, job_id: str) -> Job:
         return self._job(self.store, job_id)
 
+    def previous_job(self, job_id: str) -> Job | None:
+        """The job accepted just before this one, if any."""
+        rows = self._rows(
+            self.store,
+            self._JOB_SELECT + "WHERE i.id < (SELECT input_id FROM referee_jobs "
+            "WHERE job_id = ?) ORDER BY i.id DESC LIMIT 1",
+            (job_id,),
+        )
+        return _job_from(rows[0]) if rows else None
+
     def finish(self, job_id: str, state: str, error: str | None = None) -> Job:
         """End a running job without a published reply: `failed` or
         `interrupted` (contract section 10). Its committed steps stay listed

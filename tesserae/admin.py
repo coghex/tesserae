@@ -57,9 +57,19 @@ def _runtime(module_id: str, module_dir):
 
 
 def run_referee(args) -> int:
-    """`tesserae referee enable|setup|check`."""
+    """`tesserae referee enable|stop|rebuild|setup|check`."""
     if args.action in ("setup", "check"):
         return _referee_folder(args)
+    if args.action in ("stop", "rebuild"):
+        from .referee.runner import RunnerError
+        from .referee.store import RefereeError
+
+        try:
+            print(_REFEREE_GAME_ACTIONS[args.action](args))
+        except (RunnerError, RefereeError, StoreError, sqlite3.Error, OSError) as error:
+            print(f"tesserae referee {args.action}: {error}", file=sys.stderr)
+            return 1
+        return 0
     from .referee.store import RefereeStore
 
     try:
@@ -70,6 +80,78 @@ def run_referee(args) -> int:
         return 1
     print(f"Referee mode is on for {args.database}.")
     return 0
+
+
+def _referee_game(args):
+    """The referee folder and this game's ID."""
+    from .referee import runner
+
+    root = args.referee_dir and Path(args.referee_dir).expanduser()
+    with _existing(args.database) as store:
+        game_id = store.game_id
+    return runner.RefereeDir(root or runner.DEFAULT_DIR), game_id
+
+
+def _ask_host(folder, game_id: str):
+    """The running host's answer to a stop request, or None with no host."""
+    import json
+    import socket
+
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(10)
+            connection.connect(str(folder.control_path(game_id)))
+            connection.sendall(b'{"stop": true}\n')
+            with connection.makefile("rb") as stream:
+                return json.loads(stream.readline())
+    except (FileNotFoundError, ConnectionRefusedError):
+        return None
+
+
+def _referee_stop(args) -> str:
+    from .referee import runner
+
+    folder, game_id = _referee_game(args)
+    lock_path = folder.lock_path(game_id)
+    if args.clear_stuck:
+        return runner.clear_stuck(lock_path)
+    answer = _ask_host(folder, game_id)
+    if answer is None:  # no host: only a leftover Codex that is provably the job's
+        return runner.stop_orphan(lock_path)
+    if not answer.get("ok"):
+        raise runner.RunnerError(answer["error"]["message"])
+    if answer["result"]["stopping"]:
+        return "Asked the host to stop the running job; it ends interrupted."
+    return "The host has no referee job running."
+
+
+def _referee_rebuild(args) -> str:
+    from .referee import runner
+    from .referee.store import RefereeStore
+
+    folder, game_id = _referee_game(args)
+    if folder.control_path(game_id).exists() and _ask_alive(folder, game_id):
+        raise runner.RunnerError("The game's host is running; stop it first.")
+    with runner.JobLock(folder.lock_path(game_id)), _existing(args.database) as store:
+        RefereeStore(store).rebuild()
+    return (
+        "Ended the game's referee session. The next job starts a new one from the "
+        "stored conversation and rulings; the game itself is unchanged."
+    )
+
+
+def _ask_alive(folder, game_id: str) -> bool:
+    import socket
+
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.connect(str(folder.control_path(game_id)))
+        return True
+    except (FileNotFoundError, ConnectionRefusedError):
+        return False
+
+
+_REFEREE_GAME_ACTIONS = {"stop": _referee_stop, "rebuild": _referee_rebuild}
 
 
 def _referee_folder(args) -> int:

@@ -85,6 +85,17 @@ def main(argv: list[str] | None = None) -> int:
         help="The trusted module package this game was created with (see "
         "docs/modules.md). Its code runs as you. The game must already exist.",
     )
+    serve.add_argument(
+        "--referee-dir",
+        help="For a game in referee mode: the referee folder made by "
+        "'tesserae referee setup' (default ~/.local/share/tesserae/referee).",
+    )
+    serve.add_argument(
+        "--referee-timeout",
+        type=float,
+        default=300.0,
+        help="Seconds one referee job may run before it is stopped (default 300).",
+    )
     connect = commands.add_parser(
         "connect",
         help="Join an authenticated host and stream JSON lines over stdin/stdout.",
@@ -194,6 +205,26 @@ def main(argv: list[str] | None = None) -> int:
         "enable", help="Turn referee mode on for a game. It stays on."
     )
     enable.add_argument("--database", required=True, help="The game's SQLite store.")
+    stop = referee_actions.add_parser(
+        "stop",
+        help="Stop the game's running referee job: through its host if one is "
+        "running, otherwise only a leftover Codex that is provably the job's.",
+    )
+    stop.add_argument(
+        "--clear-stuck",
+        action="store_true",
+        help="Instead, clear a stuck record after checking its process group by "
+        "hand. Signals nothing.",
+    )
+    rebuild = referee_actions.add_parser(
+        "rebuild",
+        help="With the host stopped: end the game's Codex session, so the next "
+        "job starts a new one from the stored conversation.",
+    )
+    for game_action in (stop, rebuild):
+        game_action.add_argument(
+            "--database", required=True, help="The game's SQLite store."
+        )
     for name, text in (
         ("setup", "Create the referee folder and its Codex config; then log in once."),
         (
@@ -201,11 +232,13 @@ def main(argv: list[str] | None = None) -> int:
             "Report the Codex version, the login and whether the config is current.",
         ),
     ):
-        folder_action = referee_actions.add_parser(name, help=text)
-        folder_action.add_argument(
-            "--referee-dir",
-            help="The referee folder (default ~/.local/share/tesserae/referee).",
-        )
+        referee_actions.add_parser(name, help=text)
+    for folder_action in referee_actions.choices.values():
+        if folder_action is not enable:
+            folder_action.add_argument(
+                "--referee-dir",
+                help="The referee folder (default ~/.local/share/tesserae/referee).",
+            )
     args = parser.parse_args(argv)
     if args.command == "connect":
         from .client import run
@@ -241,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
             tls_cert=args.tls_cert,
             tls_key=args.tls_key,
             module_dir=args.module_dir,
+            referee_dir=args.referee_dir,
+            referee_timeout=args.referee_timeout,
         )
     try:
         result = roll_expression(args.expression)

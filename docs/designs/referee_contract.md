@@ -10,8 +10,9 @@ Codex runner (sections 2 to 4) in `tesserae/referee/runner.py` (#66), with
 (section 9) in `tesserae/referee/tools.py` and `bridge.py` (#67), with Relay's
 hooks; and the host's referee mode and the CLI (sections 7, 8 and 12) in
 `tesserae/server.py` and `client.py` (#68), with a pluggable executor for each
-accepted job. The Codex executor, integrated host wiring and recovery (#69),
-and `referee stop`/`rebuild` are not. It turns the
+accepted job; and the loop (#69): the Codex referee the host runs for each
+job, startup recovery, `serve --referee-dir`, `referee stop` and `rebuild`, in
+`tesserae/referee/orchestrator.py`. It turns the
 [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
 records how the CLI shows conversation (owner decision O-1).
@@ -167,7 +168,7 @@ kernel releases only when every holder has exited:
 - **At host startup**, for a job still marked `running`, the host tries the lock
   without blocking:
   - Acquired: nothing from that job is alive. The job becomes `interrupted`
-    (section 10) and its steps are reconciled (section 6).
+    (`host_stopped`, section 10) and its steps are reconciled (section 6).
   - Not acquired: the old Codex is still running. The game stays busy, players
     get `referee_busy`, and the host retries the lock every 5 s. When it gets
     it, it finishes the job the same way.
@@ -177,9 +178,11 @@ kernel releases only when every holder has exited:
   can change nothing more and soon stops.
 - **`tesserae referee stop --database DB`** (operator) stops a job's Codex:
   - **With the host running** (the usual case), it asks the host over its local
-    socket, and the host stops the process group of the child it supervises
-    (its own `Popen` object): SIGTERM, then SIGKILL after 10 s. The host knows
-    its child; no recorded number is trusted.
+    control socket (`run/<game_id>.ctl`, mode 0600, one line `{"stop": true}`),
+    and the host stops the process group of the child it supervises (its own
+    `Popen` object): SIGTERM, then SIGKILL after 10 s. The host knows its
+    child; no recorded number is trusted. The job ends `interrupted`
+    (`operator`).
   - **With no host running** (an orphan after a crash), it reads the record and
     signals only if *all* of these hold: the lock is still held, the record is
     `running`, a process `pid` exists, it leads process group `pgid`, its
@@ -191,9 +194,10 @@ kernel releases only when every holder has exited:
     has that group ID now cannot be verified as the job's. It says which group
     to check by hand (`ps -A -o pid,pgid,lstart,command`). The record clears
     itself once the group is gone; if the group turns out to be unrelated, the
-    operator clears it (`clear_stuck`, `tesserae referee stop --clear-stuck`
-    with #69), which also signals nothing and refuses while the lock itself is
-    still held.
+    operator clears it (`tesserae referee stop --clear-stuck`), which also
+    signals nothing and refuses while the lock itself is still held. Meanwhile
+    the game stays busy: a new input is accepted, and its job waits for the
+    lock (it is still `running`, so later input is `referee_busy`).
   - Stop during startup (record `starting`) refuses: there is no process to
     identify yet; retry in a moment. Stop after the process exited (record
     `ended`, or the lock is free) reports that nothing is running.
@@ -220,11 +224,13 @@ New input (job j-7) from Alice (p_…), to the table:
 Call get_context before anything else. Game revision now: 2.
 ```
 
-A private input says "privately to you" instead of "to the table". The first job
-of a session adds "This is the start of the game's referee conversation. Read
-every page of the transcript with get_transcript before replying."; a
-job after an interruption adds "The previous job was interrupted; get_context
-lists what it committed. Do not repeat those steps."
+The player's words are one JSON string, so quotes and line breaks in them stay
+inside it. A private input says "privately to you" instead of "to the table".
+The first job of a session adds "This is the start of the game's referee
+conversation. Read every page of the transcript with get_transcript before
+replying."; a job after one that ended without a reply adds "The previous job
+ended without a reply (interrupted); get_context lists what it committed. Do
+not repeat those steps." (or `failed`).
 
 ## 5. Store
 
@@ -472,6 +478,21 @@ must be complete; the referee is told to read every page on a new session.
 
 ## 8. Referee mode on the host
 
+- `tesserae serve --authenticated` serves a referee game with the referee
+  folder (`--referee-dir`, default `~/.local/share/tesserae/referee`; one job
+  may run `--referee-timeout` seconds, default 300). It refuses to start
+  without `--authenticated` or a folder set up by `tesserae referee setup`.
+  While serving it holds the bridge socket and the control socket (section 4),
+  finishes any job an earlier host run left `running` (section 4), and tells
+  every player of each revision the referee commits.
+- One host per game: before opening either socket, the host takes an
+  exclusive lock on `run/<game_id>.host` for as long as it serves. A second
+  host for the same game exits ("another host is already serving") without
+  touching the first host's sockets.
+- On shutdown the host first stops accepting input (a `say` then gets
+  `internal_error`, nothing stored), lets an acceptance already under way
+  finish scheduling its job, then stops every job of its run and waits for
+  each, and finally marks any job of its run still `running` `interrupted`.
 - Every gameplay `command` from a player is refused with `referee_mode`. Joins,
   `sync`, `referee_status`, `messages` and the operator's local commands work.
 - The referee's `act` and `referee_act` are the only gameplay writers, through
@@ -516,7 +537,8 @@ must be complete; the referee is told to read every page on a new session.
 | Bridge call with a stale token | the host | refused; nothing runs |
 
 - **Rebuild.** `tesserae referee rebuild --database DB` (host stopped, lock
-  free) ends the current session in `referee_sessions` and clears `session_id`.
+  free; it refuses while the host's control socket answers or the lock is
+  held) ends the current session in `referee_sessions` and clears `session_id`.
   The next job starts a new session; `get_context` and `get_transcript` supply
   the complete stored conversation and rulings. No game state changes.
 - **Retries.** A player resending an input exactly gets its recorded state
@@ -629,6 +651,22 @@ section 3 settings and a one-tool stub bridge:
 
 The probes say nothing about crash recovery, the step journal or client
 reconnects; those are specified above and tested by REF-2 to REF-5.
+
+REF-6's real walkthrough (2026-10-31, `codex-cli 0.166.0`, through
+`tesserae serve --authenticated` and two `tesserae connect` clients, with the
+referee folder set up and logged in) ran section 11's Relay conversation:
+ten jobs, all `completed`, in one Codex session. "What is this place?"
+changed no revision; Wren and Odo were enlisted by `act` as their own senders
+(revisions 1 and 2); Bob's private question was answered to Bob only; "Can
+Wren fix the relay?" stated 1d6 plus repair 1 against 5 at 1 effort and set
+Alice's choice, which only her `/status` showed and which Bob's question left
+unchanged; "Yes, go." ran `relay.repair` and narrated the recorded roll (6 + 1
+= 7 against 5, success, effort 3 to 2), resolving the choice. Bob's input
+during that job was refused as busy; his `/retry` replayed his earlier reply
+with no job; his refused words, sent again, were a fresh job. Alice's client
+left right after an input was accepted, and a new client's `/retry` returned
+its recorded reply with no second job. After a host restart, the next job
+resumed the same session and summarized the game.
 
 REF-3's real probe (2026-10-31, `codex-cli 0.166.0`, through `CodexRun` with
 the referee folder set up by `tesserae referee setup` and logged in): a first

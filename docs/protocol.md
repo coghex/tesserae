@@ -463,7 +463,18 @@ A game with a referee (`tesserae referee enable`) is played by talking: the
 host refuses every gameplay `command` from a player (`referee_mode`), idle or
 busy, and the referee runs the module's commands. It needs an authenticated
 host. The [referee contract](designs/referee_contract.md) (sections 7, 8 and
-12) is the full reference; in short:
+12) is the full reference.
+
+To run one: `tesserae referee setup` once, then log Codex in as it says;
+`tesserae referee enable --database DB`; then `tesserae serve --authenticated
+--database DB --port PORT` (with `--referee-dir` for another referee folder,
+and `--referee-timeout` to change the 300 s limit on one job). `tesserae
+referee stop --database DB` stops a running job, which ends `interrupted`. If
+input is refused with `referee_needs_rebuild` (Codex lost the session), stop
+the host and run `tesserae referee rebuild --database DB`; the next job
+starts a new session from the stored conversation.
+
+In short:
 
 | Client sends | Host replies |
 |---|---|

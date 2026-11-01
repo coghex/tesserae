@@ -49,6 +49,9 @@ from .protocol import (
     snapshot_message,
     welcome_message,
 )
+from .referee.orchestrator import CodexReferee, RefereeJobFailed
+from .referee.runner import DEFAULT_DIR as DEFAULT_REFEREE_DIR
+from .referee.runner import DEFAULT_TIMEOUT, RefereeDir, RunnerError
 from .referee.store import REFEREE, RefereeError, RefereeStore
 from .store import GameStore, ParticipantContext, StoreBusy, StoreError
 from .transport import TransportConfigError, check_server, server_context
@@ -72,16 +75,6 @@ class HostConfigError(ValueError):
     """The game cannot be served in the requested mode; nothing was started."""
 
 
-class RefereeJobFailed(Exception):
-    """Raised by a referee executor: the job ends `state` (`failed` or
-    `interrupted`) with `error`, and publishes nothing."""
-
-    def __init__(self, state: str, error: str):
-        super().__init__(error)
-        self.state = state
-        self.error = error
-
-
 class GameHost:
     """Serves one game store to any number of local connections.
 
@@ -102,6 +95,8 @@ class GameHost:
         write_timeout: float = WRITE_TIMEOUT_SECONDS,
         runtime=None,
         referee_executor=None,
+        referee_dir=None,
+        referee_timeout: float = DEFAULT_TIMEOUT,
     ):
         """`runtime`, if given, is an externally loaded module's runtime
         (tesserae.external). The game must then already exist and be bound to
@@ -109,7 +104,10 @@ class GameHost:
 
         A game in referee mode needs `referee_executor`: an async callable
         given each accepted Job, returning the reply to publish or raising
-        RefereeJobFailed. The host stores and delivers what it returns."""
+        RefereeJobFailed. The host stores and delivers what it returns.
+        Without one, `referee_dir` (a folder made by `tesserae referee setup`)
+        gives the game a CodexReferee (tesserae.referee.orchestrator), which
+        the host also opens, lets recover an earlier run's job, and closes."""
         self.database = Path(database).resolve()
         self.authenticated = authenticated
         self.host = host
@@ -141,13 +139,29 @@ class GameHost:
             raise HostConfigError(
                 "this game is in referee mode, which requires --authenticated"
             )
+        if self.referee_mode and referee_executor is None and referee_dir is not None:
+            folder = RefereeDir(Path(referee_dir).expanduser())
+            if not (folder.codex_home / "config.toml").is_file():
+                raise HostConfigError(
+                    f"this game is in referee mode, and {folder.root} is not a referee "
+                    "folder yet (run tesserae referee setup, then log Codex in)"
+                )
+            referee_executor = CodexReferee(
+                folder, self.game_id, timeout=referee_timeout
+            )
         if self.referee_mode and referee_executor is None:
             raise HostConfigError(
-                "this game is in referee mode, and this host has no referee runner yet"
+                "this game is in referee mode, and this host has no referee runner"
             )
         self._referee_executor = referee_executor
+        # The full referee (open, recover, close), as opposed to a bare
+        # executor such as a test's.
+        self._referee = (
+            referee_executor if isinstance(referee_executor, CodexReferee) else None
+        )
         self._host_run = "h-" + secrets.token_hex(6)
         self._jobs: set[asyncio.Task] = set()
+        self._closing = False  # shutting down: no new referee input is accepted
         self._outbox = None  # ordered unsolicited deliveries, while running
         # Held across each referee transition (accepting an input, settling a
         # job) and the outbox items it queues, so the outbox order is the
@@ -162,21 +176,68 @@ class GameHost:
         self._outbox = asyncio.Queue()
         self._lifecycle = asyncio.Lock()
         deliveries = asyncio.create_task(self._deliver_outbox())
+        recovery = None
         try:
+            if self._referee is not None:
+                loop = asyncio.get_running_loop()
+                self._referee.open(
+                    self._host_run,
+                    self._open,
+                    lambda revision: loop.call_soon_threadsafe(self._publish, revision),
+                )
+                recovery = asyncio.create_task(self._recover_referee())
             async with serve(self._handle, self.host, port, ssl=self._ssl) as server:
                 address, bound_port = server.sockets[0].getsockname()[:2]
                 scheme = "ws" if self._ssl is None else "wss"
                 if on_ready is not None:
                     on_ready(f"{scheme}://{address}:{bound_port}/")
                 await stop
-                # A running job ends `interrupted` before the store closes.
-                for job in list(self._jobs):
-                    job.cancel()
-                await asyncio.gather(*self._jobs, return_exceptions=True)
+                await self._end_jobs()
         finally:
             deliveries.cancel()
+            if recovery is not None:
+                recovery.cancel()
+                await asyncio.gather(recovery, return_exceptions=True)
+            if self._referee is not None:  # its sockets take a moment to close
+                await asyncio.get_running_loop().run_in_executor(
+                    None, self._referee.close
+                )
             # Finish in-flight store calls: each commits or rolls back whole.
             self._executor.shutdown(wait=True)
+
+    async def _end_jobs(self):
+        """Close admission, then end every job of this host run `interrupted`
+        before the store closes."""
+        self._closing = True
+        async with self._lifecycle:
+            pass  # an acceptance under way has scheduled its job by now
+        for job in list(self._jobs):
+            job.cancel()
+        await asyncio.gather(*self._jobs, return_exceptions=True)
+        if self.referee_mode:
+            try:  # a job cancelled before its task ever ran never ended itself
+                await self._call(_end_unfinished, self._host_run)
+            except Exception:
+                logger.exception("Could not end this host's referee job")
+
+    async def _recover_referee(self):
+        """Finish a job an earlier host run left `running` once nothing of it
+        is alive; until then the game stays busy (contract section 4)."""
+        loop = asyncio.get_running_loop()
+        while True:
+            async with self._lifecycle:
+                try:
+                    outcome = await loop.run_in_executor(
+                        self._executor, self._referee.recover
+                    )
+                except Exception:
+                    logger.exception("Could not recover an earlier referee job")
+                    outcome = "waiting"
+                if outcome == "finished":
+                    self._outbox.put_nowait(("state", referee_state_message("idle")))
+            if outcome != "waiting":
+                return
+            await asyncio.sleep(self._referee.lock_retry)
 
     async def _handle(self, connection: ServerConnection):
         try:
@@ -382,6 +443,13 @@ class GameHost:
 
         async def decide() -> dict:
             async with self._lifecycle:
+                if self._closing:
+                    return error_message(
+                        "internal_error",
+                        "The host is shutting down; nothing was stored. Say it again "
+                        "once it is back.",
+                        request_id=request.request_id,
+                    )
                 try:
                     outcome = await self._call(
                         _submit, session.context, request, self._host_run
@@ -573,6 +641,13 @@ def _submit(store: GameStore, context, request: SayRequest, host_run: str) -> tu
     return (submission.outcome, submission, said, _names(store))
 
 
+def _end_unfinished(store: GameStore, host_run: str):
+    referee = RefereeStore(store)
+    job = referee.running_job()
+    if job is not None and job.host_run == host_run:
+        referee.finish(job.job_id, "interrupted", "shutdown")
+
+
 def _settle(store: GameStore, job_id: str, reply, state, error) -> tuple:
     """Publish a job's reply, or record why it ended without one."""
     referee = RefereeStore(store)
@@ -705,6 +780,8 @@ def run_foreground(
     tls_cert=None,
     tls_key=None,
     module_dir=None,
+    referee_dir=None,
+    referee_timeout: float = DEFAULT_TIMEOUT,
 ) -> int:
     """The `tesserae serve` command: run until Ctrl-C, then exit cleanly.
 
@@ -737,6 +814,8 @@ def run_foreground(
             host=transport.host,
             ssl_context=context,
             runtime=runtime,
+            referee_dir=referee_dir or DEFAULT_REFEREE_DIR,
+            referee_timeout=referee_timeout,
         )
     except HostConfigError as error:
         return _fail(f"{error}; nothing was started", code=2)
@@ -768,6 +847,8 @@ def run_foreground(
 
     try:
         asyncio.run(main())
+    except RunnerError as error:
+        return _fail(str(error))
     except OSError as error:
         return _fail(
             f"cannot listen on {transport.host}:{port}: {error.strerror or error}"
