@@ -3,10 +3,11 @@
 import json
 import sqlite3
 import sys
+from dataclasses import asdict
 
 from .credentials import IssuedToken
 from .registry import HostRegistry, RegistryError
-from .store import StoreError
+from .store import GameStore, StoreError
 
 
 def add_parser(commands):
@@ -41,6 +42,9 @@ def add_parser(commands):
         "grant",
         "revoke",
         "members",
+        "link",
+        "unlink",
+        "links",
     ):
         parser = actions.add_parser(action)
         parser.add_argument("--registry", required=True)
@@ -49,8 +53,10 @@ def add_parser(commands):
             parser.add_argument("--name", required=True)
         elif action != "list":
             parser.add_argument("campaign_id")
-        if action in ("grant", "revoke"):
+        if action in ("grant", "revoke", "link", "unlink"):
             parser.add_argument("player_id")
+        if action == "link":
+            parser.add_argument("participant_id")
 
 
 def run(args):
@@ -99,6 +105,8 @@ def _campaign(registry, args):
         print(f"Registered campaign {campaign_id} (inactive).")
     elif action == "members":
         print(json.dumps(registry.members(args.campaign_id), indent=2))
+    elif action in ("link", "unlink", "links"):
+        _links(registry, args)
     elif action in ("activate", "deactivate"):
         registry.set_campaign_active(args.campaign_id, action == "activate")
         print(
@@ -107,8 +115,30 @@ def _campaign(registry, args):
     else:
         if action == "grant":
             registry.grant(args.campaign_id, args.player_id)
+            print(f"Granted campaign access for {args.player_id}.")
+        elif registry.revoke_access(args.campaign_id, args.player_id):
+            print(f"Revoked campaign access for {args.player_id}.")
         else:
-            registry.revoke_access(args.campaign_id, args.player_id)
-        print(
-            f"{'Granted' if action == 'grant' else 'Revoked'} campaign access for {args.player_id}."
-        )
+            print(f"{args.player_id} had no access to revoke.")
+
+
+def _links(registry, args):
+    """Host-player links in the campaign's own database (lobby contract
+    section 5). Opening it applies any schema upgrade; nothing else changes."""
+    record = registry.campaign(args.campaign_id)
+    with GameStore.open_existing(record["path"]) as store:
+        if store.game_id != args.campaign_id:
+            raise StoreError("The registered file now holds a different game.")
+        if args.host_action == "links":
+            print(json.dumps([asdict(link) for link in store.host_links()], indent=2))
+            return
+        if args.host_action == "link":
+            registry.require_player(args.player_id)
+            store.link_host_player(
+                registry.host_id, args.player_id, args.participant_id
+            )
+            print(f"Linked player {args.player_id} to {args.participant_id}.")
+        elif store.unlink_host_player(registry.host_id, args.player_id):
+            print(f"Unlinked player {args.player_id}; the participant stays.")
+        else:
+            print("That player had no link in this campaign.")

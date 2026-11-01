@@ -1,10 +1,11 @@
 # M2-2: host identity and campaign lobby
 
-Status: owner-approved direction (2026-11-01); delivery starts with the local
-registry foundation. Network lobby and client selection are not implemented
-by that foundation. M2-1 is complete through PR #94. Tracker:
-[#95](https://github.com/coghex/tesserae/issues/95); children #96–#100.
-[Operator guide and API limits](../host-registry.md).
+Status: owner-approved direction (2026-11-01). The local registry (HOST-1,
+#96) and the registry-backed lobby host (HOST-2, #97, exact rules in the
+[lobby contract](lobby_contract.md)) are implemented; CLI and browser
+selection (#98, #99) and the acceptance (#100) are not yet. M2-1 is complete
+through PR #94. Tracker: [#95](https://github.com/coghex/tesserae/issues/95);
+children #96–#100. [Operator guide and API limits](../host-registry.md).
 
 ## Player experience
 

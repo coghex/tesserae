@@ -52,7 +52,8 @@ every schema and version change commits, or the file stays exactly at its old
 version. Upgrading from version 1 adds the participant and credential
 tables. Upgrading to version 3 adds the module binding, binding the game to
 `dice` with state `{}`. Upgrading to version 4 adds the empty `seed` table, and
-to version 5 the empty referee tables. The game ID, revision, every command and its result,
+to version 5 the empty referee tables, and to version 6 the empty `host_links`
+table. The game ID, revision, every command and its result,
 participants, credentials, and the `local-development` attribution of
 earlier history are untouched. A store
 whose schema is newer than this Tesserae understands is refused unchanged, with
@@ -91,6 +92,14 @@ password, or role system.
   replacement, and a later rotation re-enables the participant. Both keep the
   participant ID, every recorded command, and the old credential rows, which
   are marked revoked with a timestamp.
+- **Host links.** A lobby host admits a host player as a participant with
+  `admit_host_player`, which finds or creates the player's participant and
+  its link in one transaction, without a credential. The context then names
+  its `link_id` instead of a `credential_id`, and every check that requires
+  an active credential requires that active link instead. Operators link an
+  existing participant with `link_host_player` and end a link with
+  `unlink_host_player`; see the
+  [lobby contract](designs/lobby_contract.md#5-admission-and-participant-links).
 - **Verification.** `authenticate(token)` returns the participant's context for
   an active token and `None` for anything else, without raising on bad input.
   `credential_active(context)` rechecks a context later. Development contexts

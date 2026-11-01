@@ -31,7 +31,7 @@ from .protocol import (
 )
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SEED_VERSION = 1  # the seed file format (tesserae/seed.py)
 DEFAULT_BUSY_TIMEOUT = 5.0
 PARTICIPANT_ID_PREFIX = "p_"
@@ -87,6 +87,12 @@ _COLUMNS[5] = {
     "referee_choices": ["participant_id", "question", "asked_in_job", "asked_at"],
     "referee_messages": ["seq", "job_id", "sender", "audience", "text", "created_at"],
     "referee_rulings": ["id", "job_id", "text", "scope", "created_at"],
+}  # fmt: skip
+_COLUMNS[6] = {
+    **_COLUMNS[5],
+    "host_links": [
+        "id", "host_id", "player_id", "participant_id", "linked_at", "unlinked_at",
+    ],
 }  # fmt: skip
 
 # Version 1 tables. A new store creates these, then applies every migration.
@@ -237,6 +243,22 @@ _MIGRATIONS = {
             created_at TEXT NOT NULL
         )""",
     ],
+    # Host players admitted to this game by a lobby host (HOST-2, #97); see
+    # docs/designs/lobby_contract.md section 5. Empty until one is.
+    6: [
+        """CREATE TABLE host_links (
+            id INTEGER PRIMARY KEY,
+            host_id TEXT NOT NULL,
+            player_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL REFERENCES participants (participant_id),
+            linked_at TEXT NOT NULL,
+            unlinked_at TEXT
+        )""",
+        """CREATE UNIQUE INDEX one_link_per_player ON host_links (host_id, player_id)
+            WHERE unlinked_at IS NULL""",
+        """CREATE UNIQUE INDEX one_link_per_participant ON host_links (participant_id)
+            WHERE unlinked_at IS NULL""",
+    ],
 }
 
 
@@ -258,20 +280,29 @@ class ParticipantContext:
     """Trusted, host-established identity; never taken from client input.
 
     An authenticated context also names the credential it was verified with,
-    so its current validity can be rechecked. Development contexts have none.
+    or for a lobby host's player the host link it was admitted with, so its
+    current validity can be rechecked. Development contexts have neither.
     """
 
     participant_id: str
     credential_id: int | None = None
+    link_id: int | None = None
 
     def __post_init__(self):
         if not isinstance(self.participant_id, str) or not self.participant_id:
             raise ValueError("participant_id must be a non-empty string.")
-        if self.credential_id is not None and (
-            not isinstance(self.credential_id, int)
-            or isinstance(self.credential_id, bool)
-        ):
-            raise ValueError("credential_id must be an integer or None.")
+        for name in ("credential_id", "link_id"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool)
+            ):
+                raise ValueError(f"{name} must be an integer or None.")
+        if self.credential_id is not None and self.link_id is not None:
+            raise ValueError("A context has a credential or a host link, not both.")
+
+    @property
+    def authenticated(self) -> bool:
+        return self.credential_id is not None or self.link_id is not None
 
 
 @dataclass(frozen=True)
@@ -283,6 +314,18 @@ class ParticipantRecord:
     created_at: str
     active: bool
     ever_issued: bool = True  # False until a first token, e.g. after a seed
+
+
+@dataclass(frozen=True)
+class HostLink:
+    """Operator view of one host player's link to a participant."""
+
+    link_id: int
+    host_id: str
+    player_id: str
+    participant_id: str
+    linked_at: str
+    unlinked_at: str | None
 
 
 @dataclass(frozen=True)
@@ -467,9 +510,7 @@ class GameStore:
         with self._write():
             if precondition is not None:
                 precondition()
-            if context.credential_id is not None and not self._credential_is_active(
-                context
-            ):
+            if context.authenticated and not self._authority_is_active(context):
                 return session_error("session_revoked"), False
             record = self._find(context.participant_id, request.request_id)
             current = self._current_revision()
@@ -528,13 +569,11 @@ class GameStore:
         so the check and the read see the same committed state.
         """
         _check_context(context)
-        if context.credential_id is None:
+        if not context.authenticated:
             return self._current_revision()
+        clause, parameters = _authority(context)
         row = self._connection.execute(
-            "SELECT revision FROM game WHERE EXISTS ("
-            "    SELECT 1 FROM credentials"
-            "    WHERE id = ? AND participant_id = ? AND revoked_at IS NULL)",
-            (context.credential_id, context.participant_id),
+            f"SELECT revision FROM game WHERE {clause}", parameters
         ).fetchone()
         return None if row is None else row[0]
 
@@ -551,12 +590,10 @@ class GameStore:
             " WHERE participant_id = ?) FROM game, module"
         )
         parameters = (context.participant_id,)
-        if context.credential_id is not None:
-            query += (
-                " WHERE EXISTS (SELECT 1 FROM credentials"
-                " WHERE id = ? AND participant_id = ? AND revoked_at IS NULL)"
-            )
-            parameters += (context.credential_id, context.participant_id)
+        if context.authenticated:
+            clause, authority = _authority(context)
+            query += f" WHERE {clause}"
+            parameters += authority
         row = self._connection.execute(query, parameters).fetchone()
         if row is None:
             return None
@@ -689,24 +726,104 @@ class GameStore:
         return None if row is None else ParticipantContext(row[1], credential_id=row[0])
 
     def credential_active(self, context: ParticipantContext) -> bool:
-        """Whether an authenticated context's credential is still valid.
+        """Whether an authenticated context's credential, or host link, is
+        still valid.
 
-        Development contexts carry no credential and are never active here.
+        Development contexts carry neither and are never active here.
         """
         _check_context(context)
-        if context.credential_id is None:
+        if not context.authenticated:
             return False
-        return self._credential_is_active(context)
+        return self._authority_is_active(context)
 
-    def _credential_is_active(self, context: ParticipantContext) -> bool:
+    def _authority_is_active(self, context: ParticipantContext) -> bool:
+        clause, parameters = _authority(context)
         return (
-            self._connection.execute(
-                "SELECT 1 FROM credentials "
-                "WHERE id = ? AND participant_id = ? AND revoked_at IS NULL",
-                (context.credential_id, context.participant_id),
-            ).fetchone()
-            is not None
+            self._connection.execute(f"SELECT {clause}", parameters).fetchone()[0] == 1
         )
+
+    # Host links (docs/designs/lobby_contract.md section 5). None of these
+    # change the mechanical revision or command history.
+
+    def admit_host_player(
+        self, host_id: str, player_id: str, name: str
+    ) -> ParticipantContext:
+        """The context of this host player's participant, creating both the
+        participant and its link if the player has no active link.
+
+        One transaction, so retries and concurrent admissions of the same
+        player find one participant. The participant gets no credential.
+        """
+        _check_host_identity(host_id, player_id)
+        _check_name(name)
+        with self._write():
+            row = self._active_link(host_id, player_id)
+            if row is None:
+                participant_id = PARTICIPANT_ID_PREFIX + secrets.token_hex(8)
+                now = _now()
+                self._connection.execute(
+                    "INSERT INTO participants (participant_id, name, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (participant_id, name, now),
+                )
+                link_id = self._insert_link(host_id, player_id, participant_id, now)
+                row = (link_id, participant_id)
+        return ParticipantContext(row[1], link_id=row[0])
+
+    def link_host_player(
+        self, host_id: str, player_id: str, participant_id: str
+    ) -> int:
+        """Link an existing participant to a host player; the operator's
+        explicit migration. Refused if either is already linked."""
+        _check_host_identity(host_id, player_id)
+        with self._write():
+            self._require_participant(participant_id)
+            if self._active_link(host_id, player_id) is not None:
+                raise StoreError(
+                    "That player is already linked in this game; unlink them first."
+                )
+            if self._connection.execute(
+                "SELECT 1 FROM host_links WHERE participant_id = ? "
+                "AND unlinked_at IS NULL",
+                (participant_id,),
+            ).fetchone():
+                raise StoreError(f"Participant {participant_id!r} is already linked.")
+            return self._insert_link(host_id, player_id, participant_id, _now())
+
+    def unlink_host_player(self, host_id: str, player_id: str) -> bool:
+        """End the player's active link; False if there was none. The
+        participant and its history stay."""
+        _check_host_identity(host_id, player_id)
+        with self._write():
+            return (
+                self._connection.execute(
+                    "UPDATE host_links SET unlinked_at = ? WHERE host_id = ? "
+                    "AND player_id = ? AND unlinked_at IS NULL",
+                    (_now(), host_id, player_id),
+                ).rowcount
+                > 0
+            )
+
+    def host_links(self) -> list[HostLink]:
+        rows = self._connection.execute(
+            "SELECT id, host_id, player_id, participant_id, linked_at, unlinked_at "
+            "FROM host_links ORDER BY id"
+        )
+        return [HostLink(*row) for row in rows]
+
+    def _active_link(self, host_id: str, player_id: str):
+        return self._connection.execute(
+            "SELECT id, participant_id FROM host_links WHERE host_id = ? "
+            "AND player_id = ? AND unlinked_at IS NULL",
+            (host_id, player_id),
+        ).fetchone()
+
+    def _insert_link(self, host_id, player_id, participant_id, now) -> int:
+        return self._connection.execute(
+            "INSERT INTO host_links (host_id, player_id, participant_id, linked_at) "
+            "VALUES (?, ?, ?, ?)",
+            (host_id, player_id, participant_id, now),
+        ).lastrowid
 
     def _require_participant(self, participant_id: str):
         row = self._connection.execute(
@@ -973,6 +1090,31 @@ def _now() -> str:
 def _check_context(context):
     if not isinstance(context, ParticipantContext):
         raise TypeError("A trusted ParticipantContext is required.")
+
+
+def _authority(context: ParticipantContext) -> tuple[str, tuple]:
+    """The SQL condition that the context's credential or host link is active."""
+    if context.credential_id is not None:
+        return (
+            "EXISTS (SELECT 1 FROM credentials WHERE id = ? AND participant_id = ?"
+            " AND revoked_at IS NULL)",
+            (context.credential_id, context.participant_id),
+        )
+    return (
+        "EXISTS (SELECT 1 FROM host_links WHERE id = ? AND participant_id = ?"
+        " AND unlinked_at IS NULL)",
+        (context.link_id, context.participant_id),
+    )
+
+
+def _check_host_identity(host_id, player_id):
+    for value in (host_id, player_id):
+        if (
+            not isinstance(value, str)
+            or not 1 <= len(value) <= 128
+            or any(character.isspace() for character in value)
+        ):
+            raise ValueError("Host and player IDs are opaque strings.")
 
 
 def _is_busy(error: sqlite3.OperationalError) -> bool:

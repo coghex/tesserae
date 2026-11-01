@@ -160,6 +160,13 @@ See [tls.md](tls.md). The messages are the same with or without TLS.
   connections receive shared `revision` notifications
   ([#16](https://github.com/coghex/tesserae/issues/16)).
 
+- **Lobby mode** is `tesserae serve --registry REGISTRY --port PORT`
+  ([#97](https://github.com/coghex/tesserae/issues/97)). One host serves the
+  registry's campaigns: a connection logs in with a host token (`login`, not
+  `join`), receives its catalog, and selects a campaign, inside which the
+  messages below apply unchanged. The
+  [lobby contract](designs/lobby_contract.md) defines its messages.
+
 **Browser origins.** Every host refuses, with HTTP 403, a WebSocket handshake
 whose `Origin` header is anything but browser mode's own page (below), so a
 web page elsewhere cannot open a socket to it. Command-line clients send no

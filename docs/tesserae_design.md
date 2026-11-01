@@ -307,8 +307,9 @@ sheet. Standalone utility commands remain usable without a character.
 The first delivery is
 [M2-2: host identity and campaign lobby](designs/host_lobby_design.md),
 tracker [#95](https://github.com/coghex/tesserae/issues/95), beginning with the
-[local registry](host-registry.md). Network selection and both clients follow
-the registry; character lifecycle/creation and private campaign continuation
+[local registry](host-registry.md) and the
+[lobby host](designs/lobby_contract.md). Selection in both clients follows;
+character lifecycle/creation and private campaign continuation
 are subsequent work. This supersedes joining directly into a single game for
 the new opt-in host mode. Existing single-game mode remains compatible.
 Console stays the default in-campaign screen under D-23; authentication and
