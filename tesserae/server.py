@@ -125,10 +125,14 @@ class GameHost:
         # Joined connections, subscribed to revision notifications. Only this
         # process's commits are announced; other writers are not observed.
         self._sessions: set[_Session] = set()
-        if runtime is None:
-            opened = GameStore(self.database, load_runtime=True)
-        else:
+        if runtime is not None:
             opened = GameStore.open_existing(self.database, runtime=runtime)
+        elif browser_assets is not None:
+            # A browser game is an existing referee game: never create one,
+            # even to refuse it.
+            opened = GameStore.open_existing(self.database, load_runtime=True)
+        else:
+            opened = GameStore(self.database, load_runtime=True)
         with opened as store:
             self.game_id = store.game_id
             # Exactly the game's bound module and providers, or StoreError:

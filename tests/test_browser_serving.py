@@ -23,7 +23,7 @@ from tesserae.credentials import new_token, write_token_file
 from tesserae.referee import runner
 from tesserae.referee.store import RefereeStore
 from tesserae.server import GameHost, HostConfigError
-from tesserae.store import GameStore
+from tesserae.store import GameStore, StoreError
 from tesserae.web import ASSETS, AssetsError, load_assets
 
 PACKAGE = Path(__file__).resolve().parents[1] / "tesserae" / "web"
@@ -240,6 +240,32 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(code, 2, options)
             self.assertIn(message, stderr.getvalue(), options)
             self.assertIn("nothing was started", stderr.getvalue())
+
+    def test_browser_mode_never_creates_a_game_and_leaves_no_files_on_refusal(self):
+        missing = self.directory / "new" / "game.sqlite3"
+        missing.parent.mkdir()
+        with self.assertRaisesRegex(StoreError, "No game store"):
+            GameHost(
+                missing,
+                authenticated=True,
+                referee_executor=never,
+                browser_assets=load_assets(),
+            )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = server.run_foreground(
+                str(missing), 0, authenticated=True, browser=True
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("No game store", stderr.getvalue())
+        self.assertEqual(list(missing.parent.iterdir()), [])  # nothing created
+        plain, _ = make_game(self.directory / "plain", referee=False)
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = server.run_foreground(
+                str(plain), 0, authenticated=True, browser=True
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(list(plain.parent.iterdir()), [plain])  # no -wal or -shm
 
     def test_a_missing_packaged_file_is_an_incomplete_installation(self):
         partial = self.directory / "web"

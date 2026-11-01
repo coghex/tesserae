@@ -165,8 +165,8 @@ whose `Origin` header is anything but browser mode's own page (below), so a
 web page elsewhere cannot open a socket to it. Command-line clients send no
 `Origin` and are unaffected.
 
-**Browser mode** is `tesserae serve --authenticated --browser`, for a game in
-referee mode ([#84](https://github.com/coghex/tesserae/issues/84)). The same
+**Browser mode** is `tesserae serve --authenticated --browser`, for an existing
+game in referee mode (it never creates a database) ([#84](https://github.com/coghex/tesserae/issues/84)). The same
 port also serves the packaged browser page at `http://127.0.0.1:PORT/`, for
 players on this computer: no TLS and no other `--host`. Every request must
 name the host as `127.0.0.1:PORT` or `localhost:PORT` (otherwise 421), the

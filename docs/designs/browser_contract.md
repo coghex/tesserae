@@ -47,10 +47,11 @@ Engineering choices made here, within that scope:
 
 `tesserae serve --authenticated --browser --database DB --port PORT`
 
-- `--browser` requires `--authenticated` and a game in referee mode. It refuses
-  `--tls-cert`/`--tls-key` and any `--host` other than the default
-  `127.0.0.1`: browser certificate trust is later work. Each refusal exits 2
-  before the host listens, with a message naming the conflict.
+- `--browser` requires `--authenticated` and an existing game in referee
+  mode; it never creates a database, even to refuse one (a missing one exits
+  1). It refuses `--tls-cert`/`--tls-key` and any `--host` other than the
+  default `127.0.0.1`: browser certificate trust is later work. Each refusal
+  exits 2 before the host listens, with a message naming the conflict.
 - Without `--browser`, `serve` behaves exactly as today, except for the Origin
   rule in section 3.
 - The existing listening line is unchanged (scripts read it). Browser mode
