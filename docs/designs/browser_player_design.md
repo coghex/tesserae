@@ -1,10 +1,13 @@
 # M2-1: localhost browser player console
 
-Status: design draft. The owner accepted localhost-only browser delivery,
-console first, and the navigation layout below on 2026-11-01. No tracker or
-children have been filed for this plan, and no browser runtime is implemented.
-Baseline: M1-6 completed through PR #80 at `b4384f2`.
-This is the first delivery tracker in [Milestone 2](../milestone-2.md).
+Status: delivery plan, filed as tracker
+[#82](https://github.com/coghex/tesserae/issues/82) with children #83 to #88
+(WEB-1 to WEB-6, in the table below). The owner accepted localhost-only browser
+delivery, console first, and the navigation layout below on 2026-11-01. The
+exact contracts are in the [browser contract](browser_contract.md) (WEB-1);
+no browser runtime is implemented yet. Baseline: M1-6 completed through PR #80
+at `b4384f2`. This is the first delivery tracker in
+[Milestone 2](../milestone-2.md).
 
 ## Outcome
 
@@ -36,7 +39,8 @@ and browser access over a LAN follow this tracker.
 
 ### Application shell
 
-The left navigation starts expanded. A separate, labelled toggle collapses
+The left navigation starts expanded (collapsed in a narrow window; see the
+[contract](browser_contract.md#5-the-shell)). A separate, labelled toggle collapses
 it to compact navigation; both items remain reachable and identifiable with
 keyboard focus, accessible names and visible hints. Console/Settings show
 which screen is selected. A narrow window must leave the main content usable.
@@ -138,12 +142,12 @@ implementation opens a useful reviewable page.
 
 | Child | Scope | Depends on |
 |---|---|---|
-| WEB-1: Specify the browser contract | Concrete serving/join/Host/origin/CSP, screen, memory-only token and server-based recovery boundaries; specify the browser CI/test budget and bounded acceptance | M1-6 |
-| WEB-2: Serve the Console/Settings shell | Explicit loopback browser-serving option, allowlisted assets, Host/origin/CSP checks, collapsible two-item navigation, default Console, accessible narrow-window layout; browser test tooling and CLI compatibility | WEB-1 |
-| WEB-3: Join and converse through the host | Settings connection controls and Console join prompt; authenticated join, table/private composition and delivery, busy/status/error presentation, plain text only | WEB-2 |
-| WEB-4: Show recipient state and pending questions | Read-only module views, own pending question and last-input state, refresh after revisions, useful fallback for unfamiliar fields | WEB-3 |
-| WEB-5: Recover browser play safely | Disconnect/rejoin, refresh, history reconciliation, exact retry from memory or host-reported accepted input, draft/navigation behavior and identity isolation; no browser storage | WEB-3 |
-| WEB-6: Verify both browser workflows and publish the runbook | Real browser acceptance, public/private pinned evidence, CLI interoperability, focused CI checks and operator instructions | WEB-4, WEB-5 |
+| WEB-1 (#83): Specify the browser contract | Concrete serving/join/Host/origin/CSP, screen, memory-only token and server-based recovery boundaries; specify the browser CI/test budget and bounded acceptance | M1-6 |
+| WEB-2 (#84): Serve the Console/Settings shell | Explicit loopback browser-serving option, allowlisted assets, Host/origin/CSP checks, collapsible two-item navigation, default Console, accessible narrow-window layout; browser test tooling and CLI compatibility | WEB-1 |
+| WEB-3 (#85): Join and converse through the host | Settings connection controls and Console join prompt; authenticated join, table/private composition and delivery, busy/status/error presentation, plain text only | WEB-2 |
+| WEB-4 (#86): Show recipient state and pending questions | Read-only module views, own pending question and last-input state, refresh after revisions, useful fallback for unfamiliar fields | WEB-3 |
+| WEB-5 (#87): Recover browser play safely | Disconnect/rejoin, refresh, history reconciliation, exact retry from memory or host-reported accepted input, draft/navigation behavior and identity isolation; no browser storage | WEB-3 |
+| WEB-6 (#88): Verify both browser workflows and publish the runbook | Real browser acceptance, public/private pinned evidence, CLI interoperability, focused CI checks and operator instructions | WEB-4, WEB-5 |
 
 WEB-4 and WEB-5 can proceed independently after WEB-3. Keep each issue's tests
 focused on its actual behavior. Public work uses ordinary PRs with related
@@ -186,6 +190,7 @@ tracker.
 
 ## References
 
+- [Browser contract](browser_contract.md) (WEB-1).
 - [Existing browser notes](../browser-client-notes.md).
 - [Milestone 2](../milestone-2.md).
 - [Referee protocol](../protocol.md#referee-mode) and
