@@ -138,6 +138,10 @@ class RefereeDir:
     def socket_path(self, game_id: str) -> Path:
         return self.run / f"{game_id}.sock"
 
+    def control_path(self, game_id: str) -> Path:
+        """The running host's socket for `tesserae referee stop`."""
+        return self.run / f"{game_id}.ctl"
+
     def jobs(self, game_id: str) -> Path:
         return self.root / "games" / game_id / "jobs"
 
@@ -372,7 +376,7 @@ def _stuck_advice(lock_path: Path, record: dict) -> str:
         "since have been reused), so nothing is signalled. Check it with "
         f"`ps -A -o pid,pgid,lstart,command` (process group {pgid}) and stop anything that is "
         "the job's by hand. The record clears itself once that group is gone; if the group "
-        f"is unrelated, clear it with clear_stuck({str(lock_path)!r})."
+        "is unrelated, clear it with `tesserae referee stop --clear-stuck`."
     )
 
 
@@ -629,9 +633,17 @@ class CodexRun:
             )
         for reader in self._readers:  # their pipes close once the group is gone
             reader.join(timeout=max(1.0, self._deadline - time.monotonic()))
-        if any(reader.is_alive() for reader in self._readers) and self._failure is None:
-            busy = "Saving the session ID" if self._saving else "Reading Codex's output"
-            self._failure = ("runner_failed", f"{busy} did not finish in time.")
+        if any(reader.is_alive() for reader in self._readers):
+            if self._failure is None:
+                busy = (
+                    "Saving the session ID"
+                    if self._saving
+                    else "Reading Codex's output"
+                )
+                self._failure = ("runner_failed", f"{busy} did not finish in time.")
+        else:  # a long-running host must not keep each job's pipes open
+            self.process.stdout.close()
+            self.process.stderr.close()
         stderr = "".join(self._stderr)
         self._finish({"tesserae": "end", "exit_code": self.process.returncode,
                       "group_stopped": cleaned, "stderr": stderr},
@@ -639,6 +651,11 @@ class CodexRun:
         result = self._result(stderr)
         result.codex_version = self.version
         return result
+
+    def note(self, entry: dict):
+        """Add one entry, such as a bridge call and its result, to this run's
+        diagnostics. Entries never hold the token."""
+        self._write_log(json.dumps({"tesserae": "bridge", **entry}))
 
     def _write_log(self, line: str):
         with self._log_guard:
