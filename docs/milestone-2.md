@@ -6,7 +6,10 @@ host computer join, talk to the referee, see their state and recover from
 dropped connections and refreshes (#84 to #87). The
 [browser runbook](browser-runbook.md) explains it and the
 [acceptance record](acceptance/browser.md) shows both scenes played in the
-browser. The next approved slice is M2-2, host identity and campaign selection.
+browser. M2-2, host identity and campaign selection, is delivered too: the
+[lobby runbook](lobby-runbook.md) explains it and the
+[acceptance record](acceptance/lobby.md) shows CLI and browser players in two
+campaigns at once.
 The first agreed browser tracker is M2-1
 ([#82](https://github.com/coghex/tesserae/issues/82)), the
 [localhost Console/Settings client](designs/browser_player_design.md), with
@@ -33,7 +36,7 @@ acceptance. Completion requires both existing demonstration scenes, two
 browser identities and browser/CLI compatibility, exact retry and active-play
 recovery, plus focused Chromium CI coverage and private local review.
 
-## Next approved slice: M2-2
+## Second slice: M2-2
 
 A stable host player authenticates once, sees only accessible active campaigns,
 and selects one per connection. The [host lobby design](designs/host_lobby_design.md)
@@ -44,8 +47,9 @@ The [registry guide](host-registry.md) covers the operator tools and
 `serve --registry`, the lobby host implemented by #97 under the
 [lobby contract](designs/lobby_contract.md), `tesserae connect --lobby`
 (#98) from the CLI and the browser's login and campaign picker
-(`serve --registry --browser`, #99); the mixed-client acceptance (#100) is
-next. Existing single-game connections remain usable.
+(`serve --registry --browser`, #99); the mixed-client acceptance (#100)
+passed and is recorded in [acceptance/lobby.md](acceptance/lobby.md).
+Existing single-game connections remain usable.
 
 Character selection/creation, multiple characters per player and joining an
 ongoing scenario are the next direction after this foundation; their rules
