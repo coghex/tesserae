@@ -1,8 +1,12 @@
-# M2-4 draft: campaign hosts, rules and administration
+# M2-4: campaign hosts, rules and administration
 
-Status: design draft, 2026-11-02; not implemented and no tracker filed.
-The owner approved the product decisions below. Delivery slices and technical
-proposals still need review. Public baseline:
+Status: reviewed design, filed for delivery on 2026-11-02; not implemented.
+Tracker [#131](https://github.com/coghex/tesserae/issues/131); children #132–#139.
+Companion private-integration tracker:
+[#140](https://github.com/coghex/tesserae/issues/140), children #141–#147.
+The owner approved the product decisions and requested issue filing after
+design review. GOV-1 settles exact technical contracts before runtime work.
+Public runtime baseline:
 `51f53e14816dd7b1fefa1f3c891e0e2e26d9abfa` (M2-3 and its CLI follow-up merged).
 See [D-25](../tesserae_design.md#d-25-campaign-hosts-rules-and-administration),
 the [character contract](character_contract.md), and the
@@ -255,19 +259,19 @@ delivery. Existing memory-only login and Console/Settings navigation remain.
 
 ## Public delivery slices
 
-These are proposed issue boundaries, not filed issues or approved implementation.
+These children are filed; no runtime work is delivered by the planning change.
 Each slice includes focused meaningful tests and its relevant contract/docs.
 
 | Key | Scope | Depends on |
 |---|---|---|
-| GOV-1 | Exact authority/configuration/requirements/approval/admin contracts; storage ownership, migration and protocol compatibility | None |
-| GOV-2 | Single host designation, explicit setup/adoption/recovery, trusted privilege checks and full host inspection | GOV-1 |
-| GOV-3 | Versioned campaign document, import/export/activation, optional module requirements/settings capability and policy-aware validation | GOV-1, GOV-2 |
-| GOV-4 | Validated host administration across characters/NPCs/world, audit and original module support | GOV-2, GOV-3 |
-| GOV-5 | Durable guest proposals and atomic host decisions; bridge/context integration, narrative facts and supported-workaround behavior | GOV-3, GOV-4 |
-| GOV-6 | CLI host inspection/admin/rules/request controls, no-character use and recovery | GOV-4, GOV-5 |
-| GOV-7 | Browser equivalents in Console/Settings, guest disclosure and privileged-cache isolation | GOV-4, GOV-5 |
-| GOV-8 | Combined model-free acceptance, operator/player runbook, compatibility and failure cleanup | GOV-6, GOV-7 |
+| [GOV-1 / #132](https://github.com/coghex/tesserae/issues/132) | Exact authority/configuration/requirements/approval/admin contracts; storage ownership, migration and protocol compatibility | None |
+| [GOV-2 / #133](https://github.com/coghex/tesserae/issues/133) | Single host designation, explicit setup/adoption/recovery, trusted privilege checks and full host inspection | GOV-1 |
+| [GOV-3 / #134](https://github.com/coghex/tesserae/issues/134) | Versioned campaign document, import/export/activation, optional module requirements/settings capability and policy-aware validation | GOV-1, GOV-2 |
+| [GOV-4 / #135](https://github.com/coghex/tesserae/issues/135) | Validated host administration across characters/NPCs/world, audit and original module support | GOV-2, GOV-3 |
+| [GOV-5 / #136](https://github.com/coghex/tesserae/issues/136) | Durable guest proposals and atomic host decisions; bridge/context integration, narrative facts and supported-workaround behavior | GOV-3, GOV-4 |
+| [GOV-6 / #137](https://github.com/coghex/tesserae/issues/137) | CLI host inspection/admin/rules/request controls, no-character use and recovery | GOV-4, GOV-5 |
+| [GOV-7 / #138](https://github.com/coghex/tesserae/issues/138) | Browser equivalents in Console/Settings, guest disclosure and privileged-cache isolation | GOV-4, GOV-5 |
+| [GOV-8 / #139](https://github.com/coghex/tesserae/issues/139) | Combined model-free acceptance, operator/player runbook, compatibility and failure cleanup | GOV-6, GOV-7 |
 
 This arc is larger than M2-3 because broad host administration is included.
 Split a child again if its verified contract produces an oversized change;
@@ -305,4 +309,7 @@ No further product decision blocks this draft. GOV-1 must resolve exact schema,
 hook/protocol versions, authority storage/adoption ordering, request lifecycle,
 policy revisions, host transfer and edit/busy semantics before code. These are
 technical design tasks; flag any choice that would alter the owner decisions.
-Issue numbers and a delivery approval are deliberately still absent.
+The owner authorized filing both trackers after design review. Exact issue
+specifications and dependencies are on the linked children. The private
+tracker's source/specification and evidence stay local; public issues contain
+sanitized scope only.

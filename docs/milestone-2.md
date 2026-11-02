@@ -77,27 +77,29 @@ referee, under the [model-free testing policy](testing.md): the
 [acceptance record](acceptance/characters.md) shows it. The private module's
 character rules and the private campaign continuation follow separately.
 
-## Proposed fourth slice: M2-4
+## Fourth slice planned: M2-4
 
 The owner selected campaign hosts, rules and administration after M2-3.
-The [delivery draft](designs/campaign_authority_design.md) records one host
+The [delivery plan](designs/campaign_authority_design.md), tracker
+[#131](https://github.com/coghex/tesserae/issues/131), records one host
 player per campaign, a database-backed rules document with file import/export,
 module-defined requirements, host decisions on guest requests, and broad host
 inspection/editing of sheets and world data. The host can own no characters
 and still administer from either CLI or browser. The host can inspect private
 conversations and referee preparation; other guests retain their privacy.
 
-These are agreed product decisions, not delivered features. The proposed
+These are agreed product decisions, not delivered features. The filed
 public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
-acceptance. No tracker is filed yet. Existing Console/Settings navigation,
+acceptance (#132–#139). Existing Console/Settings navigation,
 memory-only login and localhost scope remain.
 
 ## Subsequent private integration
 
 A companion design in the external private workspace covers source-grounded
 creation requirements and scripts, host administration, an explicit campaign
-import and model-free mixed-client acceptance. Its provisional label is M2-5.
+import and model-free mixed-client acceptance. It is tracked as M2-5,
+[#140](https://github.com/coghex/tesserae/issues/140), with children #141–#147.
 It depends on the new public contracts and has its own private implementation
 and named-head review. An owner-requested live playtest follows separately;
 private source data, paths and evidence do not belong in this repository.
