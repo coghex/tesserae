@@ -183,7 +183,7 @@ class BridgeTools:
             },
             "pending_choices": referee.all_choices(job),
             "rulings": referee.rulings(),
-            "earlier_results": [_step(s) for s in referee.unnarrated_steps(job)],
+            "earlier_results": [_step(s, store) for s in referee.unnarrated_steps(job)],
             "transcript": {"messages": page, "next_after_seq": next_after},
         }
         if job.mode is not None:
@@ -356,10 +356,21 @@ def _names(store: GameStore, job: Job) -> dict:
     return names
 
 
-def _step(step: Step) -> dict:
-    return {"job_id": step.job_id, "step_id": step.step_id, "kind": step.kind,
-            "by": step.context, "command": step.command, "args": step.args,
-            "result": step.result}  # fmt: skip
+def _step(step: Step, store: GameStore | None = None) -> dict:
+    """A step as the referee sees it. In a character game it also names the
+    actor its job was accepted for, so a recovered result is told about the
+    right character, whoever's job reports it."""
+    shown = {"job_id": step.job_id, "step_id": step.step_id, "kind": step.kind,
+             "by": step.context, "command": step.command, "args": step.args,
+             "result": step.result}  # fmt: skip
+    if step.mode is not None:
+        character = None
+        if step.character_id is not None and store is not None:
+            record = store.character(step.character_id)
+            character = {"character_id": step.character_id,
+                         "name": None if record is None else record.name}  # fmt: skip
+        shown["actor"] = {"mode": step.mode, "character": character}
+    return shown
 
 
 def _error(code: str, message: str) -> dict:

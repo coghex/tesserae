@@ -593,6 +593,32 @@ class RecoveryTests(Table):
         self.ok(token, "act", step_id="s1", command="trailhead.stamina", args={})
         self.assertEqual(self.walker(draft)["rolled"], 4)
 
+    def test_a_recovered_result_names_the_character_it_belongs_to(self):
+        ash, wren = self.ready(), self.ready(name="Wren")
+        self.roll = 5
+        job, token = self.start(self.alice, Actor(ash, "play"), "Ash pushes on")
+        self.ok(token, "act", step_id="p1", command="trailhead.push", args={})
+        self.fail(job)  # Alice never heard how Ash's push went
+
+        later, token = self.start(self.alice, Actor(wren, "play"), "Wren looks around")
+        [result] = self.ok(token, "get_context")["earlier_results"]
+        self.assertEqual(
+            (result["job_id"], result["by"], result["actor"]),
+            (job.job_id, self.alice.participant_id,
+             {"mode": "play", "character": {"character_id": ash, "name": "Ash"}}),
+        )  # fmt: skip
+        self.assertEqual(
+            result["result"]["result"]["stamina"], {"before": 4, "after": 3}
+        )
+        self.answer(
+            later, ("table", "Earlier, Ash pushed on."), narrated=[(job.job_id, "p1")]
+        )
+        self.assertIn((job.job_id, "p1", "committed", 1), self.steps())
+        # Wren's own stamina was never touched.
+        self.assertEqual(
+            (self.walker(ash)["stamina"], self.walker(wren)["stamina"]), (3, 4)
+        )
+
     def test_a_relinked_player_cannot_act_as_their_old_participants_characters(self):
         ash = self.ready()
         alice = self.alice.participant_id

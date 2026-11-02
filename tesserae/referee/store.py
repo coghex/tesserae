@@ -99,6 +99,10 @@ class Step:
     request_id: str
     status: str
     result: dict | None
+    # The actor its job was accepted for, in a character game: the character
+    # it acted as (None for referee_act and in setup) and the job's mode.
+    character_id: str | None = None
+    mode: str | None = None
 
 
 def _now() -> str:
@@ -769,8 +773,11 @@ class RefereeStore:
     def _step(self, db, job_id: str, step_id: str) -> Step:
         row = self._rows(
             db,
-            "SELECT job_id, step_id, kind, context, command, args, request_id, status, result "
-            "FROM referee_steps WHERE job_id = ? AND step_id = ?",
+            "SELECT s.job_id, s.step_id, s.kind, s.context, s.command, s.args, "
+            "s.request_id, s.status, s.result, s.character_id, i.mode "
+            "FROM referee_steps AS s JOIN referee_jobs AS j ON j.job_id = s.job_id "
+            "JOIN referee_inputs AS i ON i.id = j.input_id "
+            "WHERE s.job_id = ? AND s.step_id = ?",
             (job_id, step_id),
         )[0]
         return Step(
@@ -779,6 +786,8 @@ class RefereeStore:
             row[6],
             row[7],
             None if row[8] is None else json.loads(row[8]),
+            row[9],
+            row[10],
         )
 
 
