@@ -17,13 +17,13 @@ import threading
 import time
 from pathlib import Path
 
-from tesserae.builtin import CATALOG
+from tesserae.builtin import CATALOG, DICE_RUNTIME
 from tesserae.credentials import new_token
 from tesserae.referee.store import RefereeStore
 from tesserae.referee.tools import BridgeTools
 from tesserae.registry import HostRegistry
 from tesserae.seed import parse_seed
-from tesserae.store import GameStore
+from tesserae.store import GameStore, ParticipantContext
 
 try:  # tests/ is on sys.path under `unittest discover -s tests`
     from test_browser_lobby import BackgroundLobby, Valve
@@ -83,6 +83,8 @@ class CharacterCase(BrowserCase):
         self.addCleanup(self.release.set)
         with GameStore.create(self.trail, TRAILHEAD, seed=parse_seed(seed())) as store:
             RefereeStore(store).enable()
+        with GameStore.create(self.directory / "dice.sqlite3", DICE_RUNTIME) as store:
+            RefereeStore(store).enable()  # Dice: a campaign without characters
         self.tokens, self.players = {}, {}
         with HostRegistry.create(self.registry_path) as registry:
             host_id = registry.host_id
@@ -95,6 +97,9 @@ class CharacterCase(BrowserCase):
             registry.set_campaign_active(self.campaign, True)
             for player in self.players.values():
                 registry.grant(self.campaign, player)
+            dice = registry.register_campaign(self.directory / "dice.sqlite3", "Dice")
+            registry.set_campaign_active(dice, True)
+            registry.grant(dice, self.players["alice"])
         with GameStore.open_existing(self.trail) as store:
             store.link_host_player(host_id, self.players["alice"], ALICE)
         self.host = BackgroundLobby(self.registry_path, lambda _: self.executor)
@@ -301,6 +306,48 @@ class ActorTests(CharacterCase):
         self.expect_status(page, "Trail · Mara · Joined as Alice")
         expect(page.locator("#console-unconfirmed")).to_be_hidden()  # it was accepted
         expect(page.locator("#console-last-text")).to_have_text("“Unheard?”")
+        self.assertEqual(self.errors, [])
+
+    def test_a_character_reply_never_follows_the_page_out_of_its_campaign(self):
+        page = self.open()
+        valve = Valve(page, self.host.uri)
+        self.entered("alice", page)
+        valve.hold = True  # Play Mara's reply arrives only after leaving Trail
+        page.locator("#character-list").get_by_role("button", name="Play Mara").click()
+        page.locator("#console-leave").click()
+        valve.release()
+        self.expect_status(page, "Logged in as Alice")
+        page.locator("#campaign-list").get_by_role("button", name="Dice").click()
+        self.expect_status(page, "Dice · Joined as Alice")
+        expect(page.locator("#console-status")).not_to_contain_text("Mara")
+        expect(page.locator("#console-sheet")).to_be_hidden()
+        self.say(page, "Hello, dice.")
+        self.expect_answered(page, "Heard: Hello, dice.")  # no stray actor refused it
+        self.assertEqual(self.errors, [])
+
+    def test_a_character_archived_while_away_is_explained_and_nothing_is_missed(self):
+        alice = self.entered("alice")
+        self.play(alice, "Mara")
+        self.host.stop()
+        expect(alice.locator("#console-reconnect")).to_be_visible()
+        with GameStore.open_existing(self.trail) as store:
+            archived, _ = store.archive_character(
+                ParticipantContext(ALICE), "away", MARA
+            )
+            self.assertEqual(archived["type"], "result", archived)
+        self.host.start(self.host.port)
+        bob = self.entered("bob")
+        self.say(bob, "Bob arrives.")  # while Alice is still away
+        self.expect_answered(bob, "Heard: Bob arrives.")
+        alice.locator("#console-reconnect").click()
+        self.expect_status(alice, "Trail · No character · Joined as Alice")
+        expect(alice.locator("#sheet-note")).to_have_text(
+            "Mara cannot be played now: That character is not available to you."
+        )
+        expect(alice.locator("#conversation .message-text")).to_contain_text(
+            ["Bob arrives.", "Heard: Bob arrives."]  # missed while away, then read
+        )
+        expect(alice.locator("#character-list button")).to_have_text(["Play Wren"])
         self.assertEqual(self.errors, [])
 
     def test_archiving_from_settings_and_from_another_page(self):

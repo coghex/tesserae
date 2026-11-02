@@ -96,7 +96,8 @@ const state = {
 
 let session = null; // the one live Session, shared by both screens
 let heldToken = null; // in memory only, to reconnect the joined identity
-let scope = {}; // replaced whenever the game or campaign state is cleared
+let scope = {}; // replaced whenever the game, campaign or actor state is cleared
+let campaignScope = {}; // replaced only when the game or campaign state is cleared
 const seenGames = new Set(); // games joined since this page loaded
 let statusRead = null; // a referee_status in flight, and whether to read again
 let syncRead = null; // a sync in flight, and whether to read again
@@ -163,22 +164,25 @@ async function entered(current, snapshot, again) {
   // Refused (archived, relinked), the page is back at the picker with why.
   const wanted = again && state.actor && state.actor.character;
   if (wanted && snapshot.actor) {
+    const campaignHere = campaignScope;
     let reply;
     try {
       reply = await current.selectCharacter(wanted.character_id);
     } catch {
       return; // the connection closed; lost() has already said so
     }
-    if (current !== session || leftCampaign(reply)) return;
+    if (!stillIn(current, campaignHere) || leftCampaign(reply)) return;
     if (reply.type === "snapshot") {
       snapshot = reply;
     } else {
-      clearActor();
+      // Back in setup now, so applying the setup snapshot below changes
+      // nothing more and the explanation stays.
+      changeActor(snapshot.actor);
       state.characterNote = `${characterLabel(wanted)} cannot be played now: ${reply.message}`;
     }
   }
-  const here = scope;
   applySnapshot(snapshot);
+  const here = scope; // after any change of actor the snapshot made
   state.phase = "joined";
   settleUnconfirmed();
   if (!seenGames.has(state.me.gameId) && state.referee && state.referee.your_last_input) {
@@ -221,6 +225,13 @@ function disconnect(notice) {
 // from a closed connection, is dropped.
 function live(current, here) {
   return current === session && here === scope;
+}
+
+// True while `current` is the live session and the page is still in the
+// campaign (and as the participant) it was when it asked: a character reply
+// may change the actor, but never after the page has left that campaign.
+function stillIn(current, campaignHere) {
+  return current === session && campaignHere === campaignScope;
 }
 
 // ---- A lobby host's campaigns ---------------------------------------------
@@ -383,6 +394,7 @@ function clearIdentity() {
 // dropped (live()).
 function clearGame() {
   scope = {};
+  campaignScope = {};
   Object.assign(state, {
     campaign: null,
     actor: null,
@@ -607,6 +619,7 @@ function characterLabel(character) {
 async function listCharacters() {
   const current = session;
   const here = scope;
+  const campaignHere = campaignScope;
   if (!current || state.phase !== "joined" || !state.actor) return;
   let reply;
   try {
@@ -614,7 +627,8 @@ async function listCharacters() {
   } catch {
     return; // the connection closed; lost() has already said so
   }
-  if (current !== session || leftCampaign(reply) || reply.type !== "characters") return;
+  if (!stillIn(current, campaignHere) || leftCampaign(reply)) return;
+  if (reply.type !== "characters") return;
   state.characters = reply.characters;
   if (here === scope && changeActor(reply.actor)) readView();
   render();
@@ -624,6 +638,7 @@ async function listCharacters() {
 // only. Changes this page only: nothing is drawn, spent or started.
 async function chooseCharacter(characterId) {
   const current = session;
+  const campaignHere = campaignScope;
   if (!current || state.phase !== "joined" || !state.actor || state.choosing) return;
   state.choosing = true;
   state.characterNote = "";
@@ -634,9 +649,9 @@ async function chooseCharacter(characterId) {
   } catch {
     return; // the connection closed; lost() has already said so
   } finally {
-    if (current === session) state.choosing = false;
+    if (stillIn(current, campaignHere)) state.choosing = false;
   }
-  if (current !== session || leftCampaign(reply)) return;
+  if (!stillIn(current, campaignHere) || leftCampaign(reply)) return;
   if (reply.type === "snapshot") {
     applySnapshot(reply);
     render();
@@ -651,6 +666,7 @@ async function chooseCharacter(characterId) {
 // Starts a draft, then resumes it: creation is with the referee, privately.
 async function createCharacter() {
   const current = session;
+  const campaignHere = campaignScope;
   if (!current || state.phase !== "joined" || !state.actor || state.choosing) return;
   const name = $("create-name").value.trim() || null;
   state.choosing = true;
@@ -662,9 +678,9 @@ async function createCharacter() {
   } catch {
     return;
   } finally {
-    if (current === session) state.choosing = false;
+    if (stillIn(current, campaignHere)) state.choosing = false;
   }
-  if (current !== session || leftCampaign(reply)) return;
+  if (!stillIn(current, campaignHere) || leftCampaign(reply)) return;
   if (reply.type !== "character") {
     state.characterNote = reply.message || "The host could not start a character.";
     render();
@@ -678,6 +694,7 @@ async function createCharacter() {
 async function approve() {
   const current = session;
   const here = scope;
+  const campaignHere = campaignScope;
   const actor = state.actor;
   if (!current || state.phase !== "joined" || !actor || actor.mode !== "creation") return;
   if (state.choosing || state.sheetRevision === null) return;
@@ -690,7 +707,7 @@ async function approve() {
   } catch {
     return;
   } finally {
-    if (current === session) state.choosing = false;
+    if (stillIn(current, campaignHere)) state.choosing = false;
   }
   if (!live(current, here) || leftCampaign(reply)) return;
   if (reply.type === "character") {
@@ -725,6 +742,7 @@ function askArchive() {
 
 async function archive() {
   const current = session;
+  const campaignHere = campaignScope;
   const actor = state.actor;
   if (!current || !state.confirmingArchive || !actor || !actor.character) return;
   const character = actor.character;
@@ -737,9 +755,9 @@ async function archive() {
   } catch {
     return;
   } finally {
-    if (current === session) state.choosing = false;
+    if (stillIn(current, campaignHere)) state.choosing = false;
   }
-  if (current !== session || leftCampaign(reply)) return;
+  if (!stillIn(current, campaignHere) || leftCampaign(reply)) return;
   if (reply.type === "character") {
     changeActor(reply.actor);
     state.characterNote = `${characterLabel(reply.character)} is archived; its history stays.`;
