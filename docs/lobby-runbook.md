@@ -180,12 +180,14 @@ history.
 |---|---|---|
 | The registry (`host.sqlite3`) | Players, hashed tokens, campaign locations and grants; no game data | With SQLite's backup API (`sqlite3 host.sqlite3 ".backup host-backup.sqlite3"`) or while no host or command is using it |
 | Each campaign file | Its game state, history, participants, links and referee conversation | The same way, separately; it is authoritative for everything in its game |
-| The referee folder | Each campaign's Codex sessions and job logs, and the Codex login | Its `games/` folder with the campaign files if you want sessions back; never share `codex-home/auth.json` |
+| The referee folder | Every campaign's Codex conversation history (`codex-home/sessions/`), per-job diagnostics (`games/`) and the Codex login | `codex-home/sessions/` together with the campaign files; never share `codex-home/auth.json` |
 | Token files | One player's credential each | Not needed: rotate a lost token instead |
 
 Restoring a registry restores its tokens and grants as they were at backup
 time: rotate any token issued or revoked since. A restored campaign file must
-go back to its registered path.
+go back to its registered path. If a campaign's Codex session is lost, the
+campaign still works after a rebuild, which starts a new session from its
+stored conversation ([referee runbook](referee-runbook.md#5-stopping-restarting-rebuilding)).
 
 ## 10. What is shipped and what comes next
 
