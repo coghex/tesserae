@@ -183,12 +183,15 @@ participant's private messages. Rules and data projections still belong to modul
 | CHR-4 [#114](https://github.com/coghex/tesserae/issues/114) | Host character selection/lifecycle protocol and admission | CHR-3 [#113](https://github.com/coghex/tesserae/issues/113) |
 | CHR-5 [#115](https://github.com/coghex/tesserae/issues/115) | CLI character selection and creation flow | CHR-4 [#114](https://github.com/coghex/tesserae/issues/114) |
 | CHR-6 [#116](https://github.com/coghex/tesserae/issues/116) | Browser character picker and creation flow | CHR-4 [#114](https://github.com/coghex/tesserae/issues/114) |
-| CHR-7 [#117](https://github.com/coghex/tesserae/issues/117) | Original mixed-client live acceptance and operator guidance | CHR-5, CHR-6 |
+| CHR-7 [#117](https://github.com/coghex/tesserae/issues/117) | Original mixed-client scripted acceptance and operator guidance | CHR-5, CHR-6 |
 
 The small original demonstration module develops with CHR-2/CHR-3; a separate
 large example game is not a prerequisite. CHR-5 and CHR-6 can proceed independently
 once the host contract is implemented. Meaningful failure/concurrency tests belong
-with each slice. Acceptance proves the final combined flow, not just unit tests.
+with each slice. Acceptance proves the final combined flow with scripted referee
+input/output, not just unit tests. The [testing policy](../testing.md) requires
+model-free automated tests and acceptance, superseding earlier live-model
+requirements.
 
 After this tracker: adapt the external private module for creation and multiple
 playable characters; import the frozen campaign into a separate database with

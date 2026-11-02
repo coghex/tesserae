@@ -139,6 +139,13 @@ They skip unless the optional extra and its browser are installed:
 `python3 -m pip install -e '.[dev,browser-test]'`, then
 `python3 -m playwright install chromium`. CI's `browser` job always runs them.
 
+All automated tests and acceptance use scripted referees, without AI inference
+tokens, a Codex login or an AI account. Runner tests launch Python stand-ins;
+browser and client tests use scripted replies against the real host and store.
+The throwaway tokens in authentication tests are local game credentials. See the
+[testing policy and fixtures](docs/testing.md). Historical live-AI acceptance
+records are not requirements to rerun a model.
+
 [Ruff linting](https://docs.astral.sh/ruff/linter/) checks basic Python errors and
 import ordering. Its [formatter](https://docs.astral.sh/ruff/formatter/) handles
 layout consistently; apply formatting with `python3 -m ruff format .`. Tests check

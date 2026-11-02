@@ -55,6 +55,16 @@ design under `docs/designs/` before changing behavior.
 
 ## Local checks
 
+- Automated tests, CI and acceptance runs must not launch a live AI agent or
+  consume inference tokens. Use Python fixtures or scripted referee executors,
+  including when testing the real runner and bridge. No model login or AI service
+  credentials may be required. See [testing.md](docs/testing.md).
+- Do not treat a live-model run as an implicit merge or tracker-completion gate.
+  Live AI gameplay requires an explicit owner request. Historical acceptance
+  records remain evidence of what was run, not instructions to repeat it.
+- Keep the local authentication-token tests: these are throwaway game credentials,
+  unrelated to AI inference usage.
+
 Use a virtual environment. The development setup installs with
 `python3 -m pip install -e '.[dev]'` and runs:
 

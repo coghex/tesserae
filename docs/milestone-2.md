@@ -71,7 +71,8 @@ module capability, seed version 2 and the original
 private, step-by-step creation; CHR-4 (#114) the lobby host's character
 messages and per-connection actors; CHR-5 (#115) the CLI's character
 commands; CHR-6 (#116) the browser's character picker and creation
-workspace. CHR-7's live acceptance and runbook follow.
+workspace. CHR-7's scripted mixed-client acceptance and runbook follow, under the
+[model-free testing policy](testing.md).
 
 ## Later browser work
 
