@@ -70,7 +70,8 @@ module capability, seed version 2 and the original
 [Trailhead](trailhead.md) module; CHR-3 (#113) the referee's frozen actors and
 private, step-by-step creation; CHR-4 (#114) the lobby host's character
 messages and per-connection actors; CHR-5 (#115) the CLI's character
-commands. The browser slice follows.
+commands; CHR-6 (#116) the browser's character picker and creation
+workspace. CHR-7's live acceptance and runbook follow.
 
 ## Later browser work
 

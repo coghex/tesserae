@@ -212,8 +212,11 @@ line:
   same campaign, keeping your draft. If the host has since linked you to a
   different participant, the page starts that campaign afresh.
 - A campaign without a referee shows its state only; play it from the CLI.
+- In a campaign with characters, choose or create one in the Console, as the
+  [lobby runbook](lobby-runbook.md#6-players-choose-a-campaign) describes; a
+  reconnect returns to the same character.
 - Your token stays in the page's memory only, so a refresh asks for it again.
-  Each page (and each CLI connection) chooses its own campaign.
+  Each page (and each CLI connection) chooses its own campaign and character.
 
 ## Link existing participants
 

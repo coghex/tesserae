@@ -22,9 +22,9 @@ rerun is needed. CHR-4 (#114) added the host's side of sections 9 to 11 in
 character messages and errors, each connection's own selection and actor,
 `say`'s actor, scoped snapshots and status, the `actor` notices, the `select`
 gate for older clients and the single-game refusal. CHR-5 (#115) added the
-CLI of section 15 (`tesserae/client.py`, `connect --character`). The browser
-(CHR-6) is not yet: until then the page is told to update when it selects a
-character campaign.
+CLI of section 15 (`tesserae/client.py`, `connect --character`), and CHR-6
+(#116) its browser page (`tesserae/web/`). What remains is CHR-7's live
+acceptance and runbook.
 
 It extends the [lobby contract](lobby_contract.md) and the
 [referee contract](referee_contract.md). Everything they say still holds for
@@ -621,7 +621,9 @@ character, and, with no characters, a short explanation and a composer for
 setup questions labelled as such. Creation shows "Creating Ash · private to
 you" on the status line, the module's sheet read-only with its revision, and
 "Approve Ash (revision 4)"; the private box is hidden and every line is marked
-private. Play is the ordinary Console, with the status line naming the
+private. Approve sends the revision of the sheet shown, never a newer one the
+page has only heard of. A reconnect selects the same character again; refused,
+the page is back at the picker with why. Play is the ordinary Console, with the status line naming the
 character. Settings gains a Character row and "Change character" and "Archive
 character…" (with a confirmation naming it). Console and Settings remain the
 only navigation items. At every actor change the page clears the sheet,

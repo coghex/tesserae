@@ -7,6 +7,12 @@
 // A lobby host's page (docs/designs/lobby_contract.md section 10) logs in
 // with a host token, lists the player's campaigns and enters one. Everything
 // of a campaign is cleared when the page leaves it.
+//
+// In a campaign with characters (docs/designs/character_contract.md section
+// 15) the connection also has an actor: no character (setup questions), a
+// draft (private creation) or a ready character (play). Everything of one
+// actor (its sheet, draft, question, last and unconfirmed inputs) is cleared
+// when the actor changes; the campaign's conversation stays.
 
 import { Session, newRequestId } from "/session.js";
 import { viewNode } from "/views.js";
@@ -75,6 +81,17 @@ const state = {
   lastAccepted: null, // this page's last input the host accepted
   composerNote: "",
   noteIsBusy: false, // the note is a busy refusal, cleared once the referee is idle
+  // A campaign with characters: the host's word on this connection's actor
+  // ({mode, character}), null in a campaign without characters; the
+  // player's characters as last listed; the sheet and the draft revision it
+  // was shown at (what Approve completes); and the character panels' note.
+  actor: null,
+  characters: [],
+  sheet: null,
+  sheetRevision: null,
+  choosing: false, // a character request awaits its reply
+  confirmingArchive: false,
+  characterNote: "",
 };
 
 let session = null; // the one live Session, shared by both screens
@@ -85,6 +102,8 @@ let statusRead = null; // a referee_status in flight, and whether to read again
 let syncRead = null; // a sync in flight, and whether to read again
 let renderedCatalog = null; // the catalog the picker shows
 let renderedView = null; // the view object the state panel shows
+let renderedCharacters = null; // the character list the picker shows
+let renderedSheet = null; // the sheet object the sheet panel shows
 const fileTokens = new WeakMap(); // token-entry fieldset to a chosen file's token
 let entryGeneration = 0; // bumped on every clear, so an older file read is dropped
 
@@ -140,6 +159,24 @@ async function entered(current, snapshot, again) {
   if (again && state.me && snapshot.participant_id !== state.me.participantId) {
     clearGame(); // never another identity's data
   }
+  // A reconnect returns to the same character too; selecting plays nothing.
+  // Refused (archived, relinked), the page is back at the picker with why.
+  const wanted = again && state.actor && state.actor.character;
+  if (wanted && snapshot.actor) {
+    let reply;
+    try {
+      reply = await current.selectCharacter(wanted.character_id);
+    } catch {
+      return; // the connection closed; lost() has already said so
+    }
+    if (current !== session || leftCampaign(reply)) return;
+    if (reply.type === "snapshot") {
+      snapshot = reply;
+    } else {
+      clearActor();
+      state.characterNote = `${characterLabel(wanted)} cannot be played now: ${reply.message}`;
+    }
+  }
   const here = scope;
   applySnapshot(snapshot);
   state.phase = "joined";
@@ -149,6 +186,7 @@ async function entered(current, snapshot, again) {
   }
   seenGames.add(state.me.gameId);
   render();
+  if (state.actor) listCharacters();
   if (!again) $(state.referee ? "composer-text" : "console-leave").focus();
   if (!state.referee) return; // a campaign without a referee has no conversation
   try {
@@ -307,6 +345,8 @@ function lost(closed) {
       state.unconfirmed = { ...state.sending, fresh: false };
     }
     state.sending = false;
+    state.choosing = false;
+    state.confirmingArchive = false;
     statusRead = null;
     syncRead = null;
     state.phase = "lost";
@@ -345,6 +385,13 @@ function clearGame() {
   scope = {};
   Object.assign(state, {
     campaign: null,
+    actor: null,
+    characters: [],
+    sheet: null,
+    sheetRevision: null,
+    choosing: false,
+    confirmingArchive: false,
+    characterNote: "",
     me: null,
     referee: null,
     view: null,
@@ -378,7 +425,54 @@ function clearTokenEntries() {
 
 // ---- What the host sends -----------------------------------------------
 
+// Everything of one actor: cleared whenever the actor changes, so nothing of
+// one character (or draft) is ever shown, sent or resent as another. The
+// conversation is the campaign's and stays. Replies to anything asked
+// before are dropped (live()).
+function clearActor() {
+  scope = {};
+  Object.assign(state, {
+    sheet: null,
+    sheetRevision: null,
+    draft: "",
+    private: false,
+    sending: false,
+    unconfirmed: null,
+    lastAccepted: null,
+    composerNote: "",
+    noteIsBusy: false,
+    confirmingArchive: false,
+    characterNote: "",
+  });
+  if (state.referee) state.referee = { ...state.referee, choices: [], your_last_input: null };
+  statusRead = null;
+  syncRead = null;
+  $("composer-text").value = "";
+  $("composer-private").checked = false;
+}
+
+function actorKey(actor) {
+  if (!actor) return "";
+  return `${actor.character ? actor.character.character_id : ""}/${actor.mode}`;
+}
+
+// Follows the host's word on the actor; a different one clears the old one's
+// state first. Returns whether it changed.
+function changeActor(actor) {
+  const changed = actorKey(actor) !== actorKey(state.actor);
+  if (changed && state.actor) clearActor();
+  state.actor = actor;
+  return changed;
+}
+
 function applySnapshot(snapshot) {
+  if (snapshot.actor) {
+    changeActor(snapshot.actor);
+    state.sheet = snapshot.sheet ?? null;
+    // What Approve completes: the revision this sheet was read at.
+    const character = snapshot.actor.character;
+    state.sheetRevision = snapshot.actor.mode === "creation" ? character.draft_revision : null;
+  }
   state.me = {
     gameId: snapshot.game_id,
     participantId: snapshot.participant_id,
@@ -402,7 +496,17 @@ function receive(message) {
   }
   // Inside a lobby host, only a campaign the page is in can speak to it.
   if (LOBBY && state.phase !== "joined") return;
-  if (message.type === "message") {
+  if (message.type === "actor") {
+    // Another connection completed or archived this page's character.
+    if (!state.actor) return;
+    changeActor(message.actor);
+    state.characterNote =
+      message.reason === "archived"
+        ? "Your character was archived from another page or client."
+        : "Your character was completed from another page or client: it is ready to play.";
+    readView(); // its sheet and status, as the host now has them
+    if (message.actor.mode === "setup") listCharacters();
+  } else if (message.type === "message") {
     merge([message]);
   } else if (message.type === "referee") {
     if (state.referee) state.referee.state = message.state;
@@ -490,6 +594,163 @@ async function readStatus() {
   }
 }
 
+// ---- Characters (a campaign with characters) --------------------------------
+
+function characterLabel(character) {
+  if (!character) return "this character";
+  if (character.phase === "draft") return character.name ? `${character.name} (draft)` : "an unnamed draft";
+  return character.name || "an unnamed character";
+}
+
+// The player's own characters, for the picker. A selection the host no
+// longer has for this page (archived, relinked) is back in setup here.
+async function listCharacters() {
+  const current = session;
+  const here = scope;
+  if (!current || state.phase !== "joined" || !state.actor) return;
+  let reply;
+  try {
+    reply = await current.characters();
+  } catch {
+    return; // the connection closed; lost() has already said so
+  }
+  if (current !== session || leftCampaign(reply) || reply.type !== "characters") return;
+  state.characters = reply.characters;
+  if (here === scope && changeActor(reply.actor)) readView();
+  render();
+}
+
+// Plays a ready character, resumes a draft, or (null) asks setup questions
+// only. Changes this page only: nothing is drawn, spent or started.
+async function chooseCharacter(characterId) {
+  const current = session;
+  if (!current || state.phase !== "joined" || !state.actor || state.choosing) return;
+  state.choosing = true;
+  state.characterNote = "";
+  render();
+  let reply;
+  try {
+    reply = await current.selectCharacter(characterId);
+  } catch {
+    return; // the connection closed; lost() has already said so
+  } finally {
+    if (current === session) state.choosing = false;
+  }
+  if (current !== session || leftCampaign(reply)) return;
+  if (reply.type === "snapshot") {
+    applySnapshot(reply);
+    render();
+    if (state.referee) $("composer-text").focus();
+  } else {
+    state.characterNote = reply.message || "That character cannot be chosen now.";
+    render();
+  }
+  if (state.actor && state.actor.mode === "setup") listCharacters();
+}
+
+// Starts a draft, then resumes it: creation is with the referee, privately.
+async function createCharacter() {
+  const current = session;
+  if (!current || state.phase !== "joined" || !state.actor || state.choosing) return;
+  const name = $("create-name").value.trim() || null;
+  state.choosing = true;
+  state.characterNote = "";
+  render();
+  let reply;
+  try {
+    reply = await current.createCharacter(newRequestId(), name);
+  } catch {
+    return;
+  } finally {
+    if (current === session) state.choosing = false;
+  }
+  if (current !== session || leftCampaign(reply)) return;
+  if (reply.type !== "character") {
+    state.characterNote = reply.message || "The host could not start a character.";
+    render();
+    return;
+  }
+  $("create-name").value = "";
+  await chooseCharacter(reply.character.character_id);
+}
+
+// Completes the draft at the revision of the sheet shown, never a newer one.
+async function approve() {
+  const current = session;
+  const here = scope;
+  const actor = state.actor;
+  if (!current || state.phase !== "joined" || !actor || actor.mode !== "creation") return;
+  if (state.choosing || state.sheetRevision === null) return;
+  const draft = actor.character;
+  state.choosing = true;
+  render();
+  let reply;
+  try {
+    reply = await current.completeCharacter(newRequestId(), draft.character_id, state.sheetRevision);
+  } catch {
+    return;
+  } finally {
+    if (current === session) state.choosing = false;
+  }
+  if (!live(current, here) || leftCampaign(reply)) return;
+  if (reply.type === "character") {
+    changeActor(reply.actor);
+    state.characterNote =
+      `${characterLabel(reply.character)} is ready. The referee brings them in ` +
+      "when you next say something.";
+    readView();
+  } else if (reply.code === "stale_draft") {
+    state.characterNote = "The draft changed since you saw it; review it again.";
+    readView();
+  } else if (reply.code === "character_incomplete") {
+    state.characterNote = `Not finished yet: ${(reply.problems || []).join(" ")}`;
+  } else {
+    state.characterNote = reply.message || "The host could not complete it.";
+  }
+  render();
+}
+
+// Settings: back to the picker, with no character.
+function changeCharacter() {
+  state.screen = "console";
+  chooseCharacter(null);
+}
+
+function askArchive() {
+  if (!state.actor || !state.actor.character || state.phase !== "joined") return;
+  state.confirmingArchive = true;
+  render();
+  $("archive-no").focus();
+}
+
+async function archive() {
+  const current = session;
+  const actor = state.actor;
+  if (!current || !state.confirmingArchive || !actor || !actor.character) return;
+  const character = actor.character;
+  state.confirmingArchive = false;
+  state.choosing = true;
+  render();
+  let reply;
+  try {
+    reply = await current.archiveCharacter(newRequestId(), character.character_id);
+  } catch {
+    return;
+  } finally {
+    if (current === session) state.choosing = false;
+  }
+  if (current !== session || leftCampaign(reply)) return;
+  if (reply.type === "character") {
+    changeActor(reply.actor);
+    state.characterNote = `${characterLabel(reply.character)} is archived; its history stays.`;
+    readView();
+    listCharacters();
+  } else {
+    state.characterNote = reply.message || "The host could not archive it.";
+  }
+  render();
+}
+
 // ---- Talking -------------------------------------------------------------
 
 async function send() {
@@ -505,7 +766,7 @@ async function send() {
     render();
     return;
   }
-  const input = { requestId: newRequestId(), text, private: state.private };
+  const input = { requestId: newRequestId(), text, private: state.private, actor: sayActor() };
   await submit({ ...input, fromComposer: true, fresh: true });
 }
 
@@ -520,7 +781,7 @@ async function submit(input) {
   render();
   let reply;
   try {
-    reply = await current.say(input.requestId, input.text, input.private);
+    reply = await current.say(input.requestId, input.text, input.private, input.actor);
   } catch {
     return; // the connection closed; lost() has already said so
   }
@@ -540,14 +801,35 @@ async function submit(input) {
     const where = input.fromComposer ? " Your text is still here." : "";
     state.composerNote = `${reply.message}${where}`;
     state.noteIsBusy = true;
+  } else if (
+    reply.type === "error" &&
+    ["character_changed", "character_unavailable"].includes(reply.code)
+  ) {
+    // This page's idea of its character was out of date: nothing was stored.
+    // Read where the host has it now; a changed actor clears the old one's.
+    state.composerNote = reply.message;
+    readView();
+    listCharacters();
   } else {
     state.composerNote = reply.message || "The host could not take that.";
   }
   render();
 }
 
+// The actor a say names: the one this page believes it has.
+function sayActor() {
+  if (!state.actor) return null;
+  const character = state.actor.character;
+  return { character_id: character ? character.character_id : null, mode: state.actor.mode };
+}
+
 function acceptedInput(input) {
-  state.lastAccepted = { requestId: input.requestId, text: input.text, private: input.private };
+  state.lastAccepted = {
+    requestId: input.requestId,
+    text: input.text,
+    private: input.private,
+    actor: input.actor,
+  };
   if (input.fromComposer) {
     state.draft = "";
     state.private = false;
@@ -573,7 +855,9 @@ function settleUnconfirmed() {
 function resendTarget() {
   if (state.lastAccepted) return state.lastAccepted;
   const last = state.referee && state.referee.your_last_input;
-  return last ? { requestId: last.request_id, text: last.text, private: last.private } : null;
+  return last
+    ? { requestId: last.request_id, text: last.text, private: last.private, actor: sayActor() }
+    : null;
 }
 
 function resend(input, fromComposer) {
@@ -628,7 +912,18 @@ function statusText() {
     referee = " · The referee is ready.";
   }
   const where = state.campaign ? `${state.campaign.name} · ` : "";
-  return `${where}Joined as ${state.me.name}${referee}`;
+  return `${where}${actorText()}Joined as ${state.me.name}${referee}`;
+}
+
+// Who this connection acts as, for the status line.
+function actorText() {
+  const actor = state.actor;
+  if (!actor) return "";
+  if (actor.mode === "play") return `${actor.character.name} · `;
+  if (actor.mode === "creation") {
+    return `Creating ${characterLabel(actor.character)} · private to you · `;
+  }
+  return "No character · ";
 }
 
 // Inside a game or campaign, connected or showing it while disconnected.
@@ -652,9 +947,20 @@ function renderConsole() {
     button.disabled = state.phase === "joining" || state.phase === "reconnecting";
   }
   renderPicker();
+  renderCharacters(shown);
+  renderSheet(shown);
   const talking = !shown || state.referee !== null;
   $("console-no-referee").hidden = talking;
   $("console-composer").hidden = !talking;
+  const mode = state.actor && state.actor.mode;
+  $("composer-label").textContent =
+    mode === "setup"
+      ? "Ask a setup or rules question (nothing in the game changes)"
+      : mode === "creation"
+        ? `Say to the referee, privately, while creating ${characterLabel(state.actor.character)}`
+        : "Say to the referee";
+  // Creation is always private: there is nothing to choose.
+  $("composer-private-label").hidden = mode === "creation";
   // Locked while a send awaits its reply, so the reply clears only what was
   // sent, never text typed meanwhile, and while an unconfirmed input is
   // being settled.
@@ -694,6 +1000,68 @@ function renderPicker() {
   const usable = state.phase === "lobby";
   for (const button of list.querySelectorAll("button")) button.disabled = !usable;
   $("lobby-refresh").disabled = !usable;
+}
+
+// In setup: Play for each ready character, Resume for each draft, Create.
+function renderCharacters(shown) {
+  const picking = shown && state.actor !== null && state.actor.mode === "setup";
+  $("console-characters").hidden = !picking;
+  $("characters-empty").hidden = state.characters.length > 0;
+  const list = $("character-list");
+  if (renderedCharacters !== state.characters) {
+    renderedCharacters = state.characters;
+    list.replaceChildren(
+      ...state.characters.map((character) => {
+        const item = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "campaign";
+        button.dataset.characterId = String(character.character_id);
+        const draft = character.phase === "draft";
+        button.append(draft ? "Resume " : "Play ", characterLabel(character));
+        if (draft) {
+          const kind = document.createElement("span");
+          kind.className = "kind";
+          kind.textContent = `, revision ${character.draft_revision}`;
+          button.append(kind);
+        }
+        item.append(button);
+        return item;
+      }),
+    );
+  }
+  const usable = state.phase === "joined" && !state.choosing;
+  for (const button of list.querySelectorAll("button")) button.disabled = !usable;
+  $("character-create").disabled = !usable;
+}
+
+// The selected character's sheet, read-only: the module's data, as shown.
+function renderSheet(shown) {
+  const actor = state.actor;
+  const visible = shown && actor !== null && actor.mode !== "setup";
+  $("console-sheet").hidden = !visible && !state.characterNote;
+  $("sheet-note").textContent = state.characterNote;
+  $("sheet-body").hidden = !visible;
+  $("sheet-revision").hidden = !visible;
+  const creating = visible && actor.mode === "creation";
+  $("sheet-title").textContent = !visible
+    ? "Your character"
+    : creating
+      ? `Creating ${characterLabel(actor.character)}`
+      : characterLabel(actor.character);
+  $("sheet-revision").textContent = creating && state.sheetRevision !== null
+    ? `Draft revision ${state.sheetRevision}. Only you see this.`
+    : "";
+  const approveButton = $("character-approve");
+  approveButton.hidden = !creating || state.sheetRevision === null;
+  approveButton.textContent = creating
+    ? `Approve ${characterLabel(actor.character)} (revision ${state.sheetRevision})`
+    : "Approve";
+  approveButton.disabled = state.phase !== "joined" || state.choosing;
+  if (renderedSheet !== state.sheet) {
+    renderedSheet = state.sheet;
+    $("sheet-body").replaceChildren(viewNode(null, state.sheet));
+  }
 }
 
 function renderUnconfirmed() {
@@ -763,11 +1131,20 @@ function messageItem(message) {
   sender.className = "sender";
   const from = message.from || {};
   sender.textContent = from.kind === "referee" ? "Referee" : String(from.name ?? "?");
+  if (from.kind !== "referee" && typeof from.character === "string") {
+    sender.textContent += ` as ${from.character}`;
+  }
   head.append(sender);
   if (message.audience === "private") {
     const badge = document.createElement("span");
     badge.className = "audience";
-    badge.textContent = "Private";
+    const creation = message.creation;
+    if (creation && typeof creation === "object") {
+      badge.classList.add("creation");
+      badge.textContent = `Private · creating ${creation.name ? String(creation.name) : "a draft"}`;
+    } else {
+      badge.textContent = "Private";
+    }
     head.append(" ", badge);
   }
   const text = document.createElement("p");
@@ -791,6 +1168,25 @@ function renderSettings() {
       ? "None: choose one in the Console"
       : "Shown after choosing one";
   $("settings-leave").disabled = !joined;
+  const actor = state.actor;
+  const character = actor && actor.character;
+  $("settings-character").textContent = !actor
+    ? campaign
+      ? "This campaign has no characters"
+      : "Shown after choosing one"
+    : character
+      ? `${characterLabel(character)} (${character.character_id}, ${
+          actor.mode === "creation" ? "being created" : "ready"
+        })`
+      : "None: questions only";
+  $("settings-change-character").disabled = !joined || !character || state.choosing;
+  $("settings-archive").disabled = !joined || !character || state.choosing;
+  $("archive-confirm").hidden = !state.confirmingArchive || !character;
+  $("archive-confirm-text").textContent = character
+    ? `Archive ${characterLabel(character)}? It leaves your list for good; its ` +
+      "history stays in the campaign."
+    : "";
+  $("archive-yes").textContent = character ? `Archive ${characterLabel(character)}` : "Archive";
   const me = state.me;
   $("settings-game").textContent = me ? me.gameId : "Shown after joining";
   $("settings-name").textContent = me ? `${me.name} (${me.participantId})` : "Shown after joining";
@@ -887,6 +1283,22 @@ function start() {
     if (button) select(button.dataset.campaignId);
   });
   $("lobby-refresh").addEventListener("click", listCampaigns);
+  $("character-list").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-character-id]");
+    if (button) chooseCharacter(button.dataset.characterId);
+  });
+  $("character-create").addEventListener("click", createCharacter);
+  $("create-name").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") createCharacter();
+  });
+  $("character-approve").addEventListener("click", approve);
+  $("settings-change-character").addEventListener("click", changeCharacter);
+  $("settings-archive").addEventListener("click", askArchive);
+  $("archive-yes").addEventListener("click", archive);
+  $("archive-no").addEventListener("click", () => {
+    state.confirmingArchive = false;
+    render();
+  });
   $("unconfirmed-resend").addEventListener("click", () => resend(state.unconfirmed, true));
   $("unconfirmed-edit").addEventListener("click", editUnconfirmed);
   $("console-resend").addEventListener("click", () => resend(resendTarget(), false));
