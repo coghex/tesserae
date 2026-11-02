@@ -17,8 +17,13 @@ the bridge's mode table, actor-scoped choices and last inputs, the per-job
 prompts and reply schemas, private creation and its results, and
 introduction). The standing referee instructions (`AGENTS.md`) are
 unchanged: each job's prompt carries its mode's rules, so no `referee setup`
-rerun is needed. The host messages (9 to 11) and the clients (15) are not
-yet: until CHR-4, a host accepts every input of a character game in setup.
+rerun is needed. CHR-4 (#114) added the host's side of sections 9 to 11 in
+`tesserae/protocol.py`, `tesserae/server.py` and `tesserae/lobby.py`: the
+character messages and errors, each connection's own selection and actor,
+`say`'s actor, scoped snapshots and status, the `actor` notices, the `select`
+gate for older clients and the single-game refusal. The clients (section 15)
+are not yet: until CHR-5 and CHR-6, today's CLI and browser are told to update
+when they select a character campaign.
 
 It extends the [lobby contract](lobby_contract.md) and the
 [referee contract](referee_contract.md). Everything they say still holds for
@@ -481,8 +486,9 @@ crosses databases atomically; the order is the guarantee, as there.
 ## 11. Single-game hosts and compatibility
 
 - `tesserae serve --database` (any mode) refuses a character game before
-  listening, exit 2: "This game uses characters; serve it from a lobby host
-  (serve --registry)." Games without characters are served as today.
+  listening, exit 2: "this game uses characters; serve it from a lobby host
+  (serve --registry); nothing was started". Games without characters are
+  served as today.
 - Old clients cannot enter a character campaign (section 9's `select` field),
   so they can never act without an actor. Campaigns without characters work
   with old and new clients alike.

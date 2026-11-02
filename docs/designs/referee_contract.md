@@ -18,7 +18,7 @@ job, startup recovery, `serve --referee-dir`, `referee stop` and `rebuild`, in
 [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
 records how the CLI shows conversation (owner decision O-1). Character games
-(M2-3, not yet implemented) extend sections 5 to 9 under the
+(M2-3) extend sections 5 to 9 under the
 [character contract](character_contract.md): a frozen actor, modes, and
 private creation.
 

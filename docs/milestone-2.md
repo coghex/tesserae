@@ -68,7 +68,8 @@ one privately with the referee, approves it and enters play. Characters are
 served by the lobby host only. CHR-2 (#112) added the stored characters, the
 module capability, seed version 2 and the original
 [Trailhead](trailhead.md) module; CHR-3 (#113) the referee's frozen actors and
-private, step-by-step creation. The host and client slices follow.
+private, step-by-step creation; CHR-4 (#114) the lobby host's character
+messages and per-connection actors. The CLI and browser slices follow.
 
 ## Later browser work
 

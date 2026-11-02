@@ -30,6 +30,7 @@ from .external import load_module_dir
 from .modules import ModuleError
 from .protocol import (
     JOIN_TIMEOUT_SECONDS,
+    CharacterRequest,
     JoinRequest,
     MessagesRequest,
     ProtocolError,
@@ -37,7 +38,11 @@ from .protocol import (
     SayRequest,
     SyncRequest,
     accepted_message,
+    actor_notice,
+    actor_object,
     busy_message,
+    character_message,
+    characters_message,
     conversation_message,
     encode_message,
     error_message,
@@ -55,7 +60,14 @@ from .referee.orchestrator import CodexReferee, RefereeJobFailed
 from .referee.runner import DEFAULT_DIR as DEFAULT_REFEREE_DIR
 from .referee.runner import DEFAULT_TIMEOUT, RefereeDir, RunnerError
 from .referee.store import REFEREE, RefereeError, RefereeStore
-from .store import GameStore, ParticipantContext, StoreBusy, StoreError
+from .store import (
+    SETUP,
+    Actor,
+    GameStore,
+    ParticipantContext,
+    StoreBusy,
+    StoreError,
+)
 from .transport import TransportConfigError, check_server, server_context
 from .web import AssetsError, load_assets
 
@@ -139,6 +151,9 @@ class CampaignService:
             self._runtime = store.runtime()
             self.referee_mode = RefereeStore(store).enabled()
         self.module = self._runtime.module
+        # A character game (docs/designs/character_contract.md): each session
+        # selects its own actor, and only a lobby host serves one.
+        self.characters = self._runtime.characters is not None
         if self.module.requires_authentication and not authenticated:
             raise HostConfigError(
                 f"this game's module, {self.module.id}, requires --authenticated, "
@@ -182,6 +197,7 @@ class CampaignService:
         )
         self._deliveries = None
         self._recovery = None
+        self._notices: set[asyncio.Task] = set()  # actor notices being sent
 
     def _check_serving(self):
         """A subclass's own refusals, before any referee is set up."""
@@ -276,14 +292,22 @@ class CampaignService:
         game has no view, so its snapshot is metadata only.
         """
         context = session.context
-        current = await self._call(GameStore.participant_view, context, session=session)
-        if current is None:
+        # One guarded read of one committed state: the revision, the view, the
+        # actor's sheet and the referee projection always agree.
+        found = await self._call(
+            _snapshot_parts,
+            context,
+            session.character_id,
+            self.characters,
+            self.referee_mode,
+            session=session,
+        )
+        if found is None:
             return None
-        referee = None
-        if self.referee_mode:
-            referee = await self._call(_referee_projection, context, session=session)
-            if referee is None:
-                return None
+        current, view, referee, lost = found
+        if lost:  # the selection is no longer the caller's: back in setup
+            session.character_id = None
+        actor, summary, sheet = view or (None, None, None)
         return snapshot_message(
             self.game_id,
             context.participant_id,
@@ -293,7 +317,23 @@ class CampaignService:
             referee,
             current.name if self.authenticated else None,
             session.campaign,
+            None if actor is None else actor_object(actor.mode, summary),
+            sheet,
         )
+
+    async def _actor(self, session: "_Session", *, keep_lost: bool = True):
+        """The session's actor now, with its character's summary and sheet:
+        (Actor, summary or None, sheet or None). A selection that is no longer
+        the caller's (archived, relinked, unknown) ends here: the session is
+        back in setup. With `keep_lost`, that returns None instead, so the
+        request can say so (character_unavailable)."""
+        found = await self._call(
+            _actor_view, session.context, session.character_id, session=session
+        )
+        if found is None:
+            session.character_id = None
+            return None if keep_lost else (SETUP, None, None)
+        return found
 
     def _publish(self, revision: int):
         """Announce a committed revision to every joined connection. Never waits."""
@@ -366,6 +406,14 @@ class CampaignService:
             checked = True
         elif isinstance(parsed, SyncRequest):
             return await self._sync(session)
+        elif isinstance(parsed, CharacterRequest) and self.characters:
+            return await self._character(session, parsed)
+        elif isinstance(parsed, CharacterRequest) or (
+            isinstance(parsed, SayRequest)
+            and parsed.actor is not None
+            and not self.characters
+        ):
+            reply = _no_characters(parsed.request_id)
         elif isinstance(parsed, (SayRequest, RefereeStatusRequest, MessagesRequest)):
             if not self.referee_mode:
                 reply = error_message(
@@ -386,6 +434,13 @@ class CampaignService:
                 "referee runs the game's commands.",
                 request_id=parsed.request_id,
             )
+        elif self.characters:
+            found = await self._actor(session)
+            if found is None:
+                reply = _unavailable(parsed.request_id)
+            else:
+                reply = await self._execute(session.context, message, session, found[0])
+            checked = True
         else:
             reply = await self._execute(session.context, message, session)
             checked = True
@@ -409,8 +464,23 @@ class CampaignService:
         """Accept, replay or refuse one input and send its reply; an accepted
         input's job is running, and its message and `busy` queued, before
         that reply is sent, so a failed send never strands the job. Holding
-        the sender's send lock throughout keeps the reply ahead of them."""
+        the sender's send lock throughout keeps the reply ahead of them.
+
+        In a character game the `say` names the actor the client believes it
+        has; the input is accepted for the connection's actual actor, and
+        only if the two match (character contract section 9)."""
         replay = []
+        if self.characters != (request.actor is not None):
+            refusal = (
+                error_message(
+                    "invalid_request",
+                    "In this game a say names its actor.",
+                    request_id=request.request_id,
+                )
+                if self.characters
+                else _no_characters(request.request_id)
+            )
+            return await session.send_read(lambda: self._recheck(session, refusal))
 
         async def decide() -> dict:
             async with self._lifecycle:
@@ -427,11 +497,15 @@ class CampaignService:
                         session.context,
                         request,
                         self._host_run,
+                        session.character_id if self.characters else _NO_ACTOR,
                         session=session,
                     )
                 except Exception:
                     return self._failure(request.request_id)
                 kind = outcome[0]
+                if kind == "lost":  # the selected character is no longer theirs
+                    session.character_id = None
+                    return _unavailable(request.request_id)
                 if kind == "busy":
                     return busy_message(request.request_id, outcome[2], outcome[1])
                 if kind == "error":
@@ -447,7 +521,9 @@ class CampaignService:
                     self._jobs.add(job)
                     job.add_done_callback(self._jobs.discard)
                 else:  # replayed: its recorded reply, to this connection only
-                    replay.extend(_wire(m, names) for m in submission.messages)
+                    replay.extend(
+                        _wire(m, names, self.characters) for m in submission.messages
+                    )
                 return accepted_message(
                     request.request_id, submission.job.job_id, said["seq"]
                 )
@@ -456,6 +532,134 @@ class CampaignService:
         for message in replay:
             await session.send(message)
         return reply
+
+    async def _character(self, session: "_Session", request: CharacterRequest) -> dict:
+        """A character message in a character game (character contract
+        section 9). Selection changes only this connection and runs no
+        module code; lifecycle operations are the store's, and tell any other
+        connection of the same participant whose character they changed."""
+        context = session.context
+        if request.kind == "characters":
+            try:
+                found = await self._call(
+                    _characters_read, context, session.character_id, session=session
+                )
+            except Exception:
+                return self._failure(None)
+            if found is None:
+                return session_error("session_revoked")
+            listed, view = found
+            if view is None:  # its selection is no longer the caller's
+                session.character_id = None
+                view = (SETUP, None, None)
+            return characters_message(actor_object(view[0].mode, view[1]), listed)
+        if request.kind == "character_select":
+            if request.character_id is not None:
+                try:
+                    found = await self._call(
+                        _actor_view, context, request.character_id, session=session
+                    )
+                except Exception:
+                    return self._failure(None)
+                if found is None:
+                    if session.character_id == request.character_id:
+                        session.character_id = None
+                    return await self._recheck(session, _unavailable(None))
+            session.character_id = request.character_id
+            return await self._sync(session)
+        operation = {
+            "character_create": (GameStore.create_character, (request.name,)),
+            "character_complete": (
+                GameStore.complete_character,
+                (request.character_id, request.draft_revision),
+            ),
+            "character_archive": (GameStore.archive_character, (request.character_id,)),
+        }[request.kind]
+        method, args = operation
+        try:
+            reply, committed = await self._call(
+                method, context, request.request_id, *args, session=session
+            )
+        except Exception:
+            return self._failure(request.request_id)
+        if reply["type"] != "result":
+            if (
+                reply["type"] == "error"
+                and reply["code"] == "character_unavailable"
+                and session.character_id == request.character_id
+            ):
+                session.character_id = None
+            return reply
+        character = reply["result"]["character"]
+        if committed:
+            self._publish(reply["revision"])
+            if request.kind != "character_create":
+                self._tell_others(session, character, request.kind)
+        try:
+            # The actor after the operation: an archived selection is back in
+            # setup here, and a completed one is in play.
+            found = await self._actor(session, keep_lost=False)
+        except Exception:
+            return self._failure(request.request_id)
+        return character_message(
+            request.request_id,
+            reply["revision"],
+            character,
+            actor_object(found[0].mode, found[1]),
+        )
+
+    def _tell_others(self, session: "_Session", character: dict, kind: str):
+        """Every other connection of this participant with this character
+        selected learns that it was completed (now in play) or archived (back
+        in setup), unsolicited, after any reply it is being sent. Each notice
+        is decided when it is sent (`_actor_notice`), never here."""
+        for other in list(self._sessions):
+            if (
+                other is not session
+                and other.context.participant_id == session.context.participant_id
+                and other.character_id == character["character_id"]
+            ):
+                task = asyncio.create_task(
+                    self._actor_notice(other, character["character_id"])
+                )
+                self._notices.add(task)
+                task.add_done_callback(self._notices.discard)
+
+    async def _actor_notice(self, session: "_Session", character_id: str):
+        """Tell `session` what became of its character, under its send lock:
+        only if that is still its selection, only while its access holds,
+        and only what is true now (character contract section 9)."""
+        ended = None
+
+        async def decide():
+            nonlocal ended
+            if session.character_id != character_id:
+                return None  # it has chosen something else since
+            try:
+                found = await self._call(
+                    _notice_view, session.context, character_id, session=session
+                )
+            except Exception:
+                logger.exception("Could not check a session for an actor notice")
+                ended = session.unreachable
+                return None
+            if found is None:  # its access has gone: nothing about the character
+                ended = session.revoked
+                return None
+            actor, summary, _ = found
+            if actor.mode == "creation":
+                return None  # still a draft: nothing to tell
+            if actor.mode == "setup":
+                session.character_id = None
+            reason = "completed" if actor.mode == "play" else "archived"
+            return actor_notice(reason, actor_object(actor.mode, summary))
+
+        try:
+            await session.send_decided(decide)
+            if ended is not None:
+                await ended()
+        except (ConnectionClosed, _SlowConsumer):
+            pass
 
     async def _run_job(self, job):
         """Run one job with the executor, then store and deliver how it ended."""
@@ -486,14 +690,21 @@ class CampaignService:
         context = session.context
         try:
             if isinstance(request, RefereeStatusRequest):
+                actor = None
+                if self.characters:
+                    actor = (await self._actor(session, keep_lost=False))[0]
                 projection = await self._call(
-                    _referee_projection, context, session=session
+                    _referee_projection, context, actor, session=session
                 )
                 if projection is not None:
                     return referee_status_message(projection)
             else:
                 visible = await self._call(
-                    _visible_messages, context, request.after_seq, session=session
+                    _visible_messages,
+                    context,
+                    request.after_seq,
+                    self.characters,
+                    session=session,
                 )
                 if visible is not None:
                     return messages_message(visible)
@@ -514,7 +725,7 @@ class CampaignService:
                 messages, names = payload
                 pid = session.context.participant_id
                 visible = [
-                    _wire(m, names)
+                    _wire(m, names, self.characters)
                     for m in messages
                     if m["audience"] == "table" or pid in m["audience"]
                 ]
@@ -557,11 +768,15 @@ class CampaignService:
         return snapshot or session_error("session_revoked")
 
     async def _execute(
-        self, context: ParticipantContext, raw: str, session: "_Session | None" = None
+        self,
+        context: ParticipantContext,
+        raw: str,
+        session: "_Session | None" = None,
+        actor: Actor | None = None,
     ) -> dict:
         try:
             reply, committed = await self._call(
-                GameStore.execute_command, context, raw, session=session
+                _execute_as, context, raw, actor, session=session
             )
         except Exception:
             return self._failure(_request_id(raw, self._runtime))
@@ -671,6 +886,11 @@ class GameHost(CampaignService):
         self._requests = RequestPolicy(browser_assets)
 
     def _check_serving(self):
+        if self.characters:
+            raise HostConfigError(
+                "this game uses characters; serve it from a lobby host "
+                "(serve --registry)"
+            )
         if self._browser_assets is None:
             return
         if not self.authenticated:
@@ -800,12 +1020,31 @@ class GameHost(CampaignService):
             return error_message("internal_error", "The host could not read the game.")
 
 
-def _submit(store: GameStore, context, request: SayRequest, host_run: str) -> tuple:
+_NO_ACTOR = object()  # a game without characters: inputs have no actor
+
+
+def _submit(store: GameStore, context, request: SayRequest, host_run: str,
+            selection=_NO_ACTOR) -> tuple:  # fmt: skip
     referee = RefereeStore(store)
+    actor = None
+    if selection is not _NO_ACTOR:
+        # The connection's actor now; the store checks it again inside the
+        # acceptance transaction, so a completion racing this cannot slip by.
+        found = _actor_view(store, context, selection)
+        if found is None:
+            return ("lost",)
+        actor = found[0]
+        if (actor.character_id, actor.mode) != request.actor:
+            return (
+                "error",
+                "character_changed",
+                "Your character has changed; check your characters and try again.",
+            )
     try:
         submission = referee.submit(
-            context, request.request_id, request.text, request.private, host_run
-        )
+            context, request.request_id, request.text, request.private, host_run,
+            actor=actor,
+        )  # fmt: skip
     except RefereeError as error:
         if error.code == "referee_busy":
             running = referee.running_job()
@@ -840,35 +1079,127 @@ def _settle(store: GameStore, job_id: str, reply, state, error) -> tuple:
     return (), {}
 
 
-def _referee_projection(store: GameStore, context) -> dict | None:
+def _referee_projection(store: GameStore, context, actor=None) -> dict | None:
     if store.session_revision(context) is None:
         return None
-    return RefereeStore(store).projection(context.participant_id)
+    return RefereeStore(store).projection(context.participant_id, actor)
 
 
-def _visible_messages(store: GameStore, context, after_seq: int) -> list | None:
+def _visible_messages(store: GameStore, context, after_seq: int,
+                      characters: bool = False) -> list | None:  # fmt: skip
     if store.session_revision(context) is None:
         return None
     names = _names(store)
     return [
-        _wire(m, names)
+        _wire(m, names, characters)
         for m in RefereeStore(store).messages_for(context.participant_id, after_seq)
     ]
 
 
 def _names(store: GameStore) -> dict:
-    return {p.participant_id: p.name for p in store.participants()}
+    """Participant and character IDs to their names (the two never clash:
+    p_ and c_)."""
+    names = {p.participant_id: p.name for p in store.participants()}
+    names.update((c.character_id, c.name) for c in store.inspect_characters())
+    return names
 
 
-def _wire(message: dict, names: dict) -> dict:
-    """A stored message as its recipients see it."""
+def _wire(message: dict, names: dict, characters: bool = False) -> dict:
+    """A stored message as its recipients see it. In a character game a
+    player's message names the character they spoke as, and a creation
+    exchange is marked (character contract section 9)."""
     sender = message["sender"]
+    extra = {}
+    character_id = message.get("character_id")
+    if characters and sender != REFEREE:
+        extra["character"] = None if character_id is None else names.get(character_id)
+    if message.get("creation"):
+        extra["creation"] = {
+            "character_id": character_id,
+            "name": names.get(character_id),
+        }
     return conversation_message(
         message["seq"],
         None if sender == REFEREE else names.get(sender, sender),
         "table" if message["audience"] == "table" else "private",
         message["text"],
+        **extra,
     )
+
+
+def _actor_view(store: GameStore, context, character_id):
+    """(Actor, summary, sheet) for a connection's selection, or None if it is
+    not the caller's unarchived character (or the caller's authority has
+    ended). No selection is setup."""
+    if character_id is None:
+        return SETUP, None, None
+    found = store.character_sheet(context, character_id)
+    if found is None:
+        return None
+    record, sheet = found
+    mode = "creation" if record.phase == "draft" else "play"
+    return Actor(character_id, mode), record.summary(), sheet
+
+
+def _characters_read(store: GameStore, context, character_id):
+    """The caller's characters and their actor view, or None if revoked."""
+    listed = store.characters(context)
+    if listed is None:
+        return None
+    return [c.summary() for c in listed], _actor_view(store, context, character_id)
+
+
+def _execute_as(store: GameStore, context, raw, actor):
+    return store.execute_command(context, raw, actor=actor)
+
+
+def _no_characters(request_id) -> dict:
+    return error_message(
+        "characters_unsupported", "This game has no characters.", request_id=request_id
+    )
+
+
+def _unavailable(request_id) -> dict:
+    return error_message(
+        "character_unavailable",
+        "That character is not available to you.",
+        request_id=request_id,
+    )
+
+
+def _snapshot_parts(store: GameStore, context, character_id, characters: bool,
+                    referee_mode: bool):  # fmt: skip
+    """Everything a snapshot holds, from one committed state: the view, the
+    actor view (setup if the selection is no longer the caller's, with
+    `lost` set) and the referee projection. None if revoked."""
+    with store.snapshot():
+        current = store.participant_view(context)
+        if current is None:
+            return None
+        view, lost = None, False
+        if characters:
+            view = _actor_view(store, context, character_id)
+            if view is None:
+                view, lost = (SETUP, None, None), True
+        referee = None
+        if referee_mode:
+            actor = None if view is None else view[0]
+            referee = _referee_projection(store, context, actor)
+            if referee is None:
+                return None
+        return current, view, referee, lost
+
+
+def _notice_view(store: GameStore, context, character_id):
+    """For an actor notice: the character's actor view now, setup if it is no
+    longer the caller's, or None if the caller's access has ended. The sheet
+    read checks access in the same read as the character."""
+    found = _actor_view(store, context, character_id)
+    if found is not None:
+        return found
+    if store.session_revision(context) is None:
+        return None
+    return SETUP, None, None
 
 
 _UNCHECKED = object()
@@ -907,6 +1238,9 @@ class _Session:
         self.context = context
         self.guard = guard
         self.campaign = campaign
+        # The connection's own character selection in a character game: an
+        # ID, or None for setup. Never persisted (character contract section 9).
+        self.character_id = None
         self.active = True  # False once the connection has left this game
         self.lost = None  # why a guarded check refused, set by a worker
         self._write_timeout = write_timeout
@@ -930,6 +1264,14 @@ class _Session:
     async def send(self, message: dict):
         async with self._lock:
             await self._send(message)
+
+    async def send_decided(self, decide):
+        """Under the send lock, await `decide()` and send what it returns, if
+        anything: for an unsolicited message that must hold when it is sent."""
+        async with self._lock:
+            message = await decide()
+            if message is not None:
+                await self._send(message)
 
     async def send_read(self, read) -> dict:
         """Await `read()` and send the message it returns, holding back
