@@ -38,6 +38,11 @@ play ([character contract](docs/designs/character_contract.md)). The
 [acceptance record](docs/acceptance/characters.md) shows a CLI player and a
 browser newcomer, with a scripted referee.
 
+The next [delivery design draft](docs/designs/campaign_authority_design.md)
+proposes campaign hosts, configurable requirements, guest approval requests
+and host sheet/world administration (M2-4). It separates that public framework
+work from later private campaign integration; it is not implemented yet.
+
 ## First executable slice
 
 The initial command-line interface exercises a generic dice expression evaluator.

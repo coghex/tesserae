@@ -77,13 +77,40 @@ referee, under the [model-free testing policy](testing.md): the
 [acceptance record](acceptance/characters.md) shows it. The private module's
 character rules and the private campaign continuation follow separately.
 
+## Proposed fourth slice: M2-4
+
+The owner selected campaign hosts, rules and administration after M2-3.
+The [delivery draft](designs/campaign_authority_design.md) records one host
+player per campaign, a database-backed rules document with file import/export,
+module-defined requirements, host decisions on guest requests, and broad host
+inspection/editing of sheets and world data. The host can own no characters
+and still administer from either CLI or browser. The host can inspect private
+conversations and referee preparation; other guests retain their privacy.
+
+These are agreed product decisions, not delivered features. The proposed
+public slices begin with exact contracts, then authority, configuration,
+administration, requests/referee context, the two clients and model-free
+acceptance. No tracker is filed yet. Existing Console/Settings navigation,
+memory-only login and localhost scope remain.
+
+## Subsequent private integration
+
+A companion design in the external private workspace covers source-grounded
+creation requirements and scripts, host administration, an explicit campaign
+import and model-free mixed-client acceptance. Its provisional label is M2-5.
+It depends on the new public contracts and has its own private implementation
+and named-head review. An owner-requested live playtest follows separately;
+private source data, paths and evidence do not belong in this repository.
+Neither the public framework acceptance nor this overview implements that
+private integration or resumes the original campaign.
+
 ## Later browser work
 
 LAN certificate trust and interactive maps follow M2-1. Their exact scope and
 delivery order have not been selected. Remembered login, potentially through
 server-managed cookies, also needs a later design covering expiry, revocation
-and automatic credential handling. Beyond M2-2, no additional browser slice
-is approved by this overview alone.
+and automatic credential handling. This overview does not authorize additional
+browser features beyond the agreed slices and their reviewed delivery plans.
 
 Do not expand game mechanics, introduce a universal sheet schema or bypass the
 referee to demonstrate browser controls. The private module/content and its

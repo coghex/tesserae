@@ -320,6 +320,38 @@ campaign/character selection precede it. Accepted inputs retain their original
 campaign/character and cannot be redirected by switching. Switching characters
 cannot grant extra turns. Model-guided creation releases busy between answers.
 
+### D-25. Campaign hosts, rules and administration
+
+On 2026-11-02 the owner selected one designated host player for each campaign,
+established at creation independently of character ownership. The host may own
+zero, one or many characters and has ultimate campaign authority; other admitted
+players are guests. Only authenticated host decisions can change explicit
+mechanical requirements for guests. The referee negotiates narrative details
+with players and requests host decisions for mechanical exceptions, releasing
+its job while people decide. An individual request defaults to its stated
+character; a campaign-wide rule change must be explicit.
+
+Campaign rules are agreed conversationally and approved before activation.
+The owner selected a database-backed JSON override document with file
+import/export. Module data supplies game-specific requirements and supported
+settings; Python enforces mechanics and performs rolls. The referee cannot
+create or modify scripts, bypass validation or invent numerical results.
+Narrative guidance and optional details allow judgment rather than a universal
+character questionnaire, role/class/level model or rules language.
+
+The owner explicitly included broad host sheet/world administration in this
+delivery, through either client with no character required. The host has full
+inspection of sheets, private conversations and referee-only preparation.
+This is an explicit extension of creator-only privacy for the designated host;
+ordinary guest privacy and table recipient rules remain. Administrative edits
+must be explicit, validated and auditable. The local operator can recover the
+host designation; clients and the referee cannot manufacture host authority.
+
+The [M2-4 delivery draft](designs/campaign_authority_design.md) separates this
+public framework work from subsequent private creation/campaign integration.
+These decisions are agreed direction. The design/slices still need review;
+neither delivery is implemented and no tracker is filed yet.
+
 ## Proposed implementation boundaries
 
 These are proposals to refine as implementation proceeds, not additional signed-off
