@@ -10,13 +10,19 @@ See docs/modules.md for the contract.
 
 import copy
 import json
+import unicodedata
 from dataclasses import dataclass, field
 from functools import partial
 from types import MappingProxyType
 from typing import Callable, Iterable, Mapping
 
 HOST_API_VERSION = 1
+CHARACTER_RULES_VERSION = 1
 ACTION_REJECTED = "action_rejected"
+# Command names starting with this belong to the host (character.name).
+RESERVED_PREFIX = "character."
+NAME_STEP = "character.name"
+MAX_CHARACTER_NAME = 100
 
 RandInt = Callable[[int, int], int]
 
@@ -87,13 +93,16 @@ class Action:
 
     `participant_id` comes from the host's trusted context, never from the
     message. `operations` holds only the module's selected operations, bound
-    to this execution's random source.
+    to this execution's random source. `character_id` is the host's frozen
+    actor in a character game (docs/designs/character_contract.md section 6),
+    and always None in a game without characters.
     """
 
     state: dict
     participant_id: str
     args: dict
     operations: Mapping[str, Callable]
+    character_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +129,36 @@ class Command:
 
 
 @dataclass(frozen=True)
+class CharacterRules:
+    """A module's optional character capability (character contract section 3).
+
+    `start(action)` gives a new draft its module data; it may draw, and raises
+    ActionRejected before any draw to refuse. `steps` are creation commands,
+    run only on a selected draft. `problems(state, character_id)` lists
+    player-safe reasons a draft cannot be completed; an empty list means it
+    can. `complete(state, character_id)` is pure and gets no random source:
+    it returns the state with the draft made playable. `sheet(state,
+    character_id)` is the owner's view of one character. `archive_veto(state,
+    character_id)` returns a player-safe reason to refuse archiving, or None.
+    `actions` and `creation_actions` describe, for the referee, what a ready
+    character may do and which creation steps remain. `validate_seed(state,
+    participant_ids, owners)` checks seeded state, where `owners` maps each
+    declared character ID to its participant; raise SeedError.
+    """
+
+    version: int
+    start: Callable[[Action], Outcome]
+    steps: tuple[Command, ...]
+    problems: Callable[[dict, str], list]
+    complete: Callable[[dict, str], dict]
+    sheet: Callable[[dict, str], dict]
+    archive_veto: Callable[[dict, str], str | None]
+    actions: Callable[[dict, str], list] | None = None
+    creation_actions: Callable[[dict, str], list] | None = None
+    validate_seed: Callable[[dict, frozenset, Mapping], None] | None = None
+
+
+@dataclass(frozen=True)
 class Module:
     """A trusted module definition. It holds no game state.
 
@@ -143,6 +182,10 @@ class Module:
     player can authenticate as; their executors see `participant_id ==
     "referee"`. A module without them gets a minimal default and no
     referee-only commands.
+
+    `characters`, if given, makes every game of this module a character game
+    (docs/designs/character_contract.md). Such a module checks seeds with
+    `characters.validate_seed`, never `validate_seed`.
     """
 
     id: str
@@ -160,6 +203,7 @@ class Module:
     referee_context: Callable[[dict], dict] | None = None
     referee_actions: Callable[[dict, str], list] | None = None
     referee_commands: tuple[Command, ...] = ()
+    characters: CharacterRules | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +217,20 @@ class Runtime:
 
     def command(self, name: str) -> Command | None:
         return self._commands.get(name)
+
+    @property
+    def characters(self) -> CharacterRules | None:
+        """The module's character capability, or None: games of this module
+        then have no characters."""
+        return self.module.characters
+
+    def is_step(self, name: str) -> bool:
+        """Whether `name` is a creation step (the module's, or the host's
+        `character.name`) rather than a gameplay command."""
+        rules = self.module.characters
+        return rules is not None and (
+            name == NAME_STEP or any(step.name == name for step in rules.steps)
+        )
 
     def for_referee(self) -> "Runtime":
         """The same module and providers with only its referee-only commands,
@@ -223,24 +281,127 @@ class Runtime:
         args: dict,
         *,
         randint: RandInt | None = None,
+        character_id: str | None = None,
     ) -> Outcome:
         """Run one validated command. Raises ActionRejected, or anything the
         module raises unexpectedly; the caller then commits nothing."""
-        definition = self._commands[command]
+        return self._run(
+            self._commands[command].execute,
+            state,
+            participant_id,
+            args,
+            randint,
+            character_id,
+            f"Command {command!r}",
+        )
+
+    # The character capability (docs/designs/character_contract.md section 3).
+    # Each hook sees copies; every result is checked to be JSON.
+
+    def start_character(
+        self,
+        state: dict,
+        participant_id: str,
+        character_id: str,
+        *,
+        randint: RandInt | None = None,
+    ) -> Outcome:
+        """A new draft's module data. Raises ActionRejected to refuse."""
+        return self._run(
+            self._rules().start,
+            state,
+            participant_id,
+            {},
+            randint,
+            character_id,
+            "Character start",
+        )
+
+    def character_problems(self, state: dict, character_id: str) -> list[str]:
+        problems = self._rules().problems(_json_copy(state, "state"), character_id)
+        if not isinstance(problems, list) or not all(
+            isinstance(problem, str) and problem for problem in problems
+        ):
+            raise TypeError("Character problems must be a list of strings.")
+        return list(problems)
+
+    def complete_character(self, state: dict, character_id: str) -> dict:
+        """The state with the draft made playable; deterministic, no draws."""
+        return _json_copy(
+            self._rules().complete(_json_copy(state, "state"), character_id),
+            "state",
+        )
+
+    def character_sheet(self, state: dict, character_id: str) -> dict:
+        return _json_copy(
+            self._rules().sheet(_json_copy(state, "state"), character_id),
+            "character sheet",
+        )
+
+    def archive_veto(self, state: dict, character_id: str) -> str | None:
+        reason = self._rules().archive_veto(_json_copy(state, "state"), character_id)
+        if reason is not None and (not isinstance(reason, str) or not reason):
+            raise TypeError("An archive veto is a non-empty string or None.")
+        return reason
+
+    def character_actions(self, state: dict, character_id: str) -> list | None:
+        """What a ready character may do now, or None without the hook."""
+        return self._described(self._rules().actions, state, character_id)
+
+    def creation_actions(self, state: dict, character_id: str) -> list | None:
+        """The creation steps a draft has left, or None without the hook."""
+        return self._described(self._rules().creation_actions, state, character_id)
+
+    def validate_character_seed(
+        self, state: dict, participant_ids: frozenset[str], owners: Mapping[str, str]
+    ):
+        """Check seeded state for a character module; raise SeedError."""
+        validate = self._rules().validate_seed
+        if validate is None:
+            raise SeedError(f"Module {self.module.id!r} does not accept seeds.")
+        try:
+            validate(
+                _json_copy(state, "seed state"),
+                frozenset(participant_ids),
+                MappingProxyType(dict(owners)),
+            )
+        except SeedError:
+            raise
+        except Exception as error:  # a broken validator, not a verdict
+            raise SeedError(
+                f"Module {self.module.id!r} could not check the seed: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _rules(self) -> CharacterRules:
+        rules = self.module.characters
+        if rules is None:
+            raise ModuleError(f"Module {self.module.id!r} has no characters.")
+        return rules
+
+    @staticmethod
+    def _described(hook, state: dict, character_id: str) -> list | None:
+        if hook is None:
+            return None
+        actions = hook(_json_copy(state, "state"), character_id)
+        return _json_copy({"actions": actions}, "actions")["actions"]
+
+    def _run(self, execute, state, participant_id, args, randint, character_id, what):
         operations = {
             operation: partial(provider.implementation, randint)
             for operation, provider in self.providers.items()
         }
-        outcome = definition.execute(
+        outcome = execute(
             Action(
                 state=_json_copy(state, "state"),
                 participant_id=participant_id,
                 args=copy.deepcopy(args),
                 operations=operations,
+                character_id=character_id,
             )
         )
         if not isinstance(outcome, Outcome):
-            raise TypeError(f"Command {command!r} did not return an Outcome.")
+            raise TypeError(f"{what} did not return an Outcome.")
         return Outcome(
             state=_json_copy(outcome.state, "state"),
             result=_json_copy(outcome.result, "result"),
@@ -277,11 +438,20 @@ class Catalog:
         self._modules = _unique(modules, lambda m: m.id, "module")
         self._providers = _unique(providers, lambda p: p.id, "provider")
         for module in self._modules.values():
-            _unique(
-                (*module.commands, *module.referee_commands),
-                lambda c: c.name,
-                f"{module.id} command",
-            )
+            steps = () if module.characters is None else module.characters.steps
+            commands = (*module.commands, *module.referee_commands, *steps)
+            _unique(commands, lambda c: c.name, f"{module.id} command")
+            for command in commands:
+                if command.name.startswith(RESERVED_PREFIX):
+                    raise ModuleError(
+                        f"Command {command.name!r} of {module.id} uses the host's "
+                        f"reserved {RESERVED_PREFIX!r} prefix."
+                    )
+            if module.characters is not None and module.validate_seed is not None:
+                raise ModuleError(
+                    f"Module {module.id} has characters, so it checks seeds with "
+                    "characters.validate_seed, not validate_seed."
+                )
 
     def module_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._modules))
@@ -322,6 +492,15 @@ class Catalog:
                 f"Module {module_id!r} needs host API {module.api_version}; "
                 f"this host supports {HOST_API_VERSION}."
             )
+        if (
+            module.characters is not None
+            and module.characters.version != CHARACTER_RULES_VERSION
+        ):
+            raise ModuleError(
+                f"Module {module_id!r} has character rules version "
+                f"{module.characters.version}; this host supports "
+                f"{CHARACTER_RULES_VERSION}."
+            )
         choices = tuple(module.providers if providers is None else providers)
         selected = {}
         for choice in choices:
@@ -354,13 +533,46 @@ class Catalog:
                 + ", ".join(repr(operation) for operation in missing)
                 + "."
             )
+        # A character game's players may name its creation steps too; the
+        # store decides which ones the caller's mode allows.
+        commands = module.commands
+        if module.characters is not None:
+            commands = (*commands, *module.characters.steps, NAME_COMMAND)
         return Runtime(
             module=module,
             providers=MappingProxyType(dict(sorted(selected.items()))),
-            _commands=MappingProxyType(
-                {command.name: command for command in module.commands}
-            ),
+            _commands=MappingProxyType({command.name: command for command in commands}),
         )
+
+
+def check_character_name(name):
+    """Raise ArgumentError unless `name` is a valid character label: the same
+    rules as a participant name."""
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or len(name) > MAX_CHARACTER_NAME
+        or any(unicodedata.category(character) == "Cc" for character in name)
+    ):
+        raise ArgumentError(
+            f"A name is 1 to {MAX_CHARACTER_NAME} characters, not blank, "
+            "with no control characters."
+        )
+
+
+def _validate_name_step(args: dict):
+    exact_fields(args, {"name"}, "Name args")
+    check_character_name(args["name"])
+
+
+def _name_step(action) -> Outcome:
+    # The store records the label in the character's metadata; the module's
+    # state is unchanged.
+    return Outcome(action.state, {"name": action.args["name"]})
+
+
+# The host's creation step every character game has (contract section 3).
+NAME_COMMAND = Command(NAME_STEP, _validate_name_step, _name_step)
 
 
 def exact_fields(args: dict, names: Iterable[str], subject: str):

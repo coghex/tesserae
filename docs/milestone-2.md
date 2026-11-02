@@ -63,9 +63,12 @@ Characters, creation and scoped play: tracker
 [#110](https://github.com/coghex/tesserae/issues/110), planned in the
 [character lifecycle design](designs/character_lifecycle_design.md), with its
 exact rules in the [character contract](designs/character_contract.md)
-(CHR-1, #111). Nothing of it is implemented yet. A returning player picks a
-ready character; a newcomer creates one privately with the referee, approves
-it and enters play. Characters are served by the lobby host only.
+(CHR-1, #111). A returning player picks a ready character; a newcomer creates
+one privately with the referee, approves it and enters play. Characters are
+served by the lobby host only. CHR-2 (#112) added the stored characters, the
+module capability, seed version 2 and the original
+[Trailhead](trailhead.md) module; the referee, host and client slices
+follow.
 
 ## Later browser work
 

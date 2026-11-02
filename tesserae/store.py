@@ -21,21 +21,34 @@ from typing import Callable
 
 from .builtin import CATALOG, DICE_RUNTIME
 from .credentials import token_digest
-from .modules import ActionRejected, ModuleError, ProviderChoice, Runtime
+from .modules import (
+    NAME_STEP,
+    ActionRejected,
+    ArgumentError,
+    ModuleError,
+    ProviderChoice,
+    Runtime,
+    check_character_name,
+)
 from .protocol import (
+    PROTOCOL_VERSION,
     ProtocolError,
     error_message,
+    is_valid_request_id,
+    is_valid_revision,
     parse_request,
     result_message,
     session_error,
 )
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
-SCHEMA_VERSION = 6
-SEED_VERSION = 1  # the seed file format (tesserae/seed.py)
+SCHEMA_VERSION = 7
 DEFAULT_BUSY_TIMEOUT = 5.0
 PARTICIPANT_ID_PREFIX = "p_"
 _PARTICIPANT_ID = re.compile(r"p_[0-9a-f]{16}")
+CHARACTER_ID_PREFIX = "c_"
+_CHARACTER_ID = re.compile(r"c_[0-9a-f]{16}")
+MODES = ("setup", "creation", "play")
 MAX_NAME_LENGTH = 100
 _V1_COLUMNS = {
     "game": ["singleton", "game_id", "revision"],
@@ -92,6 +105,19 @@ _COLUMNS[6] = {
     **_COLUMNS[5],
     "host_links": [
         "id", "host_id", "player_id", "participant_id", "linked_at", "unlinked_at",
+    ],
+}  # fmt: skip
+_COLUMNS[7] = {
+    **_COLUMNS[6],
+    "characters": [
+        "character_id", "participant_id", "name", "phase", "draft_revision",
+        "created_at", "completed_at", "introduced_at", "archived_at",
+    ],
+    "referee_inputs": [*_COLUMNS[6]["referee_inputs"], "character_id", "mode"],
+    "referee_steps": [*_COLUMNS[6]["referee_steps"], "character_id"],
+    "referee_messages": [*_COLUMNS[6]["referee_messages"], "character_id", "creation"],
+    "referee_choices": [
+        "participant_id", "character_id", "question", "asked_in_job", "asked_at",
     ],
 }  # fmt: skip
 
@@ -259,6 +285,44 @@ _MIGRATIONS = {
         """CREATE UNIQUE INDEX one_link_per_participant ON host_links (participant_id)
             WHERE unlinked_at IS NULL""",
     ],
+    # Characters and the actor scope of referee records (M2-3, #112); see
+    # docs/designs/character_contract.md section 12. Empty, or null, in every
+    # game without characters.
+    7: [
+        """CREATE TABLE characters (
+            character_id TEXT PRIMARY KEY,
+            participant_id TEXT NOT NULL REFERENCES participants (participant_id),
+            name TEXT,
+            phase TEXT NOT NULL CHECK (phase IN ('draft', 'ready', 'archived')),
+            draft_revision INTEGER NOT NULL CHECK (draft_revision >= 1),
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            introduced_at TEXT,
+            archived_at TEXT
+        )""",
+        "ALTER TABLE referee_inputs ADD COLUMN character_id TEXT",
+        """ALTER TABLE referee_inputs ADD COLUMN mode TEXT
+            CHECK (mode IS NULL OR mode IN ('setup', 'creation', 'play'))""",
+        "ALTER TABLE referee_steps ADD COLUMN character_id TEXT",
+        "ALTER TABLE referee_messages ADD COLUMN character_id TEXT",
+        """ALTER TABLE referee_messages ADD COLUMN creation INTEGER NOT NULL
+            DEFAULT 0 CHECK (creation IN (0, 1))""",
+        # One pending choice per (participant, character); a null character is
+        # the participant's setup scope, and every earlier choice becomes one.
+        """CREATE TABLE referee_choices_7 (
+            participant_id TEXT NOT NULL,
+            character_id TEXT,
+            question TEXT NOT NULL,
+            asked_in_job TEXT NOT NULL,
+            asked_at TEXT NOT NULL
+        )""",
+        """INSERT INTO referee_choices_7 (participant_id, question, asked_in_job, asked_at)
+            SELECT participant_id, question, asked_in_job, asked_at FROM referee_choices""",
+        "DROP TABLE referee_choices",
+        "ALTER TABLE referee_choices_7 RENAME TO referee_choices",
+        """CREATE UNIQUE INDEX one_choice_per_scope
+            ON referee_choices (participant_id, ifnull(character_id, ''))""",
+    ],
 }
 
 
@@ -303,6 +367,54 @@ class ParticipantContext:
     @property
     def authenticated(self) -> bool:
         return self.credential_id is not None or self.link_id is not None
+
+
+@dataclass(frozen=True)
+class Actor:
+    """Who acts in a character game, established by the host, never taken
+    from client input (docs/designs/character_contract.md sections 4 to 6).
+
+    `mode` is `setup` with no character, `creation` with one of the
+    participant's drafts, or `play` with one of their ready characters.
+    """
+
+    character_id: str | None
+    mode: str
+
+    def __post_init__(self):
+        if self.mode not in MODES:
+            raise ValueError(f"mode must be one of {', '.join(MODES)}.")
+        if (self.character_id is None) != (self.mode == "setup"):
+            raise ValueError("Only setup has no character.")
+        if self.character_id is not None and not is_character_id(self.character_id):
+            raise ValueError("character_id must be a character ID.")
+
+
+SETUP = Actor(None, "setup")
+
+
+@dataclass(frozen=True)
+class CharacterRecord:
+    """One character's metadata. `draft_revision` is None once ready."""
+
+    character_id: str
+    participant_id: str
+    name: str | None
+    phase: str
+    draft_revision: int | None
+    created_at: str
+    completed_at: str | None = None
+    introduced_at: str | None = None
+    archived_at: str | None = None
+
+    def summary(self) -> dict:
+        """The form every host message uses (contract section 9)."""
+        return {
+            "character_id": self.character_id,
+            "name": self.name,
+            "phase": self.phase,
+            "draft_revision": self.draft_revision,
+        }
 
 
 @dataclass(frozen=True)
@@ -477,6 +589,7 @@ class GameStore:
         *,
         referee: bool = False,
         precondition: Callable[[], None] | None = None,
+        actor: Actor | None = None,
     ) -> tuple[dict, bool]:
         """Like execute, plus whether this call committed a fresh command.
 
@@ -490,6 +603,13 @@ class GameStore:
         `precondition()`, if given, runs first inside the write transaction;
         whatever it raises propagates with nothing changed. The referee bridge
         uses it so a job's authorization holds until the command commits.
+
+        In a character game a player's command runs as `actor` (setup when
+        omitted), under the character contract's section 5: setup runs
+        nothing, creation runs only creation steps on its own draft, and play
+        runs only gameplay commands as its own ready character. The actor's
+        character is part of the replay content. A game without characters
+        takes no actor.
         """
         _check_context(context)
         if referee != (context.participant_id == REFEREE_PARTICIPANT):
@@ -497,6 +617,11 @@ class GameStore:
                 "Referee-only commands run in the referee context, and only they do."
             )
         runtime = self._loaded_runtime()
+        acting = runtime.characters is not None and not referee
+        if actor is not None and not acting:
+            raise ValueError("Only a character game's players act as an actor.")
+        if acting and actor is None:
+            actor = SETUP
         if referee:
             runtime = runtime.for_referee()
         try:
@@ -507,6 +632,8 @@ class GameStore:
                 return session_error("session_revoked"), False
             return error.to_message(revision=revision), False
         content = request.content()
+        if acting:
+            content["character_id"] = actor.character_id
         with self._write():
             if precondition is not None:
                 precondition()
@@ -523,6 +650,12 @@ class GameStore:
                     request_id=request.request_id,
                     revision=current,
                 ), False
+            if acting:
+                refusal = self._actor_refusal(
+                    context, actor, runtime.is_step(request.command)
+                )
+                if refusal is not None:
+                    return refusal.message(request.request_id, current), False
             if request.expected_revision != current:
                 return error_message(
                     "stale_revision",
@@ -539,6 +672,7 @@ class GameStore:
                     request.command,
                     request.args,
                     randint=self._randint,
+                    character_id=actor.character_id if acting else None,
                 )
             except ActionRejected as rejection:
                 return error_message(
@@ -557,7 +691,43 @@ class GameStore:
             self._write_state(outcome.state)
             self._insert_record(record)
             self._advance_revision(record.revision)
+            if acting and actor.mode == "creation":
+                # Every committed step is a new revision of the draft.
+                self._connection.execute(
+                    "UPDATE characters SET draft_revision = draft_revision + 1 "
+                    "WHERE character_id = ?",
+                    (actor.character_id,),
+                )
+                if request.command == NAME_STEP:
+                    self._connection.execute(
+                        "UPDATE characters SET name = ? WHERE character_id = ?",
+                        (request.args["name"], actor.character_id),
+                    )
         return record.to_message(), True
+
+    def _actor_refusal(
+        self, context: ParticipantContext, actor: Actor, step: bool
+    ) -> "Refusal | None":
+        """Why section 5 of the character contract refuses this command for
+        this actor, or None. Read inside the command's write transaction."""
+        if actor.mode == "setup":
+            return Refusal(
+                "mode_forbidden",
+                "Choose a character first; without one you can only ask questions.",
+            )
+        character = self._owned(context, actor.character_id)
+        if character is None:
+            return _unavailable()
+        if _mode_of(character.phase) != actor.mode:
+            return _changed()
+        if actor.mode == "creation" and not step:
+            return Refusal(
+                "mode_forbidden",
+                "While creating a character you can only take its creation steps.",
+            )
+        if actor.mode == "play" and step:
+            return Refusal("mode_forbidden", "Creation steps are only for drafts.")
+        return None
 
     def revision(self) -> int:
         return self._current_revision()
@@ -665,6 +835,282 @@ class GameStore:
     def inspect_history(self) -> list[CommandRecord]:
         """Operator/test inspection of every participant's commands."""
         return self._select("", ())
+
+    # Characters (docs/designs/character_contract.md sections 2, 3 and 9).
+    # Each lifecycle operation is one command record in the caller's request
+    # namespace and advances the revision; its module and metadata changes
+    # commit together, or nothing does. Like execute_command, each returns
+    # (message, committed) and never raises for a client's input.
+
+    def create_character(
+        self,
+        context: ParticipantContext,
+        request_id: str,
+        name: str | None,
+        *,
+        precondition: Callable[[], None] | None = None,
+    ) -> tuple[dict, bool]:
+        """Start a draft owned by the caller, with the module's `start` data.
+        An exact retry returns the same draft; it is never selected here."""
+        if name is not None:
+            try:
+                check_character_name(name)
+            except ArgumentError as error:
+                return _invalid(request_id, error.message), False
+
+        def create(runtime, state, now):
+            character_id = CHARACTER_ID_PREFIX + secrets.token_hex(8)
+            outcome = runtime.start_character(
+                state, context.participant_id, character_id, randint=self._randint
+            )
+            self._connection.execute(
+                "INSERT INTO characters (character_id, participant_id, name, phase, "
+                "draft_revision, created_at) VALUES (?, ?, ?, 'draft', 1, ?)",
+                (character_id, context.participant_id, name, now),
+            )
+            return outcome.state, {
+                "character": self._character(character_id).summary(),
+                "start": outcome.result,
+            }
+
+        content = _lifecycle_content("character_create", name=name)
+        return self._lifecycle(context, request_id, content, create, precondition)
+
+    def complete_character(
+        self,
+        context: ParticipantContext,
+        request_id: str,
+        character_id: str,
+        draft_revision: int,
+        *,
+        precondition: Callable[[], None] | None = None,
+    ) -> tuple[dict, bool]:
+        """Make the caller's draft ready, if it is still at `draft_revision`,
+        named, not acted for by a running job, and complete by the module's
+        rules. `complete` is deterministic: nothing is drawn."""
+        if not isinstance(character_id, str):
+            return _invalid(request_id, "'character_id' must be a string."), False
+        if not is_valid_revision(draft_revision) or draft_revision < 1:
+            return _invalid(
+                request_id, "'draft_revision' must be a whole number, 1 or more."
+            ), False
+
+        def complete(runtime, state, now):
+            character = self._owned(context, character_id)
+            if character is None:
+                raise _unavailable()
+            if character.phase != "draft" or character.draft_revision != draft_revision:
+                raise Refusal(
+                    "stale_draft",
+                    "That draft has changed since you saw it; review it again.",
+                    {"draft_revision": character.draft_revision},
+                )
+            if self._acting_job(character_id):
+                raise _busy()
+            problems = [] if character.name else ["Give the character a name."]
+            problems += runtime.character_problems(state, character_id)
+            if problems:
+                raise Refusal(
+                    "character_incomplete",
+                    "That character is not finished yet.",
+                    {"problems": problems},
+                )
+            state = runtime.complete_character(state, character_id)
+            self._connection.execute(
+                "UPDATE characters SET phase = 'ready', completed_at = ? "
+                "WHERE character_id = ?",
+                (now, character_id),
+            )
+            self._end_creation(character_id)
+            return state, {"character": self._character(character_id).summary()}
+
+        content = _lifecycle_content(
+            "character_complete",
+            character_id=character_id,
+            draft_revision=draft_revision,
+        )
+        return self._lifecycle(context, request_id, content, complete, precondition)
+
+    def archive_character(
+        self,
+        context: ParticipantContext,
+        request_id: str,
+        character_id: str,
+        *,
+        precondition: Callable[[], None] | None = None,
+    ) -> tuple[dict, bool]:
+        """Archive the caller's draft or ready character, unless a running job
+        acts for it or the module vetoes. Its history and data stay."""
+        if not isinstance(character_id, str):
+            return _invalid(request_id, "'character_id' must be a string."), False
+
+        def archive(runtime, state, now):
+            character = self._owned(context, character_id)
+            if character is None:
+                raise _unavailable()
+            if self._acting_job(character_id):
+                raise _busy()
+            reason = runtime.archive_veto(state, character_id)
+            if reason is not None:
+                raise Refusal("action_rejected", reason)
+            self._connection.execute(
+                "UPDATE characters SET phase = 'archived', archived_at = ? "
+                "WHERE character_id = ?",
+                (now, character_id),
+            )
+            self._end_creation(character_id)
+            return None, {"character": self._character(character_id).summary()}
+
+        content = _lifecycle_content("character_archive", character_id=character_id)
+        return self._lifecycle(context, request_id, content, archive, precondition)
+
+    def characters(self, context: ParticipantContext) -> list[CharacterRecord] | None:
+        """The caller's own drafts and ready characters, ready first, then
+        drafts, each in creation order; None if the caller's authority has
+        ended. Archived characters are not listed."""
+        _check_context(context)
+        with self.snapshot():
+            if context.authenticated and not self._authority_is_active(context):
+                return None
+            return self._characters(
+                "WHERE participant_id = ? AND phase != 'archived' "
+                "ORDER BY phase = 'draft', created_at, rowid",
+                (context.participant_id,),
+            )
+
+    def character_sheet(
+        self, context: ParticipantContext, character_id: str
+    ) -> tuple[CharacterRecord, dict] | None:
+        """One of the caller's unarchived characters and the module's sheet
+        for it, from one committed state; None if it is not theirs, is
+        archived, or the caller's authority has ended."""
+        _check_context(context)
+        runtime = self._loaded_runtime()
+        if runtime.characters is None or not isinstance(character_id, str):
+            return None
+        with self.snapshot():
+            if context.authenticated and not self._authority_is_active(context):
+                return None
+            character = self._owned(context, character_id)
+            if character is None:
+                return None
+            return character, runtime.character_sheet(self._state(), character_id)
+
+    def inspect_characters(self) -> list[CharacterRecord]:
+        """Operator/test inspection of every character, archived ones too."""
+        return self._characters("ORDER BY created_at, rowid", ())
+
+    def _lifecycle(self, context, request_id, content, apply, precondition):
+        """Run one lifecycle operation: authority, then exact replay, then
+        `apply(runtime, state, now)`, which returns (new state or None,
+        result) or raises Refusal or ActionRejected, rolling back whatever
+        it did."""
+        _check_context(context)
+        if context.participant_id == REFEREE_PARTICIPANT:
+            raise ValueError("The referee context owns no characters.")
+        if not is_valid_request_id(request_id):
+            return _invalid(
+                None, "A request ID is 1 to 128 characters with no whitespace."
+            ), False
+        runtime = self._loaded_runtime()
+        if runtime.characters is None:
+            return error_message(
+                "characters_unsupported",
+                "This game has no characters.",
+                request_id=request_id,
+                revision=self._current_revision(),
+            ), False
+        current = None
+        try:
+            with self._write():
+                if precondition is not None:
+                    precondition()
+                if context.authenticated and not self._authority_is_active(context):
+                    return session_error("session_revoked"), False
+                current = self._current_revision()
+                record = self._find(context.participant_id, request_id)
+                if record is not None:
+                    if record.content == content:
+                        return record.to_message(), False
+                    raise Refusal(
+                        "request_conflict",
+                        "This request_id was already used for a different command.",
+                    )
+                try:
+                    state, result = apply(runtime, self._state(), _now())
+                except ActionRejected as rejection:
+                    raise Refusal("action_rejected", rejection.message) from None
+                record = CommandRecord(
+                    revision=current + 1,
+                    participant_id=context.participant_id,
+                    request_id=request_id,
+                    content=content,
+                    result=result,
+                )
+                if state is not None:
+                    self._write_state(state)
+                self._insert_record(record)
+                self._advance_revision(record.revision)
+        except Refusal as refusal:
+            return refusal.message(request_id, current), False
+        return record.to_message(), True
+
+    def _character(self, character_id: str) -> CharacterRecord | None:
+        found = self._characters("WHERE character_id = ?", (character_id,))
+        return found[0] if found else None
+
+    def _owned(self, context, character_id: str) -> CharacterRecord | None:
+        """The caller's unarchived character, or None: unknown, archived and
+        another participant's look the same."""
+        character = self._character(character_id)
+        if (
+            character is None
+            or character.participant_id != context.participant_id
+            or character.phase == "archived"
+        ):
+            return None
+        return character
+
+    def _characters(self, where: str, parameters: tuple) -> list[CharacterRecord]:
+        rows = self._connection.execute(
+            "SELECT character_id, participant_id, name, phase, draft_revision, "
+            "created_at, completed_at, introduced_at, archived_at "
+            f"FROM characters {where}",
+            parameters,
+        )
+        return [
+            CharacterRecord(
+                row[0], row[1], row[2], row[3],
+                row[4] if row[3] == "draft" else None, *row[5:],
+            )
+            for row in rows
+        ]  # fmt: skip
+
+    def _acting_job(self, character_id: str) -> bool:
+        """Whether a running referee job acts for this character."""
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM referee_jobs AS j JOIN referee_inputs AS i "
+                "ON i.id = j.input_id WHERE j.state = 'running' AND i.character_id = ?",
+                (character_id,),
+            ).fetchone()
+            is not None
+        )
+
+    def _end_creation(self, character_id: str):
+        """Completion or archiving ends the character's pending question and
+        its unnarrated creation results (character contract section 8). A
+        failed play job's results stay listed until a reply narrates them."""
+        self._connection.execute(
+            "DELETE FROM referee_choices WHERE character_id = ?", (character_id,)
+        )
+        self._connection.execute(
+            "UPDATE referee_steps SET narrated = 1 WHERE character_id = ? "
+            "AND status = 'committed' AND job_id IN (SELECT j.job_id FROM "
+            "referee_jobs AS j JOIN referee_inputs AS i ON i.id = j.input_id "
+            "WHERE i.mode = 'creation')",
+            (character_id,),
+        )
 
     # Participants and credentials. None of these change the mechanical
     # revision or command history.
@@ -951,10 +1397,21 @@ class GameStore:
             "VALUES (?, ?, ?)",
             [(p.participant_id, p.name, now) for p in seed.participants],
         )
+        # Seeded characters are ready and already in the scene (contract
+        # section 13).
+        self._connection.executemany(
+            "INSERT INTO characters (character_id, participant_id, name, phase, "
+            "draft_revision, created_at, completed_at, introduced_at) "
+            "VALUES (?, ?, ?, 'ready', 1, ?, ?, ?)",
+            [
+                (c.character_id, c.participant_id, c.name, now, now, now)
+                for c in seed.characters
+            ],
+        )
         self._connection.execute(
             "INSERT INTO seed (singleton, seed_version, provenance, created_at) "
             "VALUES (1, ?, ?, ?)",
-            (SEED_VERSION, json.dumps(seed.provenance, sort_keys=True), now),
+            (seed.seed_version, json.dumps(seed.provenance, sort_keys=True), now),
         )
 
     def _settle_runtime(self):
@@ -1050,6 +1507,62 @@ class GameStore:
 
     def _advance_revision(self, revision: int):
         self._connection.execute("UPDATE game SET revision = ?", (revision,))
+
+
+class Refusal(Exception):
+    """A character operation refused with nothing changed: a protocol error
+    code, its fixed message and any extra fields (character contract
+    section 9)."""
+
+    def __init__(self, code: str, message: str, extra: dict | None = None):
+        super().__init__(message)
+        self.code, self.text, self.extra = code, message, dict(extra or {})
+
+    def message(self, request_id: str, revision: int | None) -> dict:
+        return {
+            **error_message(
+                self.code, self.text, request_id=request_id, revision=revision
+            ),
+            **self.extra,
+        }
+
+
+# Fresh instances each time: a raised exception keeps its traceback, so a
+# shared one would grow with every refusal.
+def _unavailable() -> Refusal:
+    return Refusal("character_unavailable", "That character is not available to you.")
+
+
+def _changed() -> Refusal:
+    return Refusal(
+        "character_changed",
+        "Your character has changed; check your characters and try again.",
+    )
+
+
+def _busy() -> Refusal:
+    return Refusal(
+        "character_busy", "The referee is still answering for that character."
+    )
+
+
+def _mode_of(phase: str) -> str:
+    return {"draft": "creation", "ready": "play"}[phase]
+
+
+def _lifecycle_content(kind: str, **fields) -> dict:
+    return {"version": PROTOCOL_VERSION, "type": kind, **fields}
+
+
+def _invalid(request_id, message: str) -> dict:
+    valid = request_id if is_valid_request_id(request_id) else None
+    return error_message("invalid_request", message, request_id=valid)
+
+
+def is_character_id(value) -> bool:
+    """Whether `value` has the form every character ID has: c_ and 16
+    lowercase hexadecimal digits."""
+    return isinstance(value, str) and _CHARACTER_ID.fullmatch(value) is not None
 
 
 def _describe(providers) -> str:

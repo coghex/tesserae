@@ -225,8 +225,8 @@ tesserae host campaign unlink --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID
 ```
 
 Find participant IDs with `tesserae participant list --database GAME`. These
-commands open the campaign's file (which upgrades it to schema version 6 if
-needed) and change only its link table: never state, history or game tokens.
+commands open the campaign's file (which upgrades it to the current schema
+version if needed) and change only its link table: never state, history or game tokens.
 A player has at most one active link per campaign, and a participant at most
 one player. Linking does not grant access. To move a player who was already
 admitted to a new participant onto an existing one, revoke their grant (or

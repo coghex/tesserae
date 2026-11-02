@@ -6,8 +6,13 @@ before any implementation. It turns the
 [character lifecycle design](character_lifecycle_design.md) and the owner's
 decisions into exact rules for CHR-2 to CHR-6: the stored character records,
 the optional module capability, the actor every input and job keeps, how the
-referee guides creation, and the host messages and client states. Nothing here
-is implemented yet.
+referee guides creation, and the host messages and client states.
+
+Implemented so far (CHR-2, #112): sections 2, 3, 5 (for players' commands),
+12 and 13 in `tesserae/modules.py`, `tesserae/store.py` and `tesserae/seed.py`,
+with the original fixture module `trailhead` (section 14's illustration,
+built as [trailhead.md](../trailhead.md) describes). The referee (sections 6
+to 8), the host messages (9 to 11) and the clients (15) are not yet.
 
 It extends the [lobby contract](lobby_contract.md) and the
 [referee contract](referee_contract.md). Everything they say still holds for

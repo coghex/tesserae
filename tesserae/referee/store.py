@@ -317,11 +317,17 @@ class RefereeStore:
                     (participant_id,),
                 )
             for participant_id, question in asks:
+                # Asking again replaces the participant's choice (schema 7
+                # scopes choices by character; a game without characters has
+                # only the participant's own, with no character).
+                db.execute(
+                    "DELETE FROM referee_choices WHERE participant_id = ? "
+                    "AND character_id IS NULL",
+                    (participant_id,),
+                )
                 db.execute(
                     "INSERT INTO referee_choices (participant_id, question, asked_in_job, asked_at) "
-                    "VALUES (?, ?, ?, ?) ON CONFLICT (participant_id) DO UPDATE SET "
-                    "question = excluded.question, asked_in_job = excluded.asked_in_job, "
-                    "asked_at = excluded.asked_at",
+                    "VALUES (?, ?, ?, ?)",
                     (participant_id, question, job_id, now),
                 )
             db.execute(

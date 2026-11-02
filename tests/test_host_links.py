@@ -10,9 +10,11 @@ import unittest
 import uuid
 from pathlib import Path
 
+from test_characters import as_schema_6
+
 from tesserae.credentials import new_token
 from tesserae.referee.store import RefereeError, RefereeStore
-from tesserae.store import GameStore, ParticipantContext, StoreError
+from tesserae.store import SCHEMA_VERSION, GameStore, ParticipantContext, StoreError
 
 HOST = str(uuid.uuid4())
 
@@ -135,13 +137,14 @@ class HostLinkTests(unittest.TestCase):
         alice = self.store.add_participant("Alice", token)
         self.store.execute_command(self.store.authenticate(token), roll("r1", 0))
         self.store.close()
+        as_schema_6(self.path)
         with sqlite3.connect(self.path) as connection:
             connection.executescript(
                 "DROP INDEX one_link_per_player; DROP INDEX one_link_per_participant;"
                 "DROP TABLE host_links; PRAGMA user_version = 5;"
             )
         with GameStore.open_existing(self.path) as store:
-            self.assertEqual(store.query("PRAGMA user_version"), [(6,)])
+            self.assertEqual(store.query("PRAGMA user_version"), [(SCHEMA_VERSION,)])
             self.assertEqual(store.host_links(), [])
             self.assertEqual(store.revision(), 1)
             self.assertEqual(store.participants()[0].participant_id, alice)

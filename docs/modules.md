@@ -22,6 +22,12 @@ binding and module state, and runs commands with `action_rejected` handling.
 explicit directory ([External packages](#external-packages), #51), and
 `game create` and `serve` take that directory as `--module-dir` (#52).
 
+A module can also declare characters (`Module.characters`, #112), under the
+[character contract](designs/character_contract.md): see
+[Characters](#characters). The bundled original [Trailhead](trailhead.md)
+module does. The host serves character games to players from M2-3's later
+slices; today the store runs them.
+
 `serve` loads the game's bound runtime once at startup, refusing an unknown or
 mismatched binding before it listens, and sends each joined participant the
 module's view of the game in join and sync snapshots (#41,
@@ -76,6 +82,7 @@ dice operation and no `roll` command.
 | `referee_context(state)` | Optional, for [referee mode](designs/referee_contract.md#9-referee-authority). Everything the referee should know about the bounded scene, hidden preparation included; never sent to a player. Without it, the referee gets each participant's own view |
 | `referee_actions(state, participant_id)` | Optional. The commands that participant may use now, as a list of JSON objects with their arguments and stakes. Without it, the referee gets the command names |
 | `referee_commands` | Optional `Command`s that run only in the host's `referee` context, which no player can authenticate as: their executors see `participant_id == "referee"`, and a player's command path never includes them. Names must not repeat the module's other commands |
+| `characters` | Optional `CharacterRules`: every game of the module is then a character game ([Characters](#characters)). Such a module checks seeds with `characters.validate_seed`, and must leave `validate_seed` unset |
 
 A module definition is immutable and holds no game state, connection, or
 random source. One definition serves every game.
@@ -94,7 +101,10 @@ random source. One definition serves every game.
     message;
   - `args` holds the validated arguments;
   - `operations` holds the selected operations, bound to this execution's
-    random source.
+    random source;
+  - `character_id` is the host's actor in a character game (the ready
+    character playing, or the draft being created), and always None in a game
+    without characters.
 
   It returns `Outcome(state, result)`: the replacement state, and the result
   object only the caller receives. Check every state-dependent rule, such as
@@ -124,6 +134,34 @@ default to the `dice` runtime, so existing callers keep their behavior. The
 host and store parse with their game's runtime, so the host never refuses a
 command the store would accept.
 
+### Characters
+
+A module with characters supplies `CharacterRules` (character contract
+section 3). The host owns each character's ID, owner, name and lifecycle
+(`draft`, `ready`, `archived`); the module owns its data, keyed by character
+ID in its own state.
+
+| Field | Meaning |
+|---|---|
+| `version` | 1; any other is refused when the module is resolved |
+| `start(action)` | A new draft's module data. Runs like a command (`action.character_id` is the new ID, `args` is `{}`); may draw; raises `ActionRejected` before any draw to refuse |
+| `steps` | Creation `Command`s, run only on the caller's selected draft. The host adds `character.name {"name"}` to every character game |
+| `problems(state, character_id)` | Pure: player-safe reasons the draft cannot be completed yet; an empty list means it can |
+| `complete(state, character_id)` | Pure and deterministic, with no random source: the state with the draft made playable. Anything that needs a roll is a step |
+| `sheet(state, character_id)` | Pure: what the owner sees of one character |
+| `archive_veto(state, character_id)` | Pure: a player-safe reason to refuse archiving now, or None |
+| `actions`, `creation_actions` | Optional, `(state, character_id) -> list`: for the referee, what a ready character may do now and which creation steps remain |
+| `validate_seed(state, participant_ids, owners)` | Optional: checks a seeded game's state, where `owners` maps each declared character ID to its participant; raises `SeedError` |
+
+The catalog refuses a step or command name used twice across `commands`,
+`referee_commands` and `steps`, any name starting `character.`, which the
+host reserves, and a character module that also sets `validate_seed`. In a
+character game a player's command runs as an actor, and only what its mode
+allows runs: creation steps on a draft, gameplay commands as a ready
+character, nothing without one (see the
+[game store](game_store.md#characters)). `referee_context` must leave drafts
+out: the host gives a creation job its own draft.
+
 ### Providers
 
 `Provider(id, version, operation, implementation)` supplies one operation.
@@ -150,6 +188,11 @@ Its view is None, so its snapshots stay metadata-only. `tesserae roll` and
 `relay` version 1 is the original demo module, with two commands:
 `relay.enlist` and `relay.repair`. It requires `dice.roll.v1` from
 `builtin.dice` 1, and authenticated participants. See [relay.md](relay.md).
+
+`trailhead` version 1 is the original module with characters: walkers with a
+trait and stamina, created in steps, who push on or recover. It requires
+`dice.roll.v1` from `builtin.dice` 1, and authenticated participants. See
+[trailhead.md](trailhead.md).
 
 ## External packages
 

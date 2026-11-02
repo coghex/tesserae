@@ -128,7 +128,7 @@ class SeededStoreTests(SeedCase):
             ("not JSON", "{", "not valid JSON"),
             ("duplicate key", '{"seed_version": 1, "seed_version": 1}', "duplicate key"),
             ("NaN", seed_text().replace('"state": {', '"x": NaN, "state": {'), "non-finite"),
-            ("version 2", seed_text(set_("seed_version", value=2)), "version 2"),
+            ("version 3", seed_text(set_("seed_version", value=3)), "version 3"),
             ("version true", seed_text(set_("seed_version", value=True)), "version True"),
             ("missing", seed_text(drop("provenance")), "missing provenance"),
             ("extra", seed_text(set_("tokens", value=[])), "unexpected tokens"),
