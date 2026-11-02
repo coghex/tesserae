@@ -594,10 +594,29 @@ class AccessTests(Lobby):
             await asyncio.to_thread(revoker.join, TIMEOUT)
         self.assertTrue(revoked.is_set())  # after the acceptance, not before
         await self.job("harbor")
-        self.finish("harbor", reply("Done."))
-        await alice.send(SYNC)
-        self.assertEqual((await self.reply_on(alice))["code"], "session_revoked")
-        self.assertEqual(await self.closed(alice), (1008, "session_revoked"))
+        # The revoked session ends with session_revoked: as the reply to this
+        # sync, or as the close alone if a delivery to Alice (her own input's
+        # echo, say) notices the revocation first. Both follow the contract.
+        try:
+            await alice.send(SYNC)
+        except ConnectionClosed:
+            pass
+        received = []
+        with self.assertRaises(ConnectionClosed) as ended:
+            while True:
+                received.append(await self.next(alice))
+        self.assertEqual(
+            (ended.exception.rcvd.code, ended.exception.rcvd.reason),
+            (1008, "session_revoked"),
+        )
+        replies = [m["code"] for m in received if m["type"] not in UNSOLICITED]
+        self.assertIn(replies, ([], ["session_revoked"]))
+        self.finish("harbor", reply("Done."))  # the accepted job still completes
+        for _ in range(int(TIMEOUT / 0.05)):
+            if self.jobs("harbor") == [("completed",)]:
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(self.jobs("harbor"), [("completed",)])
 
     async def test_a_request_answered_while_access_ends_still_gets_its_reply(self):
         await self.start_host()
