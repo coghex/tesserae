@@ -17,8 +17,9 @@ Each game is bound to one [module](modules.md) (#38) and keeps that module's
 JSON state (#39): see [Modules and state](#modules-and-state). `tesserae game
 create` makes a game bound to a chosen bundled module, and `serve` hosts it with
 per-participant views (#41). A game can also start from an imported seed
-([Seeded creation](#seeded-creation), #53). Not implemented: turn rules,
-inventory, or several games per store.
+([Seeded creation](#seeded-creation), #53). A module with characters makes
+its games character games ([Characters](#characters), #112). Not implemented:
+turn rules, inventory, or several games per store.
 The loopback-only WebSocket host (`tesserae serve`, `tesserae/server.py`)
 exposes this service. In development mode every connection uses one fixed
 participant. With `--authenticated` (#15), each connection joins with a token,
@@ -52,8 +53,10 @@ every schema and version change commits, or the file stays exactly at its old
 version. Upgrading from version 1 adds the participant and credential
 tables. Upgrading to version 3 adds the module binding, binding the game to
 `dice` with state `{}`. Upgrading to version 4 adds the empty `seed` table, and
-to version 5 the empty referee tables, and to version 6 the empty `host_links`
-table. The game ID, revision, every command and its result,
+to version 5 the empty referee tables, to version 6 the empty `host_links`
+table, and to version 7 the empty `characters` table, with null actor columns
+on the referee tables and each pending choice kept as its participant's own
+(character contract section 12). The game ID, revision, every command and its result,
 participants, credentials, and the `local-development` attribution of
 earlier history are untouched. A store
 whose schema is newer than this Tesserae understands is refused unchanged, with
@@ -182,6 +185,61 @@ either mismatch raises `ValueError` before anything is read. Its records are
 kept like any participant's, under `referee`. Only the referee bridge uses it
 ([referee contract](designs/referee_contract.md) section 9).
 
+## Characters
+
+A game whose module declares `CharacterRules` ([modules.md](modules.md#characters))
+is a character game, under the
+[character contract](designs/character_contract.md). Its `characters` rows
+hold each character's ID (`c_` and 16 hexadecimal digits), owning
+participant (never changed), label, lifecycle phase (`draft`, `ready`,
+`archived`) and draft revision. The module keeps its own data for each, keyed
+by character ID, in the module state. A game without characters has none and
+behaves as before.
+
+**Acting.** `execute_command(context, raw, actor=Actor(character_id, mode))`
+runs a player's command as that actor. The mode is `setup` with no
+character, `creation` with one of the caller's drafts, or `play` with one of
+their ready characters; omitted, it is `setup`. Under the write guard, after
+replay and before the revision check, the store refuses:
+- in `setup`, every command (`mode_forbidden`);
+- a character that is unknown, archived or another participant's
+  (`character_unavailable`, the same for all three);
+- a character whose phase no longer matches the mode (`character_changed`);
+- in `creation`, anything but a creation step; in `play`, any creation step
+  (`mode_forbidden`).
+
+The command then runs with `Action.character_id` set. Each committed step
+adds one to the draft's revision, and `character.name` also sets its label.
+The record's content includes `character_id`, so a retry under another
+character is `request_conflict`. A game without characters takes no actor.
+
+**Lifecycle.** Each operation returns `(message, committed)` like
+`execute_command`, takes a request ID in the caller's command namespace, and
+is one command record that advances the revision, so an exact retry returns
+the recorded outcome and a different one under that ID is `request_conflict`:
+- `create_character(context, request_id, name)` makes a draft (name may be
+  None), with the module's `start` data in the same transaction;
+- `complete_character(context, request_id, character_id, draft_revision)`
+  makes it ready, if it is still at that revision (`stale_draft`, with the
+  current one), named and complete by the module's `problems`
+  (`character_incomplete`, with the list), and no running referee job acts
+  for it (`character_busy`). `complete` draws nothing;
+- `archive_character(context, request_id, character_id)` archives a draft
+  or ready character, unless a running job acts for it (`character_busy`) or
+  the module's `archive_veto` refuses (`action_rejected`). Its data and
+  history stay.
+
+Completing or archiving ends the character's pending referee question and
+its unnarrated creation results. Any refusal changes nothing; a module
+failure rolls everything back. In a game without characters each is
+`characters_unsupported`.
+
+**Reads.** `characters(context)` lists the caller's unarchived characters,
+ready first, then drafts, each in creation order. `character_sheet(context,
+character_id)` returns one of them with the module's sheet. Both return None
+once the caller's authority has ended. `inspect_characters()` lists every
+character for operators and tests.
+
 ## Reads
 
 `revision()`, `session_revision(context)`, `participant_view(context)`,
@@ -276,7 +334,7 @@ starts at revision 0 with an empty command history.
 ```
 
 - **The host checks the envelope:** exactly these keys at each level; UTF-8
-  JSON with no duplicate keys or non-finite numbers; `seed_version` 1; a module
+  JSON with no duplicate keys or non-finite numbers; `seed_version` 1 or 2; a module
   binding equal to the runtime's (ID, version, state version, and the same
   provider choices); participant IDs of the form every participant ID has, `p_`
   and 16 lowercase hexadecimal digits, with no repeats; valid display names. A
@@ -285,6 +343,14 @@ starts at revision 0 with an empty command history.
   ([modules.md](modules.md#module-definition)), including that every reference
   to a participant names a seeded one. A module without a validator refuses
   seeds, as `dice` and `relay` do.
+- **Version 2 declares characters**, for a module with characters only, in a
+  `characters` list of `{"character_id", "participant_id", "name"}`: unique
+  IDs of the character form, owners among the seeded participants, valid
+  names. The module checks its state with `CharacterRules.validate_seed(state,
+  participant_ids, owners)`, including that it holds data for exactly the
+  declared characters. Seeded characters are ready and already in the scene;
+  drafts cannot be seeded. A version 1 seed for a character module declares
+  none, and a module without characters refuses version 2.
 - **All or nothing.** Every check runs before the file is created. The binding,
   state, participants and provenance are then written in the same single
   transaction as the new store. An existing destination is refused untouched,
@@ -312,7 +378,7 @@ lookups and the module's synchronous rules.
 ## Storage
 
 SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
-"TESS"). The schema version is SQLite's `user_version`, currently 5.
+"TESS"). The schema version is SQLite's `user_version`, currently 7.
 
 | Table | Since | Contents |
 |---|---|---|
@@ -322,7 +388,9 @@ SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
 | `credentials` | 2 | `id`, `participant_id`, token `digest`, `issued_at`, `revoked_at` (null while active; at most one active per participant) |
 | `module` | 3 | One row: `module_id`, `module_version`, `state_version`, selected `providers` JSON (`[operation, provider, version]` triples), and the module's `state` JSON |
 | `seed` | 4 | For a game created from a seed, one row: `seed_version`, the `provenance` JSON, `created_at`; otherwise empty |
-| `referee`, `referee_sessions`, `referee_inputs`, `referee_jobs`, `referee_steps`, `referee_choices`, `referee_messages`, `referee_rulings` | 5 | The AI referee's mode, Codex sessions, accepted input, jobs (at most one `running`, enforced by a unique index), journaled tool steps, pending choices, conversation and rulings; empty until `tesserae referee enable`. See [referee_contract.md](designs/referee_contract.md#5-store) and `tesserae/referee/store.py` |
+| `referee`, `referee_sessions`, `referee_inputs`, `referee_jobs`, `referee_steps`, `referee_choices`, `referee_messages`, `referee_rulings` | 5 | The AI referee's mode, Codex sessions, accepted input, jobs (at most one `running`, enforced by a unique index), journaled tool steps, pending choices, conversation and rulings; empty until `tesserae referee enable`. See [referee_contract.md](designs/referee_contract.md#5-store) and `tesserae/referee/store.py`. Version 7 adds each input's, step's and message's character (and an input's mode, a message's creation flag), and scopes pending choices by character |
+| `host_links` | 6 | Host players admitted by a lobby host, each linked to one participant ([lobby contract](designs/lobby_contract.md#5-admission-and-participant-links)) |
+| `characters` | 7 | `character_id`, owning `participant_id`, `name`, `phase`, `draft_revision`, and when it was created, completed, introduced and archived; empty in a game without characters |
 
 The `commands` table is the history. It is not an event-sourcing log, and
 SQLite is the only live authority. `local-development` appears in `commands`

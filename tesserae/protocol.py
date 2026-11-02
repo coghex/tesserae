@@ -48,6 +48,14 @@ ERROR_CODES = frozenset(
         "no_campaign",
         "campaign_selected",
         "campaign_unavailable",
+        # Characters (docs/designs/character_contract.md section 9).
+        "characters_unsupported",
+        "character_unavailable",
+        "character_changed",
+        "mode_forbidden",
+        "stale_draft",
+        "character_incomplete",
+        "character_busy",
     }
 )
 # One fixed message per session error, so failures never vary with the

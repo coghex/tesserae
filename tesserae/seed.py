@@ -1,11 +1,14 @@
 """Seeds: a new game's imported starting point (`tesserae game create --seed`).
 
-A seed is a version-1 JSON file naming the module binding it was made for,
-the game's participants (without credentials), the module state and opaque
-import provenance. The host checks the envelope, the participants and the
-binding; the module checks its own state (`Module.validate_seed`). A seed is
-a baseline at revision 0, never a replay of earlier commands. See
-docs/game_store.md#seeded-creation.
+A seed is a JSON file naming the module binding it was made for, the game's
+participants (without credentials), the module state and opaque import
+provenance; version 2 adds the characters of a character module, each with
+its owner. The host checks the envelope, the participants, the characters and
+the binding; the module checks its own state (`Module.validate_seed`, or
+`CharacterRules.validate_seed` for a character module). A seed is a baseline
+at revision 0, never a replay of earlier commands. See
+docs/game_store.md#seeded-creation and docs/designs/character_contract.md
+section 13.
 """
 
 import json
@@ -14,11 +17,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .modules import ProviderChoice, Runtime, SeedError
-from .store import SEED_VERSION, check_name, is_participant_id
+from .store import check_name, is_character_id, is_participant_id
+
+SEED_VERSIONS = (1, 2)
 
 
 @dataclass(frozen=True)
 class SeedParticipant:
+    participant_id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class SeedCharacter:
+    character_id: str
     participant_id: str
     name: str
 
@@ -32,10 +44,12 @@ class Seed:
     participants: tuple[SeedParticipant, ...]
     state: dict
     provenance: dict
+    seed_version: int = 1
+    characters: tuple[SeedCharacter, ...] = ()
 
     def check(self, runtime: Runtime):
         """Raise SeedError unless this seed fits `runtime` exactly and the
-        module accepts its state for these participants."""
+        module accepts its state for these participants and characters."""
         made_for = (
             self.module_id,
             self.module_version,
@@ -52,8 +66,19 @@ class Seed:
             )
         if made_for[3] != loaded[3]:
             raise SeedError("The seed's provider choices differ from the module's.")
-        runtime.validate_seed(
-            self.state, frozenset(p.participant_id for p in self.participants)
+        participant_ids = frozenset(p.participant_id for p in self.participants)
+        if runtime.characters is None:
+            if self.seed_version != 1:
+                raise SeedError(
+                    f"Module {module.id!r} has no characters; use a version 1 seed."
+                )
+            runtime.validate_seed(self.state, participant_ids)
+            return
+        # A version 1 seed for a character module declares no characters.
+        runtime.validate_character_seed(
+            self.state,
+            participant_ids,
+            {c.character_id: c.participant_id for c in self.characters},
         )
 
 
@@ -76,15 +101,18 @@ def parse_seed(text: str) -> Seed:
         )
     except (ValueError, RecursionError) as error:
         raise SeedError(f"The seed is not valid JSON: {error}") from None
-    _exact(
-        data,
-        {"seed_version", "module", "participants", "state", "provenance"},
-        "The seed",
-    )
-    if type(data["seed_version"]) is not int or data["seed_version"] != SEED_VERSION:
+    version = data.get("seed_version") if isinstance(data, dict) else None
+    if type(version) is not int or version not in SEED_VERSIONS:
+        version = 1  # report the envelope first; the version check follows
+    keys = {"seed_version", "module", "participants", "state", "provenance"}
+    _exact(data, keys | ({"characters"} if version == 2 else set()), "The seed")
+    if (
+        type(data["seed_version"]) is not int
+        or data["seed_version"] not in SEED_VERSIONS
+    ):
         raise SeedError(
             f"The seed is version {data['seed_version']!r}; "
-            f"this host reads version {SEED_VERSION}."
+            "this host reads versions 1 and 2."
         )
 
     module = data["module"]
@@ -127,6 +155,7 @@ def parse_seed(text: str) -> Seed:
             raise SeedError(f"Participant {number}: {error}") from None
         participants.append(SeedParticipant(participant_id, entry["name"]))
 
+    characters = _characters(data.get("characters", []), seen)
     for key in ("state", "provenance"):
         if not isinstance(data[key], dict):
             raise SeedError(f"The seed's {key} must be a JSON object.")
@@ -138,7 +167,37 @@ def parse_seed(text: str) -> Seed:
         tuple(participants),
         data["state"],
         data["provenance"],
+        version,
+        characters,
     )
+
+
+def _characters(entries, participant_ids: set) -> tuple[SeedCharacter, ...]:
+    """Version 2's declared characters: each with a well-formed unique ID, a
+    seeded owner and a valid name. Seeded characters are always ready."""
+    if not isinstance(entries, list):
+        raise SeedError("The seed's characters must be a list.")
+    characters, seen = [], set()
+    for number, entry in enumerate(entries, 1):
+        _exact(entry, {"character_id", "participant_id", "name"}, f"Character {number}")
+        if not is_character_id(entry["character_id"]):
+            raise SeedError(
+                f"Character {number}'s ID is not c_ followed by 16 lowercase "
+                "hexadecimal digits."
+            )
+        if entry["character_id"] in seen:
+            raise SeedError(f"Character {number} repeats an earlier ID.")
+        seen.add(entry["character_id"])
+        if entry["participant_id"] not in participant_ids:
+            raise SeedError(f"Character {number}'s owner is not a seeded participant.")
+        try:
+            check_name(entry["name"])
+        except ValueError as error:
+            raise SeedError(f"Character {number}: {error}") from None
+        characters.append(
+            SeedCharacter(entry["character_id"], entry["participant_id"], entry["name"])
+        )
+    return tuple(characters)
 
 
 def _exact(value, names: set[str], subject: str):
