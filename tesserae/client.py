@@ -16,6 +16,13 @@ With --lobby, the token is a host token for a lobby host (`serve
 /leave and /campaigns choose among them. Inside a campaign it behaves as
 above. Retry state belongs to the campaign it was sent in. See
 docs/designs/lobby_contract.md.
+
+In a campaign with characters the connection also has an actor: no
+character (setup questions), a draft (private creation with the referee) or
+a ready character (play). /characters, /character, /create, /sheet, /approve
+and /archive manage it, every say names it, and retry state belongs to the
+campaign, participant, character and mode it was sent as. See
+docs/designs/character_contract.md section 15.
 """
 
 import asyncio
@@ -61,11 +68,16 @@ def run(
     json_output=False,
     lobby=False,
     campaign=None,
+    character=None,
 ):
     """Check the destination and trust first: plaintext to another computer is
     refused before anything is read, sent, or contacted."""
     if campaign is not None and not lobby:
         return _diagnose("--campaign needs --lobby; nothing was sent", EXIT_FAILED)
+    if character is not None and campaign is None:
+        return _diagnose(
+            "--character needs --campaign (and --lobby); nothing was sent", EXIT_FAILED
+        )
     if game_id is not None and lobby:
         return _diagnose(
             "--game-id is for one game; with --lobby use --campaign. Nothing was sent",
@@ -79,6 +91,7 @@ def run(
     client = _Client(uri, token, game_id, drain_timeout, ssl_context, json_output)
     client.lobby = lobby
     client.campaign_wanted = campaign
+    client.character_wanted = character
     return asyncio.run(client.main())
 
 
@@ -108,6 +121,18 @@ class _Client:
         self.selection = None
         self.saved = {}
         self.entered = False  # set when a select's snapshot arrives
+        # Characters (a campaign whose snapshots carry `actor`): the host's
+        # word on this connection's actor, the list last shown (for numbers),
+        # the draft revision of the sheet last printed (for /approve), and an
+        # archive waiting for its confirmation.
+        self.character_wanted = None
+        self.actor = None
+        self.roster = []
+        self.shown_revision = None
+        self.confirming = None
+        self.created = None  # a draft just created, to select next
+        self.refreshes = set()  # characters or sync requests the client sent itself
+        self.send_lock = asyncio.Lock()  # one line at a time, in deque order
 
     async def main(self) -> int:
         loop = asyncio.get_running_loop()
@@ -171,6 +196,8 @@ class _Client:
         lines = asyncio.Queue()
         if self.campaign_wanted is not None:
             lines.put_nowait(f"/join {self.campaign_wanted}".encode())
+        if self.character_wanted is not None:
+            lines.put_nowait(f"/character {self.character_wanted}".encode())
         _start_stdin_reader(asyncio.get_running_loop(), lines, self._input_ended)
         receiver = asyncio.create_task(self._receive(connection))
         try:
@@ -255,9 +282,10 @@ class _Client:
     async def _forward(self, connection, lines: asyncio.Queue, receiver):
         """Send each nonblank stdin line as it arrives, until stdin ends.
 
-        In lobby mode a line that changes the selection is answered before the
-        next line is read, so each line is understood in the campaign (or the
-        lobby) it was typed in.
+        In lobby mode a line that changes the selection (of a campaign or a
+        character) is answered before the next line is read, so each line is
+        understood in the campaign, and as the actor, it was typed in. After
+        each, the client waits for the referee status of where it now is.
         """
         if self.referee:
             await self._recover(connection, receiver)
@@ -270,9 +298,17 @@ class _Client:
             if text is None:
                 continue
             await self._send_line(connection, text)
-            if self.lobby and _sent_type(text) in ("select", "leave"):
+            if self.lobby and _sent_type(text) in _BOUNDARIES:
                 await self._until_closed(self._all_answered(), receiver)
-                if self.entered and self.referee:
+                if self.created is not None:  # a new draft: select it next
+                    created, self.created = self.created, None
+                    await self._send_line(connection, _select_character(created))
+                    await self._until_closed(self._all_answered(), receiver)
+                if self.entered and self.actor is not None:
+                    # A character campaign: say what this player has there.
+                    await self._send_line(connection, _CHARACTERS)
+                    await self._until_closed(self._all_answered(), receiver)
+                if self.selection is not None and self.referee:
                     await self._recover(connection, receiver)
                 self.entered = False
 
@@ -286,11 +322,27 @@ class _Client:
         await self._until_closed(self._all_answered(), receiver)
 
     async def _send_line(self, connection, text: str):
-        self.unanswered.append(text)
-        try:
-            await connection.send(text)
-        except ConnectionClosed:
-            raise _HostClosed from None
+        # Locked, so lines reach the host in the order replies are expected.
+        async with self.send_lock:
+            self.unanswered.append(text)
+            try:
+                await connection.send(text)
+            except ConnectionClosed:
+                raise _HostClosed from None
+
+    def _refresh(self, connection, text: str):
+        """Ask the host where this connection now is, after a reply that says
+        the client's idea of its character was out of date."""
+
+        async def send():
+            try:
+                await self._send_line(connection, text)
+            except _HostClosed:
+                pass
+
+        task = asyncio.create_task(send())
+        self.refreshes.add(task)
+        task.add_done_callback(self.refreshes.discard)
 
     async def _receive(self, connection):
         """Print everything the host sends; ends quietly when it closes.
@@ -318,6 +370,16 @@ class _Client:
                     self._show(message)
                     self._back_in_lobby()
                     continue
+                if message.get("type") == "actor" and self.actor is not None:
+                    if not (
+                        message.get("version") == 1
+                        and message.get("reason") in ("completed", "archived")
+                        and _is_actor(message.get("actor"))
+                    ):
+                        raise _Failure("the host sent a malformed actor notice")
+                    self._show(message)
+                    self._set_actor(message["actor"])
+                    continue
                 if not self.unanswered:
                     raise _Failure("the host sent a reply to nothing")
                 sent = self.unanswered[0]
@@ -326,6 +388,7 @@ class _Client:
                     self._remember(message, sent)
                 if self.lobby:
                     self._after_reply(message, sent)
+                    self._follow_up(connection, message)
                 else:
                     self._show(message)
                 self.unanswered.popleft()
@@ -349,12 +412,10 @@ class _Client:
             if self.selection is None:
                 return self._note("[lobby] You are not in a campaign.")
             return json.dumps({"version": 1, "type": "leave"})
-        if command in ("/character", "/characters"):
-            return self._note(
-                "[lobby] Characters come in a later version; /help lists what works now."
-            )
         if command == "/help":
             self._note(_LOBBY_HELP)
+            if self.actor is not None:
+                self._note(_CHARACTER_HELP)
             if self.selection is not None and self.referee:
                 self._note(_HELP)
             return None
@@ -362,9 +423,98 @@ class _Client:
             return self._note(
                 "[lobby] Choose a campaign first: /campaigns lists them, /join enters one."
             )
+        if command in _CHARACTER_COMMANDS:
+            if self.actor is None:
+                return self._note(
+                    f"[character] {self.selection['name']} has no characters."
+                )
+            return self._character_line(command, rest)
+        if self.actor is not None and self.actor["mode"] == "creation":
+            if command == "/private":
+                return self._note(
+                    "[error] Everything you say while creating is already private; "
+                    "just type it."
+                )
         if self.referee:
             return self._translate(text)
         return text
+
+    def _character_line(self, command: str, rest: str) -> str | None:
+        """One character command as its message, or None after a note
+        (character contract section 15)."""
+        if command == "/characters":
+            return _CHARACTERS
+        if command == "/sheet":
+            return json.dumps({"version": 1, "type": "sync"})
+        if command == "/create":
+            return json.dumps({"version": 1, "type": "character_create",
+                               "request_id": _new_id("k"), "name": rest or None})  # fmt: skip
+        if command == "/approve":
+            character = self.actor["character"]
+            if self.actor["mode"] != "creation":
+                return self._note(
+                    "[character] Only a draft is approved; select one first."
+                )
+            if self.shown_revision is None:
+                return self._note(
+                    "[character] Look at the sheet first (/sheet); /approve completes "
+                    "the revision you were shown."
+                )
+            return json.dumps({"version": 1, "type": "character_complete",
+                               "request_id": _new_id("k"),
+                               "character_id": character["character_id"],
+                               "draft_revision": self.shown_revision})  # fmt: skip
+        wanted, _, confirm = rest.partition(" ")
+        if command == "/character":
+            if not rest:
+                return self._note(
+                    "[character] Type /character and a number from /characters, or "
+                    "/character none."
+                )
+            if rest == "none":
+                return _select_character(None)
+            found = self._character_id(rest)
+            return None if found is None else _select_character(found)
+        # /archive N, then /archive N confirm
+        if not wanted:
+            return self._note(
+                "[character] Type /archive and a number from /characters."
+            )
+        found = self._character_id(wanted)
+        if found is None:
+            return None
+        if confirm != "confirm" or self.confirming != found:
+            self.confirming = found
+            name = _label(self._known(found))
+            return self._note(
+                f"[character] Archive {name}? It leaves your list for good. Type "
+                f"/archive {wanted} confirm to archive it."
+            )
+        self.confirming = None
+        return json.dumps({"version": 1, "type": "character_archive",
+                           "request_id": _new_id("k"), "character_id": found})  # fmt: skip
+
+    def _character_id(self, wanted: str) -> str | None:
+        """The character the player meant: a number from /characters, a name
+        (if only one has it) or an ID; None after saying why not."""
+        if wanted.isdigit():
+            if 1 <= int(wanted) <= len(self.roster):
+                return self.roster[int(wanted) - 1]["character_id"]
+            return self._note(
+                f"[character] There is no character {wanted}; see /characters."
+            )
+        named = [c for c in self.roster
+                 if (c["name"] or "").casefold() == wanted.casefold()]  # fmt: skip
+        if len(named) == 1:
+            return named[0]["character_id"]
+        if " " in wanted or len(named) > 1:
+            return self._note(
+                f"[character] Which {wanted}? Use its number from /characters."
+            )
+        return wanted  # an ID: the host decides
+
+    def _known(self, character_id: str) -> dict | None:
+        return next((c for c in self.roster if c["character_id"] == character_id), None)
 
     def _join_line(self, wanted: str) -> str | None:
         if self.selection is not None:
@@ -377,7 +527,10 @@ class _Client:
         campaign_id = wanted if choice is None else choice["campaign_id"]
         if choice is None and (wanted.isdigit() or " " in wanted):
             return self._note(f"[lobby] There is no campaign {wanted}; see /campaigns.")
-        return json.dumps({"version": 1, "type": "select", "campaign_id": campaign_id})
+        # Every select says the client handles characters: a character
+        # campaign refuses one that does not (character contract section 9).
+        return json.dumps({"version": 1, "type": "select", "campaign_id": campaign_id,
+                           "characters": 1})  # fmt: skip
 
     def _after_reply(self, message: dict, sent: str):
         """Show a reply in lobby mode and follow any change of selection."""
@@ -388,12 +541,65 @@ class _Client:
             self._lobby_reply(message)
         elif sent_type == "select" and kind == "snapshot":
             self._enter(message)
+        elif kind == "snapshot" and self.actor is not None:
+            self._show(message)
+            self._set_actor(message["actor"])
+            if message["actor"]["mode"] == "creation":
+                # What /approve completes: the revision this sheet showed.
+                self.shown_revision = message["actor"]["character"]["draft_revision"]
+        elif kind == "characters":
+            self.roster = message["characters"]
+            self._show(message)
+            self._set_actor(message["actor"])
+        elif kind == "character":
+            self._show(message)
+            if (
+                sent_type == "character_create"
+                and message["character"]["phase"] == "draft"
+            ):
+                self.created = message["character"]["character_id"]
+            self._set_actor(message["actor"])
         elif kind == "error" and message["code"] == "campaign_unavailable":
             self._show(message)
             if self.selection is not None and sent_type != "select":
                 self._back_in_lobby()
         else:
             self._show(message)
+
+    def _follow_up(self, connection, message: dict):
+        """After a reply that shows the client's idea of its character was
+        out of date, ask the host where it is now."""
+        if message.get("type") != "error":
+            return
+        if message["code"] in ("character_changed", "character_unavailable"):
+            self._refresh(connection, _CHARACTERS)
+        elif message["code"] == "stale_draft":
+            self._note(
+                "[character] The draft changed since you saw it; here it is now."
+            )
+            self._refresh(connection, json.dumps({"version": 1, "type": "sync"}))
+
+    def _set_actor(self, actor: dict):
+        """Follow the host's word on this connection's actor. Retry state
+        belongs to one actor: the old one's is kept with it."""
+        if actor == self.actor:
+            return
+        old = self.actor
+        if old is not None:
+            self.saved[self._retry_key()] = (
+                self.sending,
+                self.last_say,
+                self.reported_input,
+            )
+        self.actor = actor
+        self.sending, self.last_say, self.reported_input = self.saved.pop(
+            self._retry_key(), ({}, None, None)
+        )
+        if old is None or _actor_key(old) != _actor_key(actor):
+            self.shown_revision = None
+        elif actor["mode"] == "creation":
+            return  # the same draft, renamed or revised: no news
+        self._note(_actor_line(actor))
 
     def _lobby_reply(self, message: dict):
         self.catalog = message["campaigns"]
@@ -404,6 +610,8 @@ class _Client:
         self.selection = campaign
         self.session = _session_of(snapshot)
         self.referee = isinstance(snapshot.get("referee"), dict)
+        self.actor = snapshot.get("actor")  # None: a campaign without characters
+        self.roster, self.shown_revision, self.confirming = [], None, None
         self.sending, self.last_say, self.reported_input = self.saved.pop(
             self._retry_key(), ({}, None, None)
         )
@@ -424,9 +632,11 @@ class _Client:
             _print(snapshot)
 
     def _retry_key(self) -> tuple:
-        """Retry state belongs to one campaign and one participant in it: an
-        input is never resent as someone else, even after a relink."""
-        return self.selection["campaign_id"], self.session[1]
+        """Retry state belongs to one campaign, one participant in it, and in
+        a character campaign one character and mode: an input is never
+        resent as someone else, even after a relink, or as another actor."""
+        return (self.selection["campaign_id"], self.session[1],
+                *_actor_key(self.actor))  # fmt: skip
 
     def _back_in_lobby(self, quiet: bool = False):
         """Keep the campaign's retry state with it, and stop using it."""
@@ -439,7 +649,8 @@ class _Client:
             self.reported_input,
         )
         self.sending, self.last_say, self.reported_input = {}, None, None
-        self.selection, self.referee = None, False
+        self.selection, self.referee, self.actor = None, False, None
+        self.roster, self.shown_revision, self.confirming = [], None, None
         if not quiet:
             self._note(
                 f"[lobby] You are back in the lobby, out of {campaign['name']}; "
@@ -479,8 +690,16 @@ class _Client:
         return self._note(f"[error] There is no /{command}; /help lists commands.")
 
     def _say(self, text: str, private: bool, request_id: str | None = None) -> str:
-        said = {"request_id": request_id or "c-" + secrets.token_hex(6), "text": text,
+        said = {"request_id": request_id or _new_id("c"), "text": text,
                 "private": private}  # fmt: skip
+        if self.actor is not None:  # the actor this client believes it has
+            character = self.actor["character"]
+            said["actor"] = {
+                "character_id": None
+                if character is None
+                else character["character_id"],
+                "mode": self.actor["mode"],
+            }
         self.sending[said["request_id"]] = said
         return json.dumps({"version": 1, "type": "say", **said})
 
@@ -503,7 +722,7 @@ class _Client:
     def _show(self, message: dict):
         readable = self.referee or (
             self.lobby
-            and (self.selection is None or message.get("type") in ("lobby", "left"))
+            and (self.selection is None or message.get("type") in _LOBBY_READABLE)
         )
         if not readable or self.json_output:
             _print(message)
@@ -623,6 +842,15 @@ _LOBBY_HELP = """\
 [help] /join N        enter campaign N from /campaigns (or its ID or name)
 [help] /leave         return to the lobby; anything you sent stays in that campaign"""
 
+_CHARACTER_HELP = """\
+[help] /characters    your characters here: number, name, ready or draft
+[help] /character N   play character N, or resume creating draft N (number, name or ID)
+[help] /character none  no character: ask setup and rules questions only
+[help] /create [NAME] start a new character with the referee (privately)
+[help] /sheet         the selected character's sheet
+[help] /approve       complete the draft at the revision /sheet last showed
+[help] /archive N     archive character N, after you confirm"""
+
 _HELP = """\
 [help] Type to talk to the referee; everyone at the table sees it.
 [help] /private TEXT  say something to the referee only
@@ -638,6 +866,15 @@ def _readable(message: dict) -> list[str]:
     kind = message.get("type")
     if kind == "lobby":
         return _lobby_lines(message)
+    if kind == "characters":
+        return _character_lines(message)
+    if kind == "character":
+        character = message["character"]
+        done = {"draft": "started", "ready": "completed", "archived": "archived"}
+        return [f"[character] {done[character['phase']]} {_label(character)}"]
+    if kind == "actor":
+        why = "completed" if message["reason"] == "completed" else "archived"
+        return [f"[character] Your character was {why} on another connection."]
     if kind == "left":
         return ["[left] That campaign is no longer available to you."]
     if kind == "message":
@@ -672,7 +909,20 @@ def _readable(message: dict) -> list[str]:
     if kind == "snapshot":
         view = message.get("view")
         detail = "" if view is None else " " + json.dumps(view, separators=(", ", ": "))
-        return [f"[view] revision {message['revision']}{detail}"]
+        lines = [f"[view] revision {message['revision']}{detail}"]
+        sheet, actor = message.get("sheet"), message.get("actor")
+        if sheet is not None and actor is not None:
+            character = actor["character"]
+            revision = (
+                f", revision {character['draft_revision']}"
+                if actor["mode"] == "creation"
+                else ""
+            )
+            lines.append(
+                f"[sheet] {_label(character)}{revision}: "
+                + json.dumps(sheet, separators=(", ", ": "))
+            )
+        return lines
     return []  # accepted (its words arrive as a message) and revisions
 
 
@@ -710,7 +960,67 @@ def _choose(catalog: list, wanted: str) -> dict | None:
 def _line(message: dict) -> str:
     sender = message["from"]
     who = "Referee" if sender.get("kind") == "referee" else sender.get("name", "?")
-    return f"[{message['audience']}] {who}: {message['text']}"
+    if isinstance(sender.get("character"), str):
+        who += f" as {sender['character']}"
+    audience = message["audience"]
+    creation = message.get("creation")
+    if isinstance(creation, dict):
+        audience = f"private · creating {creation.get('name') or 'a draft'}"
+    return f"[{audience}] {who}: {message['text']}"
+
+
+def _label(character) -> str:
+    if character is None:
+        return "that character"
+    if character["phase"] == "draft":
+        return f"{character['name'] or 'an unnamed draft'} (draft)"
+    return character["name"] or "an unnamed character"
+
+
+def _actor_line(actor: dict) -> str:
+    """Where the connection now is (character contract section 15)."""
+    character = actor["character"]
+    if actor["mode"] == "play":
+        return f"[character] playing as {character['name']}"
+    if actor["mode"] == "creation":
+        return (
+            f"[character] creating {_label(character)}, revision "
+            f"{character['draft_revision']}; private to you. /sheet shows it, "
+            "/approve completes it."
+        )
+    return (
+        "[character] no character selected; ask setup questions, /character N "
+        "to choose one, or /create"
+    )
+
+
+def _character_lines(message: dict) -> list[str]:
+    characters = message["characters"]
+    if not characters:
+        return [
+            "[characters] You have no characters here yet: /create [NAME] starts "
+            "one with the referee, privately. Until then you can ask setup "
+            "questions."
+        ]
+    here = message["actor"]["character"]
+    here = None if here is None else here["character_id"]
+    count = f"{len(characters)} character{'s' if len(characters) != 1 else ''}"
+    lines = [f"[characters] {count}:"]
+    for number, character in enumerate(characters, 1):
+        state = (
+            "ready"
+            if character["phase"] == "ready"
+            else f"draft, revision {character['draft_revision']}"
+        )
+        mark = " (selected)" if character["character_id"] == here else ""
+        lines.append(
+            f"[characters] {number}. {character['name'] or 'Unnamed'}, {state}{mark}"
+            f"  {character['character_id']}"
+        )
+    lines.append(
+        "[characters] /character N plays (or resumes) one; /create starts another."
+    )
+    return lines
 
 
 def _is_unsolicited(message: dict) -> bool:
@@ -770,6 +1080,33 @@ def _check_reply(message: dict, sent: str, session: tuple):
     elif kind in ("lobby", "leave") and message.get("type") == "lobby":
         if not _is_lobby(message):
             raise _Failure("the host sent a malformed lobby")
+    elif kind == "characters" and message.get("type") == "characters":
+        if not (
+            _is_actor(message.get("actor"))
+            and isinstance(message.get("characters"), list)
+            and all(_is_character(c) for c in message["characters"])
+        ):
+            raise _Failure("the host sent a malformed character list")
+    elif kind == "character_select" and message.get("type") == "snapshot":
+        actor = message.get("actor")
+        wanted = line.get("character_id")
+        if not (
+            _is_snapshot(message)
+            and _session_of(message) == session
+            and _is_actor(actor)
+            and (actor["character"] or {}).get("character_id") == wanted
+        ):
+            raise _Failure(
+                "the host sent a snapshot that does not answer the selection"
+            )
+    elif kind in _LIFECYCLE and message.get("type") == "character":
+        if not (
+            message.get("request_id") == line.get("request_id")
+            and _is_revision(message.get("revision"))
+            and _is_character(message.get("character"))
+            and _is_actor(message.get("actor"))
+        ):
+            raise _Failure("the host sent a character reply that does not answer it")
     elif kind == "say" and message.get("type") == "accepted":
         if not (
             message.get("request_id") == line.get("request_id")
@@ -797,6 +1134,59 @@ def _check_reply(message: dict, sent: str, session: tuple):
             f"the host answered a {kind or 'malformed'} line with a "
             f"{message.get('type')!r} message"
         )
+
+
+def _is_character(value) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("character_id"), str)
+        and (value.get("name") is None or isinstance(value["name"], str))
+        and value.get("phase") in ("draft", "ready", "archived")
+        and (
+            value.get("draft_revision") is None or _is_revision(value["draft_revision"])
+        )
+    )
+
+
+def _is_actor(value) -> bool:
+    if not isinstance(value, dict) or value.get("mode") not in (
+        "setup",
+        "creation",
+        "play",
+    ):
+        return False
+    character = value.get("character")
+    if value["mode"] == "setup":
+        return character is None
+    return _is_character(character)
+
+
+def _actor_key(actor) -> tuple:
+    """(character ID, mode), or (None, None) without characters."""
+    if actor is None:
+        return None, None
+    character = actor["character"]
+    return (None if character is None else character["character_id"]), actor["mode"]
+
+
+def _select_character(character_id) -> str:
+    return json.dumps(
+        {"version": 1, "type": "character_select", "character_id": character_id}
+    )
+
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}-{secrets.token_hex(6)}"
+
+
+_CHARACTERS = json.dumps({"version": 1, "type": "characters"})
+_LIFECYCLE = ("character_create", "character_complete", "character_archive")
+# Lines answered before the next is read: each changes where the client is.
+_BOUNDARIES = ("select", "leave", "character_select", *_LIFECYCLE)
+_CHARACTER_COMMANDS = (
+    "/characters", "/character", "/create", "/sheet", "/approve", "/archive",
+)  # fmt: skip
+_LOBBY_READABLE = ("lobby", "left", "characters", "character", "actor")
 
 
 def _is_error(message: dict) -> bool:

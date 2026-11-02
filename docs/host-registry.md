@@ -183,7 +183,9 @@ tesserae connect ws://127.0.0.1:8765/ --token-file alice.token --lobby
   the lobby. If your host token is revoked, the client stops.
 - `--campaign ID` enters a campaign as soon as you log in, and `--json` prints
   the host's messages as JSON lines (typed lines are still words and
-  commands). Characters come in a later version; `/character` says so.
+  commands). In a campaign with characters, `/characters`, `/character`,
+  `/create`, `/sheet`, `/approve` and `/archive` manage yours, and
+  `--character ID` selects one on entering ([lobby runbook](lobby-runbook.md#6-players-choose-a-campaign)).
 - Without `--lobby`, `tesserae connect` joins one game with a game token, as
   before, and says so if you point it at a lobby host.
 

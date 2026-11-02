@@ -69,7 +69,8 @@ served by the lobby host only. CHR-2 (#112) added the stored characters, the
 module capability, seed version 2 and the original
 [Trailhead](trailhead.md) module; CHR-3 (#113) the referee's frozen actors and
 private, step-by-step creation; CHR-4 (#114) the lobby host's character
-messages and per-connection actors. The CLI and browser slices follow.
+messages and per-connection actors; CHR-5 (#115) the CLI's character
+commands. The browser slice follows.
 
 ## Later browser work
 

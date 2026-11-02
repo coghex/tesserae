@@ -145,6 +145,11 @@ def main(argv: list[str] | None = None) -> int:
         "--campaign", help="With --lobby, enter this campaign (its ID) on login."
     )
     connect.add_argument(
+        "--character",
+        help="With --campaign, then select this character of yours (its ID). A "
+        "draft resumes its creation.",
+    )
+    connect.add_argument(
         "--ca-file",
         help="The host's certificate to trust, for wss:// (see docs/tls.md). "
         "Without it, wss:// uses the system's trusted authorities.",
@@ -284,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             json_output=args.json,
             lobby=args.lobby,
             campaign=args.campaign,
+            character=args.character,
         )
     if args.command == "participant":
         from .admin import run

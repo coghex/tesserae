@@ -205,7 +205,7 @@ class LobbyClientTests(unittest.TestCase):
         self.assertEqual(bob.line(), "[error] That campaign is not available to you.")
         bob.type("/character", "/leave", "/retry", "/help")
         self.assertEqual(bob.until("[help] /leave"), [
-            "[lobby] Characters come in a later version; /help lists what works now.",
+            "[lobby] Choose a campaign first: /campaigns lists them, /join enters one.",
             "[lobby] You are not in a campaign.",
             "[lobby] Choose a campaign first: /campaigns lists them, /join enters one.",
             "[help] /campaigns     the campaigns open to you, and which one you are in",

@@ -443,9 +443,11 @@ The thin client ([#17](https://github.com/coghex/tesserae/issues/17),
 python3 -m tesserae connect URI --token-file PATH [--game-id ID] [--ca-file CERT]
 ```
 
-With `--lobby` (and optionally `--campaign ID`), the token file holds a host
-token for a lobby host: the client logs in and offers `/campaigns`, `/join`
-and `/leave` ([registry guide](host-registry.md#play-from-the-cli)).
+With `--lobby` (and optionally `--campaign ID`, then `--character ID`), the
+token file holds a host token for a lobby host: the client logs in and offers
+`/campaigns`, `/join` and `/leave` ([registry guide](host-registry.md#play-from-the-cli)),
+and in a campaign with characters the commands of the
+[character contract](designs/character_contract.md) section 15.
 
 `URI` is `wss://HOST:PORT/` for an encrypted host, verified against `--ca-file`
 or the system's trusted authorities. It can be `ws://` only for this computer
