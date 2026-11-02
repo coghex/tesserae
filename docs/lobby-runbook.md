@@ -13,8 +13,11 @@ below are placeholders.
 The lobby is for this computer only (127.0.0.1). A player on another computer
 connects with the CLI through an SSH tunnel to the host computer. Browser
 access over the network, TLS for the lobby and remembered logins are later
-work. Characters are later work too: today a player enters a campaign as their
-participant there, with no character to choose or create.
+work. Characters are arriving in M2-3: today a player enters a campaign as their
+participant there, with no character to choose or create. A campaign whose
+module has characters (such as the original [Trailhead](trailhead.md)) is
+served, but today's CLI and browser cannot enter it yet: they are told to
+update.
 
 ## 1. Install
 

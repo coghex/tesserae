@@ -59,11 +59,14 @@ from .web import AssetsError, load_assets
 
 REGISTRY_THREADS = 4
 # Messages a campaign sends without being asked; every other one is a reply.
-_UNSOLICITED = frozenset({"revision", "message", "referee"})
+_UNSOLICITED = frozenset({"revision", "message", "referee", "actor"})
 _CANNOT_OPEN = "That campaign cannot be opened right now; ask the host."
 _LOGIN_FAILED = error_message("internal_error", "The host could not check the login.")
 _HOST_FAILED = "The host failed; nothing was changed. Try again."
 
+_OLD_CLIENT = error_message(
+    "characters_unsupported", "This campaign uses characters; update your client."
+)
 _CAMPAIGN_GONE = error_message(  # a session error: no request ID
     "campaign_unavailable", "That campaign is no longer available to you."
 )
@@ -207,7 +210,7 @@ class LobbyHost:
         if isinstance(request, SelectRequest):
             if client.selection is not None:
                 return await self._refusal(client, lobby_error("campaign_selected"))
-            return await self._select(client, request.campaign_id)
+            return await self._select(client, request.campaign_id, request.characters)
         if isinstance(request, LeaveRequest):
             if client.selection is None:
                 return await self._refusal(client, lobby_error("no_campaign"))
@@ -245,7 +248,9 @@ class LobbyHost:
         )
         return True
 
-    async def _select(self, client: "_Client", campaign_id: str) -> bool:
+    async def _select(
+        self, client: "_Client", campaign_id: str, characters: bool = False
+    ) -> bool:
         try:
             record = await self._registry_call(_authorized, client.context, campaign_id)
         except CredentialRevoked:
@@ -260,6 +265,11 @@ class LobbyHost:
         service = await self._service(campaign_id, record["path"])
         if service is None:
             await client.send(lobby_error("campaign_unavailable", _CANNOT_OPEN))
+            return True
+        if service.characters and not characters:
+            # An older client could never choose an actor: it stays in the
+            # lobby, and no participant is made (character contract section 9).
+            await client.send(_OLD_CLIENT)
             return True
         guard = partial(_Guard, self.registry, client.context, campaign_id)
         try:

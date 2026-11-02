@@ -88,6 +88,18 @@ _MESSAGES_FIELDS = frozenset({"version", "type", "after_seq"})
 _LOGIN_FIELDS = frozenset({"version", "type", "token"})
 _SELECT_FIELDS = frozenset({"version", "type", "campaign_id"})
 LOBBY_TYPES = frozenset({"login", "lobby", "select", "leave"})
+# Characters (docs/designs/character_contract.md section 9).
+CHARACTER_SUPPORT = 1  # what `select`'s optional `characters` field declares
+MODES = ("setup", "creation", "play")
+_CHARACTER_FIELDS = {
+    "characters": frozenset({"version", "type"}),
+    "character_select": frozenset({"version", "type", "character_id"}),
+    "character_create": frozenset({"version", "type", "request_id", "name"}),
+    "character_complete": frozenset(
+        {"version", "type", "request_id", "character_id", "draft_revision"}
+    ),
+    "character_archive": frozenset({"version", "type", "request_id", "character_id"}),
+}
 
 
 class ProtocolError(ValueError):
@@ -143,6 +155,22 @@ class SayRequest:
     request_id: str
     text: str
     private: bool
+    # In a character game, the actor the client believes it has:
+    # (character ID or None, mode). The host compares; it never acts on it.
+    actor: tuple | None = None
+
+
+@dataclass(frozen=True)
+class CharacterRequest:
+    """A character message (character contract section 9): `characters`,
+    `character_select`, `character_create`, `character_complete` or
+    `character_archive`, with whichever of its fields that type has."""
+
+    kind: str
+    request_id: str | None = None
+    character_id: str | None = None
+    name: str | None = None
+    draft_revision: int | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +200,7 @@ class LobbyRequest:
 @dataclass(frozen=True)
 class SelectRequest:
     campaign_id: str
+    characters: bool = False  # the client supports characters
 
 
 @dataclass(frozen=True)
@@ -229,6 +258,8 @@ def parse_client_message(text: str | bytes, runtime: Runtime = DICE_RUNTIME):
     if kind == "referee_status":
         _check_fields(data, _SYNC_FIELDS, "A referee_status request")
         return RefereeStatusRequest()
+    if isinstance(kind, str) and kind in _CHARACTER_FIELDS:
+        return _parse_character(kind, data)
     if kind == "messages":
         _check_fields(data, _MESSAGES_FIELDS, "A messages request")
         if not is_valid_revision(data["after_seq"]):
@@ -257,7 +288,12 @@ def parse_lobby_message(text: str | bytes):
         _check_session_version(data)
         return LobbyRequest() if kind == "lobby" else LeaveRequest()
     if kind == "select":
-        _check_session_fields(data, _SELECT_FIELDS, "A select request")
+        fields = _SELECT_FIELDS | ({"characters"} if "characters" in data else set())
+        _check_session_fields(data, fields, "A select request")
+        if "characters" in data and data["characters"] != CHARACTER_SUPPORT:
+            raise ProtocolError(
+                "invalid_request", f"'characters' is {CHARACTER_SUPPORT} when given."
+            )
         if not is_valid_identifier(data["campaign_id"]):
             raise ProtocolError(
                 "invalid_request",
@@ -265,15 +301,16 @@ def parse_lobby_message(text: str | bytes):
                 "characters without whitespace.",
             )
         _check_session_version(data)
-        return SelectRequest(data["campaign_id"])
+        return SelectRequest(data["campaign_id"], "characters" in data)
     return None
 
 
 def _parse_say(data: dict) -> SayRequest:
     request_id = data.get("request_id")
     request_id = request_id if is_valid_request_id(request_id) else None
+    fields = _SAY_FIELDS | ({"actor"} if "actor" in data else set())
     try:
-        _check_fields(data, _SAY_FIELDS, "A say request")
+        _check_fields(data, fields, "A say request")
     except ProtocolError as error:
         error.request_id = request_id
         raise
@@ -289,7 +326,62 @@ def _parse_say(data: dict) -> SayRequest:
             "'text' is a string and 'private' true or false.",
             request_id,
         )
-    return SayRequest(request_id, data["text"], data["private"])
+    actor = None
+    if "actor" in data:
+        actor = data["actor"]
+        if (
+            not isinstance(actor, dict)
+            or set(actor) != {"character_id", "mode"}
+            or actor["mode"] not in MODES
+            or not (
+                actor["character_id"] is None or isinstance(actor["character_id"], str)
+            )
+        ):
+            raise ProtocolError(
+                "invalid_request",
+                '\'actor\' is exactly {"character_id": ID or null, "mode": '
+                '"setup", "creation" or "play"}.',
+                request_id,
+            )
+        actor = (actor["character_id"], actor["mode"])
+    return SayRequest(request_id, data["text"], data["private"], actor)
+
+
+def _parse_character(kind: str, data: dict) -> CharacterRequest:
+    """A character message's shape. Its values are the store's to judge: an
+    unknown character is `character_unavailable`, a bad name invalid there."""
+    request_id = data.get("request_id")
+    request_id = request_id if is_valid_request_id(request_id) else None
+    try:
+        _check_fields(data, _CHARACTER_FIELDS[kind], f"A {kind} request")
+    except ProtocolError as error:
+        error.request_id = request_id
+        raise
+    if "request_id" in data and request_id is None:
+        raise ProtocolError(
+            "invalid_request",
+            f"'request_id' must be a string of 1 to {MAX_REQUEST_ID_LENGTH} "
+            "characters without whitespace.",
+        )
+    character_id = data.get("character_id")
+    if "character_id" in data and not isinstance(character_id, str):
+        if not (kind == "character_select" and character_id is None):
+            raise ProtocolError(
+                "invalid_request", "'character_id' must be a string.", request_id
+            )
+    name = data.get("name")
+    if name is not None and not isinstance(name, str):
+        raise ProtocolError(
+            "invalid_request", "'name' is a string or null.", request_id
+        )
+    revision = data.get("draft_revision")
+    if "draft_revision" in data and (not is_valid_revision(revision) or revision < 1):
+        raise ProtocolError(
+            "invalid_request",
+            "'draft_revision' is a whole number, 1 or more.",
+            request_id,
+        )
+    return CharacterRequest(kind, request_id, character_id, name, revision)
 
 
 def _check_fields(data: dict, fields: frozenset, subject: str):
@@ -499,6 +591,8 @@ def snapshot_message(
     referee: dict | None = None,
     participant_name: str | None = None,
     campaign: dict | None = None,
+    actor: dict | None = None,
+    sheet: dict | None = None,
 ) -> dict:
     """The recipient's view: the reply to a join or a sync.
 
@@ -506,7 +600,9 @@ def snapshot_message(
     `view`, read with `revision`. Otherwise the snapshot is metadata only. A
     game in referee mode adds the recipient's `referee` projection, and an
     authenticated host the recipient's own `participant_name` (never a roster).
-    A lobby host adds the selected `campaign`, `{"campaign_id", "name"}`.
+    A lobby host adds the selected `campaign`, `{"campaign_id", "name"}`. A
+    character game adds the connection's `actor` and its character's `sheet`
+    (null in setup), always both (character contract section 9).
     """
     _check_identifier(game_id, "game_id")
     _check_identifier(participant_id, "participant_id")
@@ -537,7 +633,48 @@ def snapshot_message(
         message["referee"] = referee
     if campaign is not None:
         message["campaign"] = _campaign_summary(campaign)
+    if actor is not None:
+        message["actor"] = actor
+        message["sheet"] = sheet
     return message
+
+
+def actor_object(mode: str, character: dict | None) -> dict:
+    """The connection's actor: its mode and its character's summary
+    (`character_id`, `name`, `phase`, `draft_revision`), null in setup."""
+    if mode not in MODES or (character is None) != (mode == "setup"):
+        raise ValueError("Only setup has no character.")
+    return {"mode": mode, "character": None if character is None else dict(character)}
+
+
+def characters_message(actor: dict, characters: list) -> dict:
+    """The reply to `characters`: the caller's own characters and actor."""
+    return {"version": PROTOCOL_VERSION, "type": "characters", "actor": actor,
+            "characters": [dict(c) for c in characters]}  # fmt: skip
+
+
+def character_message(
+    request_id: str, revision: int, character: dict, actor: dict
+) -> dict:
+    """The reply to a lifecycle operation: the character after it, and the
+    connection's actor."""
+    _check_request_id(request_id)
+    _check_revision(revision)
+    return {"version": PROTOCOL_VERSION, "type": "character", "request_id": request_id,
+            "revision": revision, "character": dict(character), "actor": actor}  # fmt: skip
+
+
+def actor_notice(reason: str, actor: dict) -> dict:
+    """Unsolicited: another connection completed or archived this
+    connection's character."""
+    if reason not in ("completed", "archived"):
+        raise ValueError("An actor notice is for completed or archived.")
+    return {
+        "version": PROTOCOL_VERSION,
+        "type": "actor",
+        "reason": reason,
+        "actor": actor,
+    }
 
 
 def lobby_message(
@@ -593,20 +730,41 @@ def busy_message(request_id: str, revision: int, for_name: str) -> dict:
     return message
 
 
+_NO_CHARACTERS = object()
+
+
 def conversation_message(
-    seq: int, sender_name: str | None, audience: str, text: str
+    seq: int,
+    sender_name: str | None,
+    audience: str,
+    text: str,
+    *,
+    character=_NO_CHARACTERS,
+    creation: dict | None = None,
 ) -> dict:
     """One conversation message, as its recipients see it: from the referee
-    (`sender_name` None) or a player, to the `table` or `private`."""
+    (`sender_name` None) or a player, to the `table` or `private`.
+
+    In a character game a player's `from` also names the `character` they
+    spoke as (None in setup), and a creation exchange carries `creation`,
+    `{"character_id", "name"}`, always private (character contract
+    section 9)."""
     if audience not in ("table", "private"):
         raise ValueError("A message's audience is table or private.")
+    if creation is not None and audience != "private":
+        raise ValueError("A creation exchange is always private.")
     sender = (
         {"kind": "referee"}
         if sender_name is None
         else {"kind": "player", "name": sender_name}
     )
-    return {"version": PROTOCOL_VERSION, "type": "message", "seq": seq, "from": sender,
-            "audience": audience, "text": text}  # fmt: skip
+    if sender_name is not None and character is not _NO_CHARACTERS:
+        sender["character"] = character
+    message = {"version": PROTOCOL_VERSION, "type": "message", "seq": seq, "from": sender,
+               "audience": audience, "text": text}  # fmt: skip
+    if creation is not None:
+        message["creation"] = dict(creation)
+    return message
 
 
 def messages_message(messages: list) -> dict:
