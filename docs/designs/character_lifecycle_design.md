@@ -1,9 +1,10 @@
-# M2-3 proposal: characters, creation and scoped play
+# M2-3: characters, creation and scoped play
 
-Status: draft for owner discussion, 2026-11-01. No runtime implementation or
-GitHub issues have been created for this proposal. Based on D-24 and the completed
-M2-2 lobby, public baseline `b28c542c41eab1d82996677e9fa7e29970c9af45`.
-[Tracker and child drafts](../drafts/character_lifecycle_issues.md).
+Status: approved for delivery, 2026-11-01; implementation not started.
+Tracker [#110](https://github.com/coghex/tesserae/issues/110); children #111–#117. Based on D-24 and the
+completed M2-2 lobby, public baseline
+`b28c542c41eab1d82996677e9fa7e29970c9af45`.
+[Filed issue specifications](character_lifecycle_issues.md).
 
 ## Outcome and boundary
 
@@ -19,7 +20,7 @@ combat engine. Those follow against the resulting contracts. No additional
 browser navigation item, LAN/TLS expansion, remembered login, command queue,
 universal sheet or generalized rules language is included.
 
-## Owner decisions and proposal choices
+## Owner decisions and remaining question
 
 Already agreed: host tokens identify players; characters belong within campaigns;
 multiple characters per player; connection-local selection; a completed character
@@ -28,7 +29,7 @@ own character mechanics; all gameplay goes through the referee. An accepted inpu
 must retain its actor, and switching must not grant turns or reset resources.
 Creation questions must release the referee between answers.
 
-Proposed defaults, open for feedback:
+Defaults approved with this plan:
 
 - Lifecycle states are `draft`, `ready`, `archived`. Completing a character means
   the player approves a validated draft; narrative admission happens through the
@@ -162,13 +163,13 @@ participant's private messages. Rules and data projections still belong to modul
 
 | Key | Deliverable | Depends on |
 |---|---|---|
-| CHR-1 | Exact character/module/actor/onboarding contract; docs only | Owner privacy answer |
-| CHR-2 | Character storage, optional module capability, transactions and seed support | CHR-1 |
-| CHR-3 | Frozen actor, scoped jobs/questions/retries and creation bridge | CHR-2 |
-| CHR-4 | Host character selection/lifecycle protocol and admission | CHR-3 |
-| CHR-5 | CLI character selection and creation flow | CHR-4 |
-| CHR-6 | Browser character picker and creation flow | CHR-4 |
-| CHR-7 | Original mixed-client live acceptance and operator guidance | CHR-5, CHR-6 |
+| CHR-1 [#111](https://github.com/coghex/tesserae/issues/111) | Exact character/module/actor/onboarding contract; docs only | Owner privacy answer |
+| CHR-2 [#112](https://github.com/coghex/tesserae/issues/112) | Character storage, optional module capability, transactions and seed support | CHR-1 [#111](https://github.com/coghex/tesserae/issues/111) |
+| CHR-3 [#113](https://github.com/coghex/tesserae/issues/113) | Frozen actor, scoped jobs/questions/retries and creation bridge | CHR-2 [#112](https://github.com/coghex/tesserae/issues/112) |
+| CHR-4 [#114](https://github.com/coghex/tesserae/issues/114) | Host character selection/lifecycle protocol and admission | CHR-3 [#113](https://github.com/coghex/tesserae/issues/113) |
+| CHR-5 [#115](https://github.com/coghex/tesserae/issues/115) | CLI character selection and creation flow | CHR-4 [#114](https://github.com/coghex/tesserae/issues/114) |
+| CHR-6 [#116](https://github.com/coghex/tesserae/issues/116) | Browser character picker and creation flow | CHR-4 [#114](https://github.com/coghex/tesserae/issues/114) |
+| CHR-7 [#117](https://github.com/coghex/tesserae/issues/117) | Original mixed-client live acceptance and operator guidance | CHR-5, CHR-6 |
 
 The small original demonstration module develops with CHR-2/CHR-3; a separate
 large example game is not a prerequisite. CHR-5 and CHR-6 can proceed independently

@@ -1,12 +1,13 @@
-# M2-3 tracker and child issue drafts
+# M2-3 filed tracker and child specifications
 
-Drafts only; no numbered GitHub issues filed. Runtime baseline:
+Approved and filed on 2026-11-01: tracker #110 and children #111–#117.
+These are specifications, not implemented functionality. Runtime baseline:
 `b28c542c41eab1d82996677e9fa7e29970c9af45`. Public issue bodies below are generic;
 private module and campaign work follows separately. See the
-[delivery design](../designs/character_lifecycle_design.md). This uses the ordinary
+[delivery design](character_lifecycle_design.md). This uses the ordinary
 manual Tesserae workflow, without custom Kanban tools or approval automation.
 
-## Tracker draft: M2-3 — characters, creation and scoped play
+## Tracker [#110](https://github.com/coghex/tesserae/issues/110): M2-3 — characters, creation and scoped play
 
 ### Outcome
 
@@ -42,7 +43,7 @@ CHR-1 → CHR-2 → CHR-3 → CHR-4 → {CHR-5, CHR-6} → CHR-7. Close only aft
 combined scenario and cleanup are manually reviewed. This tracker does not claim
 that private character creation or actual campaign continuation is implemented.
 
-## CHR-1 draft: Specify characters, actor scope and creation contracts
+## CHR-1 [#111](https://github.com/coghex/tesserae/issues/111): Specify characters, actor scope and creation contracts
 
 ### Problem and scope
 
@@ -76,7 +77,7 @@ store or protocol. This is a documentation-only delivery under the tracker.
 Runtime implementation, private rules/adaptation, campaign import, extra screens,
 queues, browser LAN/TLS or remembered login.
 
-## CHR-2 draft: Persist characters and add optional module lifecycle support
+## CHR-2 [#112](https://github.com/coghex/tesserae/issues/112): Persist characters and add optional module lifecycle support
 
 Depends on CHR-1.
 
@@ -107,7 +108,7 @@ capability, store primitives and explicit seed support. No network or client UI.
 - Focused tests cover persistence, concurrent creation/completion/archive, atomic
   rollback, seed validation, cross-owner refusals and legacy compatibility.
 
-## CHR-3 draft: Freeze referee actors and support bounded character creation
+## CHR-3 [#113](https://github.com/coghex/tesserae/issues/113): Freeze referee actors and support bounded character creation
 
 Depends on CHR-2.
 
@@ -141,7 +142,7 @@ tools and scoped recovery. Use the original module to prove the flow without a U
   races. Prove switching does not reset the fixture's mechanical resource/action
   state. Existing participant-only bridge behavior still passes.
 
-## CHR-4 draft: Serve character selection and lifecycle through the host
+## CHR-4 [#114](https://github.com/coghex/tesserae/issues/114): Serve character selection and lifecycle through the host
 
 Depends on CHR-3.
 
@@ -172,7 +173,7 @@ No CLI/browser presentation yet.
 - Raw-protocol tests cover concurrent connections/players, archive during work,
   incomplete creation, host restart, lost access and cross-owner isolation.
 
-## CHR-5 draft: Add CLI character selection and creation
+## CHR-5 [#115](https://github.com/coghex/tesserae/issues/115): Add CLI character selection and creation
 
 Depends on CHR-4; may proceed alongside CHR-6.
 
@@ -194,7 +195,7 @@ Depends on CHR-4; may proceed alongside CHR-6.
   errors, JSON output and legacy connections. No private data/token/path leaks.
 - Update CLI help and usage docs; verify an installed CLI outside the checkout.
 
-## CHR-6 draft: Add the browser character picker and creation workspace
+## CHR-6 [#116](https://github.com/coghex/tesserae/issues/116): Add the browser character picker and creation workspace
 
 Depends on CHR-4; may proceed alongside CHR-5.
 
@@ -219,7 +220,7 @@ Depends on CHR-4; may proceed alongside CHR-5.
   refresh/reconnect, archive/revocation, privacy and safe text rendering. Maintain
   token file, navigation and existing non-character browser behavior.
 
-## CHR-7 draft: Accept the mixed-client character flow and publish the runbook
+## CHR-7 [#117](https://github.com/coghex/tesserae/issues/117): Accept the mixed-client character flow and publish the runbook
 
 Depends on CHR-5 and CHR-6.
 
