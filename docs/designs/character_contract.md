@@ -23,9 +23,11 @@ character messages and errors, each connection's own selection and actor,
 `say`'s actor, scoped snapshots and status, the `actor` notices, the `select`
 gate for older clients and the single-game refusal. CHR-5 (#115) added the
 CLI of section 15 (`tesserae/client.py`, `connect --character`), and CHR-6
-(#116) its browser page (`tesserae/web/`). What remains is CHR-7's scripted
-mixed-client acceptance and runbook, under the
-[model-free testing policy](../testing.md).
+(#116) its browser page (`tesserae/web/`). CHR-7 (#117) accepted the
+combined flow with a scripted referee, under the
+[model-free testing policy](../testing.md)
+([acceptance record](../acceptance/characters.md),
+[runbook](../character-runbook.md)).
 
 It extends the [lobby contract](lobby_contract.md) and the
 [referee contract](referee_contract.md). Everything they say still holds for

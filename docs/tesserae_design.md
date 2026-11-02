@@ -311,8 +311,9 @@ tracker [#95](https://github.com/coghex/tesserae/issues/95), beginning with the
 [lobby host](designs/lobby_contract.md). Selection in both clients follows.
 Character lifecycle and creation are M2-3, tracker
 [#110](https://github.com/coghex/tesserae/issues/110), specified in the
-[character contract](designs/character_contract.md); private campaign
-continuation is subsequent work. This supersedes joining directly into a single game for
+[character contract](designs/character_contract.md) and delivered with a
+[runbook](character-runbook.md); private campaign continuation is subsequent
+work. This supersedes joining directly into a single game for
 the new opt-in host mode. Existing single-game mode remains compatible.
 Console stays the default in-campaign screen under D-23; authentication and
 campaign/character selection precede it. Accepted inputs retain their original
