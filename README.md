@@ -27,7 +27,16 @@ from the CLI with `tesserae connect --lobby` or, with
 Single-game hosts still use their participant tokens. The
 [lobby runbook](docs/lobby-runbook.md) sets one up, and the
 [acceptance record](docs/acceptance/lobby.md) shows CLI and browser players in
-two campaigns at once. Characters come next.
+two campaigns at once.
+
+[Characters, creation and scoped play](docs/designs/character_lifecycle_design.md)
+(M2-3) is delivered: in a campaign whose module has characters, such as the
+original [Trailhead](docs/trailhead.md), each player chooses one per
+connection or creates one privately with the referee and approves it before
+play ([character contract](docs/designs/character_contract.md)). The
+[character runbook](docs/character-runbook.md) sets it up, and the
+[acceptance record](docs/acceptance/characters.md) shows a CLI player and a
+browser newcomer, with a scripted referee.
 
 ## First executable slice
 

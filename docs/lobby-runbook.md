@@ -13,10 +13,11 @@ below are placeholders.
 The lobby is for this computer only (127.0.0.1). A player on another computer
 connects with the CLI through an SSH tunnel to the host computer. Browser
 access over the network, TLS for the lobby and remembered logins are later
-work. Characters are arriving in M2-3: today a player enters a campaign as their
-participant there, with no character to choose or create. A campaign whose
-module has characters (such as the original [Trailhead](trailhead.md)) is
-played from the CLI or the browser, below.
+work. A campaign whose module has characters (such as the original
+[Trailhead](trailhead.md)) also has each player choose or create a character
+there, from the CLI or the browser: see the
+[character runbook](character-runbook.md). Other campaigns are entered as the
+player's participant, with no character.
 
 ## 1. Install
 
@@ -215,7 +216,11 @@ campaign selection, per-connection selection with independent campaigns,
 linking existing participants, and rotation and revocation while connected.
 Single-game hosts (`serve --database`) and game tokens work as before.
 
-Not yet: choosing or creating characters (a campaign is entered as the
-player's participant), joining an ongoing scenario as a new character, the
-private campaign continuation, browser access from other computers, TLS for
-the lobby, remembered logins, and registry migration or location updates.
+Characters (tracker [#110](https://github.com/coghex/tesserae/issues/110)):
+choosing, creating, approving and archiving characters in a campaign whose
+module has them, including joining an ongoing scene as a new character; see
+the [character runbook](character-runbook.md).
+
+Not yet: the private campaign continuation, browser access from other
+computers, TLS for the lobby, remembered logins, and registry migration or
+location updates.
