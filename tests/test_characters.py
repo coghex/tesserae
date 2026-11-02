@@ -335,6 +335,38 @@ class LifecycleTests(CharacterCase):
             {("s-1", 1), ("s-2", 0)},
         )
 
+    def test_archiving_keeps_a_failed_play_jobs_results_recoverable(self):
+        ash, wren = self.ready(), self.draft(name="Wren")
+        alice = self.alice.participant_id
+        with self.store.transaction() as db:
+            for job, character, mode in (
+                ("j-1", ash, "play"),
+                ("j-2", wren, "creation"),
+            ):
+                input_id = db.execute(
+                    "INSERT INTO referee_inputs (participant_id, request_id, text, "
+                    "private, received_at, character_id, mode) VALUES (?, ?, 'Go', 0, "
+                    "'now', ?, ?)",
+                    (alice, f"say-{job}", character, mode),
+                ).lastrowid
+                db.execute(
+                    "INSERT INTO referee_jobs (job_id, input_id, state, "
+                    "revision_at_start, started_at) VALUES (?, ?, 'failed', 0, 'now')",
+                    (job, input_id),
+                )
+                db.execute(
+                    "INSERT INTO referee_steps (job_id, step_id, kind, context, command, "
+                    "args, request_id, status, character_id) VALUES (?, 's-1', 'act', ?, "
+                    "'x', '{}', ?, 'committed', ?)",
+                    (job, alice, f"ref:{job}:s-1", character),
+                )
+        self.store.archive_character(self.alice, "a-1", ash)
+        self.store.archive_character(self.alice, "a-2", wren)
+        self.assertEqual(
+            set(self.store.query("SELECT job_id, narrated FROM referee_steps")),
+            {("j-1", 0), ("j-2", 1)},  # play stays listed; creation is retired
+        )
+
     def test_a_failure_inside_an_operation_rolls_everything_back(self):
         def broken_complete(state, character_id):
             raise RuntimeError("module bug")
@@ -664,6 +696,12 @@ class SeedTests(unittest.TestCase):
             )
             self.assertTrue(committed, reply)
 
+    def test_a_keen_walker_is_seeded_with_its_bonus(self):
+        walker = {"trait": "keen", "rolled": 3, "stamina": 2, "max_stamina": 4,
+                  "ready": True, "in_danger": False}  # fmt: skip
+        store, _ = self.create(self.seed(state={"walkers": {MARA: walker}}))
+        store.close()
+
     def test_a_version_1_seed_for_a_character_module_has_no_characters(self):
         data = self.seed(seed_version=1, state={"walkers": {}})
         del data["characters"]
@@ -691,6 +729,13 @@ class SeedTests(unittest.TestCase):
             "undeclared walker": (self.seed(state={"walkers": {MARA: walker, other: walker}}),
                                   "exactly its declared characters"),
             "missing walker": (self.seed(state={"walkers": {}}), "exactly its declared characters"),
+            "owner of the wrong type": (self.seed(characters=[
+                {"character_id": MARA, "participant_id": [], "name": "Mara"}]),
+                "owner is not a seeded participant"),
+            "impossible stamina": (self.seed(state={"walkers": {MARA: {
+                **walker, "stamina": 999, "max_stamina": 999}}}), "not a valid ready walker"),
+            "a keen bonus without keen": (self.seed(state={"walkers": {MARA: {
+                **walker, "stamina": 4, "max_stamina": 4}}}), "not a valid ready walker"),
             "missing characters": (
                 {k: v for k, v in self.seed().items() if k != "characters"}, "missing characters"),
         }  # fmt: skip

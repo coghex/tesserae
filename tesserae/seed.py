@@ -188,7 +188,8 @@ def _characters(entries, participant_ids: set) -> tuple[SeedCharacter, ...]:
         if entry["character_id"] in seen:
             raise SeedError(f"Character {number} repeats an earlier ID.")
         seen.add(entry["character_id"])
-        if entry["participant_id"] not in participant_ids:
+        owner = entry["participant_id"]
+        if not isinstance(owner, str) or owner not in participant_ids:
             raise SeedError(f"Character {number}'s owner is not a seeded participant.")
         try:
             check_name(entry["name"])

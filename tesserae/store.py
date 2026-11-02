@@ -717,9 +717,9 @@ class GameStore:
             )
         character = self._owned(context, actor.character_id)
         if character is None:
-            return UNAVAILABLE
+            return _unavailable()
         if _mode_of(character.phase) != actor.mode:
-            return CHANGED
+            return _changed()
         if actor.mode == "creation" and not step:
             return Refusal(
                 "mode_forbidden",
@@ -898,7 +898,7 @@ class GameStore:
         def complete(runtime, state, now):
             character = self._owned(context, character_id)
             if character is None:
-                raise UNAVAILABLE
+                raise _unavailable()
             if character.phase != "draft" or character.draft_revision != draft_revision:
                 raise Refusal(
                     "stale_draft",
@@ -906,7 +906,7 @@ class GameStore:
                     {"draft_revision": character.draft_revision},
                 )
             if self._acting_job(character_id):
-                raise BUSY
+                raise _busy()
             problems = [] if character.name else ["Give the character a name."]
             problems += runtime.character_problems(state, character_id)
             if problems:
@@ -947,9 +947,9 @@ class GameStore:
         def archive(runtime, state, now):
             character = self._owned(context, character_id)
             if character is None:
-                raise UNAVAILABLE
+                raise _unavailable()
             if self._acting_job(character_id):
-                raise BUSY
+                raise _busy()
             reason = runtime.archive_veto(state, character_id)
             if reason is not None:
                 raise Refusal("action_rejected", reason)
@@ -1099,13 +1099,16 @@ class GameStore:
 
     def _end_creation(self, character_id: str):
         """Completion or archiving ends the character's pending question and
-        its unnarrated creation results (character contract section 8)."""
+        its unnarrated creation results (character contract section 8). A
+        failed play job's results stay listed until a reply narrates them."""
         self._connection.execute(
             "DELETE FROM referee_choices WHERE character_id = ?", (character_id,)
         )
         self._connection.execute(
             "UPDATE referee_steps SET narrated = 1 WHERE character_id = ? "
-            "AND status = 'committed'",
+            "AND status = 'committed' AND job_id IN (SELECT j.job_id FROM "
+            "referee_jobs AS j JOIN referee_inputs AS i ON i.id = j.input_id "
+            "WHERE i.mode = 'creation')",
             (character_id,),
         )
 
@@ -1524,14 +1527,23 @@ class Refusal(Exception):
         }
 
 
-UNAVAILABLE = Refusal(
-    "character_unavailable", "That character is not available to you."
-)
-CHANGED = Refusal(
-    "character_changed",
-    "Your character has changed; check your characters and try again.",
-)
-BUSY = Refusal("character_busy", "The referee is still answering for that character.")
+# Fresh instances each time: a raised exception keeps its traceback, so a
+# shared one would grow with every refusal.
+def _unavailable() -> Refusal:
+    return Refusal("character_unavailable", "That character is not available to you.")
+
+
+def _changed() -> Refusal:
+    return Refusal(
+        "character_changed",
+        "Your character has changed; check your characters and try again.",
+    )
+
+
+def _busy() -> Refusal:
+    return Refusal(
+        "character_busy", "The referee is still answering for that character."
+    )
 
 
 def _mode_of(phase: str) -> str:

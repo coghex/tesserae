@@ -127,10 +127,15 @@ def _problems(state: dict, character_id: str) -> list:
 
 def _complete(state: dict, character_id: str) -> dict:
     walker = state["walkers"][character_id]
-    walker["max_stamina"] = walker["rolled"] + (1 if walker["trait"] == "keen" else 0)
+    walker["max_stamina"] = _max_stamina(walker)
     walker["stamina"] = walker["max_stamina"]
     walker["ready"] = True
     return state
+
+
+def _max_stamina(walker: dict) -> int:
+    """The stamina roll, plus one for a keen walker."""
+    return walker["rolled"] + (1 if walker["trait"] == "keen" else 0)
 
 
 def _sheet(state: dict, character_id: str) -> dict:
@@ -216,6 +221,7 @@ def _validate_seed(state: dict, participant_ids: frozenset, owners) -> None:
             or not isinstance(walker["in_danger"], bool)
             or not all(type(n) is int for n in numbers)
             or not 2 <= walker["rolled"] <= 4
+            or walker["max_stamina"] != _max_stamina(walker)
             or not 0 <= walker["stamina"] <= walker["max_stamina"]
         ):
             raise SeedError(f"Walker {character_id} is not a valid ready walker.")
