@@ -8,11 +8,17 @@ decisions into exact rules for CHR-2 to CHR-6: the stored character records,
 the optional module capability, the actor every input and job keeps, how the
 referee guides creation, and the host messages and client states.
 
-Implemented so far (CHR-2, #112): sections 2, 3, 5 (for players' commands),
+Implemented so far: CHR-2 (#112), sections 2, 3, 5 (for players' commands),
 12 and 13 in `tesserae/modules.py`, `tesserae/store.py` and `tesserae/seed.py`,
 with the original fixture module `trailhead` (section 14's illustration,
-built as [trailhead.md](../trailhead.md) describes). The referee (sections 6
-to 8), the host messages (9 to 11) and the clients (15) are not yet.
+built as [trailhead.md](../trailhead.md) describes); and CHR-3 (#113), the
+referee's side of sections 5 to 8 in `tesserae/referee/` (frozen actors,
+the bridge's mode table, actor-scoped choices and last inputs, the per-job
+prompts and reply schemas, private creation and its results, and
+introduction). The standing referee instructions (`AGENTS.md`) are
+unchanged: each job's prompt carries its mode's rules, so no `referee setup`
+rerun is needed. The host messages (9 to 11) and the clients (15) are not
+yet: until CHR-4, a host accepts every input of a character game in setup.
 
 It extends the [lobby contract](lobby_contract.md) and the
 [referee contract](referee_contract.md). Everything they say still holds for

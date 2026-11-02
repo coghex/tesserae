@@ -29,6 +29,7 @@ from .runner import (
     RefereeDir,
     RunnerError,
     RunResult,
+    reply_schema,
 )
 from .store import Job, RefereeStore
 from .tools import BridgeServer, BridgeTools
@@ -47,13 +48,46 @@ class RefereeJobFailed(Exception):
 
 
 def job_prompt(job: Job, sender: str, revision: int, *, new_session: bool,
-               previous: Job | None) -> str:  # fmt: skip
+               previous: Job | None, character=None) -> str:  # fmt: skip
     """The prompt for one job, on Codex's stdin (contract section 4). The
-    player's words are quoted as a JSON string, so they stay one value."""
+    player's words are quoted as a JSON string, so they stay one value.
+
+    In a character game it names the job's frozen actor and its mode's rules
+    (character contract section 7); `character` is the actor's record."""
     where = "privately to you" if job.private else "to the table"
+    who = f"{sender} ({job.participant_id})"
+    mode_lines = []
+    if job.mode == "setup":
+        who += ", who has no character selected"
+        mode_lines = [
+            "Mode: setup. Answer questions only: nothing in the game may change, "
+            "and no act or referee_act will run."
+        ]
+    elif job.mode == "creation":
+        label = json.dumps(character.name or "Unnamed", ensure_ascii=False)
+        who += (
+            f", creating draft {job.character_id} {label} "
+            f"(revision {character.draft_revision})"
+        )
+        mode_lines = [
+            "Mode: creation. Use only this draft's creation steps (list_actions). "
+            "Reply only to the sender. End by asking the next creation question with "
+            f"choices.ask for {job.character_id}, or say the draft is ready for "
+            f"{sender} to approve. Only {sender} can approve it."
+        ]
+    elif job.mode == "play":
+        name = json.dumps(character.name, ensure_ascii=False)
+        who += f" as {name} ({job.character_id})"
+        mode_lines = ["Mode: play. act runs as this character only."]
+        if character.introduced_at is None:
+            mode_lines.append(
+                f"{name} has just been completed and is not yet in the scene: bring "
+                "them in under the module's scene rules before anything else."
+            )
     lines = [
-        f"New input (job {job.job_id}) from {sender} ({job.participant_id}), {where}:",
+        f"New input (job {job.job_id}) from {who}, {where}:",
         json.dumps(job.text, ensure_ascii=False),
+        *mode_lines,
         f"Call get_context before anything else. Game revision now: {revision}.",
     ]
     if new_session:
@@ -214,14 +248,22 @@ class CodexReferee:
                 referee.reconcile_steps()
                 session_id, _ = referee.session()
                 names = {p.participant_id: p.name for p in store.participants()}
+                character = (
+                    None
+                    if job.character_id is None
+                    else store.character(job.character_id)
+                )
                 prompt = job_prompt(
                     job, names.get(job.participant_id, job.participant_id),
                     store.revision(), new_session=session_id is None,
-                    previous=referee.previous_job(job.job_id),
+                    previous=referee.previous_job(job.job_id), character=character,
                 )  # fmt: skip
+            schema = reply_schema(
+                characters=job.mode is not None, creation=job.mode == "creation"
+            )
             run = CodexRun(self.folder, game_id=self.game_id, job_id=job.job_id,
                            host_run=self.host_run, lock=lock, codex=self.codex,
-                           timeout=self.timeout, grace=self.grace)  # fmt: skip
+                           timeout=self.timeout, grace=self.grace, schema=schema)  # fmt: skip
             with self._guard:
                 if attempt.reason is not None:
                     return RunResult("interrupted", attempt.reason)

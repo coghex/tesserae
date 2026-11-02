@@ -705,6 +705,30 @@ class GameStore:
                     )
         return record.to_message(), True
 
+    def actor_problem(
+        self, context: ParticipantContext, actor: Actor
+    ) -> tuple[str, str] | None:
+        """Why `actor` cannot act for `context` now, as (code, message), or
+        None: its character is unknown, archived or another participant's
+        (`character_unavailable`), or its phase no longer matches the mode
+        (`character_changed`). Setup always can. For companion stores, inside
+        their own transaction."""
+        if actor.mode == "setup":
+            return None
+        character = self._owned(context, actor.character_id)
+        if character is None:
+            refusal = _unavailable()
+        elif _mode_of(character.phase) != actor.mode:
+            refusal = _changed()
+        else:
+            return None
+        return refusal.code, refusal.text
+
+    def character(self, character_id: str) -> CharacterRecord | None:
+        """Any character's metadata by ID, archived ones too, for the referee
+        and operators; None if there is no such character."""
+        return self._character(character_id) if isinstance(character_id, str) else None
+
     def _actor_refusal(
         self, context: ParticipantContext, actor: Actor, step: bool
     ) -> "Refusal | None":
@@ -715,11 +739,9 @@ class GameStore:
                 "mode_forbidden",
                 "Choose a character first; without one you can only ask questions.",
             )
-        character = self._owned(context, actor.character_id)
-        if character is None:
-            return _unavailable()
-        if _mode_of(character.phase) != actor.mode:
-            return _changed()
+        problem = self.actor_problem(context, actor)
+        if problem is not None:
+            return Refusal(*problem)
         if actor.mode == "creation" and not step:
             return Refusal(
                 "mode_forbidden",
