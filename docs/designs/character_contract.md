@@ -98,7 +98,7 @@ class CharacterRules:
     start: Callable[[Action], Outcome]  # a new draft's module data
     steps: tuple[Command, ...]  # creation commands
     problems: Callable[[dict, str], list[str]]  # pure: why not complete yet
-    complete: Callable[[Action], Outcome]  # the draft becomes playable data
+    complete: Callable[[dict, str], dict]  # pure: the draft's playable state
     sheet: Callable[[dict, str], dict]  # pure: the owner's view of one character
     archive_veto: Callable[[dict, str], str | None]  # pure: a reason, or None
     actions: Callable[[dict, str], list] | None = None  # play: what it may do
@@ -111,10 +111,16 @@ class CharacterRules:
   it from the frozen actor (section 6), never from a message. Modules without
   the capability always see None, and their hooks keep their current
   signatures and meaning.
-- `start` and `complete` run like commands: `action.args` is `{}`, they raise
-  `ActionRejected` before any draw, and their outcome replaces the state. Their
+- `start` runs like a command: `action.args` is `{}`, it raises
+  `ActionRejected` before any draw, and its outcome replaces the state. Any
   draws go through the same operations and are recorded in the result, like a
   command's.
+- `complete(state, character_id)` is pure and deterministic: it returns the
+  replacement state for the draft becoming playable (deriving values from
+  choices already made, say) and gets no random source. Anything that needs a
+  roll is a creation step, so every roll is on the sheet the player approves.
+  Only `problems` can refuse completion; a `complete` that raises is a module
+  failure (`internal_error`, nothing changed), not a veto.
 - `steps` are ordinary `Command`s that run only in creation mode, on the
   selected draft (`action.character_id`). Their names share the module's
   command namespace; the catalog refuses a duplicate across `commands`,
@@ -141,7 +147,7 @@ class CharacterRules:
   the host adds the job's own draft itself (section 7).
 
 Modules may veto: starting a draft (`start`), a creation step, completion
-(`problems`, then `complete`), archiving (`archive_veto`), and any gameplay
+(`problems`), archiving (`archive_veto`), and any gameplay
 action, as today. They cannot veto or react to selection, which changes
 nothing.
 
@@ -173,7 +179,8 @@ referee mode) and to the referee's tools in a job of that mode:
 | Referee-only commands (`referee_act`) | Refused | Refused | Allowed |
 | `record_ruling` | Allowed | Allowed | Allowed |
 | Reply audiences | `table`, `sender` | `sender` only | `table`, `sender` |
-| `choices.ask` may address | The sender's setup scope | This draft only | Any ready character, or any participant's setup scope |
+| `choices.ask` and `choices.resolve` may address | The sender's setup scope | This draft only | Any ready character, or any participant's setup scope |
+| `narrated` may list | Earlier play results | This draft's creation results | Earlier play results |
 
 A refusal is `mode_forbidden` for a player's command, or the bridge's tool
 error `mode_forbidden`, with nothing journaled or run. So a no-character
@@ -201,6 +208,8 @@ stores it with that input. From then on:
   stored input's. Anything else under the same ID is `request_conflict`: an
   input is never replayed into another character or mode, and never runs again
   as a new action. A raw command's retry compares its character the same way.
+  This holds within one participant; across a relink only the client's rule
+  protects a resend (section 10).
 - **Pending choices** are scoped to (participant, character): one per
   character, and one for the participant's setup scope. A connection sees only
   the choice of its current actor. Completion and archiving end the
@@ -245,9 +254,17 @@ published.
 - `list_actions` follows the mode: `actions` or `creation_actions` for the
   job's character, nothing to act on in setup.
 - `act` and `referee_act` follow section 5's table.
-- The reply schema's `choices.ask` entries are `{"actor", "question"}`, where
-  `actor` is a character ID or a participant ID (that participant's setup
-  scope). Games without characters keep `participant_id`.
+- **Choices name exact actors.** The reply schema's `choices.ask` entries
+  are `{"actor", "question"}`, and `choices.resolve` is a list of actors, in
+  the same form: a character ID (that character's question), or a participant
+  ID (only that participant's setup question, never their characters'). Each
+  entry clears or sets exactly one scope. Asking and resolving follow the same
+  mode rules (section 5): a setup job may address only its sender's setup
+  scope; a creation job only its own draft; a play job any ready character or
+  any participant's setup scope, but never a draft. An unknown, archived or
+  out-of-mode actor in either list is `malformed_reply`. A draft's question
+  otherwise ends only by completion or archiving. Games without characters
+  keep `participant_id` and participant-wide resolution.
 
 **Creation, one answer at a time.** Each creation answer is one input and
 one job: the referee reads the draft, runs creation steps, saves progress (the
@@ -261,8 +278,9 @@ question survives other players' jobs, like any choice.
 player the draft is ready to approve. Only the player completes it (section 9,
 `character_complete`), at the draft revision they were shown. The referee
 then brings the character in on their first play input, under the module's
-scene rules. Selecting or completing never advances time, takes a turn, draws
-or changes a resource.
+scene rules. Selecting changes nothing. Completing changes only the draft's
+own data, deterministically (section 3), and never advances time, takes a
+turn or draws.
 
 **Rulings** may be recorded in any mode; they change nothing mechanical.
 
@@ -273,13 +291,24 @@ or changes a resource.
   replay of it) has `audience: "private"` and a `creation` marker (section 9).
 - A creation job runs with the **creation reply schema**: the section 7 schema
   of the referee contract with `audience` limited to `["sender"]`, and
-  `choices.ask` limited to one entry. So the model cannot write a table
-  message in a creation job.
-- The host also validates every creation reply: a `table` message, an ask for
-  any actor but the job's own draft, or a narrated step whose sender cannot
-  see the reply is `malformed_reply`. The job fails and nothing from it is
-  published, as for any unusable reply. Nothing is redirected: the host never
-  guesses what the referee meant.
+  `choices.ask` and `choices.resolve` each limited to one entry. So the model
+  cannot write a table message in a creation job.
+- The host also validates every creation reply: a `table` message, an ask or
+  resolve for any actor but the job's own draft, or a narrated step that is
+  not this draft's creation result (below) is `malformed_reply`. The job
+  fails and nothing from it is published, as for any unusable reply.
+  Nothing is redirected: the host never guesses what the referee meant.
+- **Creation results stay private through recovery.** A step committed in a
+  creation job is a creation result of its draft. If the job fails or is
+  interrupted before a reply, its creation results are unnarrated, as any
+  job's are (referee contract section 10), but they are listed in
+  `earlier_results` only for later creation jobs of the same draft, and only
+  such a job's reply may narrate them: privately, to the draft's owner. Any
+  other job (another player's, a setup or play job, even the same player's in
+  another mode) neither sees them nor may list them in `narrated`
+  (`malformed_reply`). Completing or archiving the draft ends them: the
+  approved sheet, or the archive, supersedes them, and they are no longer
+  listed.
 - Today, by contrast, a private input's job may also write table messages
   (referee contract section 7). That stays true in setup and play.
 - The referee sees creation exchanges as it sees every private exchange: in
@@ -287,8 +316,11 @@ or changes a resource.
   are private. That is the existing trust in the referee, not a new channel.
 
 Tests (CHR-3): a creation `say` with `private: false` is stored, delivered and
-replayed as private; a creation reply with a `table` message, or one asking
-another participant, fails the job with nothing delivered to anyone.
+replayed as private; a creation reply with a `table` message, or one asking or
+resolving another actor, fails the job with nothing delivered to anyone; a
+creation step whose job then fails is absent from another player's next
+job's `earlier_results`, a reply there that lists it in `narrated` fails, and
+the draft's next creation job lists it and narrates it privately.
 
 ## 9. Host messages
 
@@ -349,8 +381,9 @@ Client to host:
 - `character_complete` succeeds only if the character is the caller's draft,
   `draft_revision` is current, no running job's actor is that character, it
   has a name (the host's own check, listed with the module's), `problems` is
-  empty and `complete` does not reject. Then the phase is `ready`, the
-  creation choice ends, and a connection that had it selected is now in play.
+  empty. Then `complete` runs, the phase is `ready`, the creation choice and
+  any unnarrated creation results end (section 8), and a connection that had
+  it selected is now in play. Nothing is drawn.
 - `character_archive` succeeds only if the character is the caller's draft or
   ready character, no running job's actor is it, and `archive_veto` allows.
   History, sheet data and messages stay. A connection that had it selected
@@ -398,7 +431,7 @@ Errors, with fixed messages and the request's `request_id`:
 | `stale_draft` | `character_complete` at an old `draft_revision` | Nothing changes; carries the current one |
 | `character_incomplete` | No name, or `problems` is not empty | Nothing changes; carries `problems`: "Give the character a name." first if needed, then the module's list |
 | `character_busy` | Completing or archiving a character a running job acts for | Nothing changes |
-| `action_rejected` | `start`, `complete` or `archive_veto` refused | Nothing changes; the module's message |
+| `action_rejected` | `start` or `archive_veto` refused | Nothing changes; the module's message |
 
 Every lifecycle operation and selection is checked twice, in the lobby
 contract's order: registry (credential, grant, activation) under the read
@@ -419,9 +452,17 @@ crosses databases atomically; the order is the guarantee, as there.
   existing participant (lobby contract section 5) moves them to that
   participant's characters.
 - A client keeps an unconfirmed input with its campaign, participant,
-  character and mode. It may resend it only after reselecting exactly that
-  actor; otherwise it drops it and says so. The host's section 6 rule makes a
-  misdirected resend a `request_conflict`, never an action.
+  character and mode. It may resend it only when the snapshot names the same
+  participant and it has reselected exactly that character and mode;
+  otherwise it drops it and says so. This client rule is the guarantee across
+  participants, as the lobby contract's is across campaigns: request IDs
+  belong to one participant, so after a relink the new participant has no
+  record to compare, and the host would take the resend as fresh input.
+- What the host does catch, within one participant: a resend whose `actor`
+  is not the connection's current actor is `character_changed` (nothing
+  compared or stored); one whose `actor` matches the connection but not the
+  stored input's character or mode is `request_conflict`. Neither runs
+  anything.
 - Selection is not persisted. A reconnect is login, `select` (setup), then
   `character_select` of the same ID. If that is refused, the client is back
   at its character list with the reason.
@@ -573,6 +614,7 @@ kept in browser storage.
 ## 16. Tests each slice needs
 
 - **CHR-2 (store):** the schema 7 upgrade leaves existing data untouched;
+  `complete` gets no random source;
   create, steps, complete and archive commit metadata and module state
   together, replay exactly, and leave nothing on any refusal (stale revision,
   problems, veto, wrong owner, archived); concurrent completion and archive;
@@ -582,8 +624,10 @@ kept in browser storage.
   and Relay unchanged.
 - **CHR-3 (referee):** section 5's table for every tool and mode; the actor
   survives the sender switching or leaving; a retry under another character or
-  mode is `request_conflict`; pending choices and last inputs per actor;
-  section 8's two privacy cases; creation releasing busy between answers while
+  mode is `request_conflict`; pending choices and last inputs per actor, and
+  resolving one character's question leaving its owner's other characters'
+  and other players' questions alone; section 8's privacy cases, including a
+  failed creation job's results; creation releasing busy between answers while
   another player plays; completion only by approval at the current revision;
   introduction on the first play input; switching never resets the fixture's
   stamina; restart mid-creation; archive refused while that character's job
