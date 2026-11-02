@@ -17,15 +17,17 @@ This project is at the bootstrap stage. See the [design](docs/tesserae_design.md
 for agreed direction, proposals, and open questions, and the
 [first milestone](docs/milestone-1.md) for implementation order and progress.
 
-The next delivery is
-[host identity and a campaign lobby](docs/designs/host_lobby_design.md).
-The [local registry tools](docs/host-registry.md) manage stable players, campaign
-registrations and access grants, and `tesserae serve --registry` serves those
-campaigns to players logging in with a host token
-([lobby contract](docs/designs/lobby_contract.md)), who choose one from the CLI
-with `tesserae connect --lobby` or, with `serve --registry --browser`, from the
-browser page on the host computer. Single-game hosts still use their
-participant tokens.
+[Host identity and a campaign lobby](docs/designs/host_lobby_design.md)
+(M2-2) is delivered. The [local registry tools](docs/host-registry.md) manage
+stable players, campaign registrations and access grants, and
+`tesserae serve --registry` serves those campaigns to players logging in with a
+host token ([lobby contract](docs/designs/lobby_contract.md)), who choose one
+from the CLI with `tesserae connect --lobby` or, with
+`serve --registry --browser`, from the browser page on the host computer.
+Single-game hosts still use their participant tokens. The
+[lobby runbook](docs/lobby-runbook.md) sets one up, and the
+[acceptance record](docs/acceptance/lobby.md) shows CLI and browser players in
+two campaigns at once. Characters come next.
 
 ## First executable slice
 

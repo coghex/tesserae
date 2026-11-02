@@ -1,5 +1,8 @@
 # Host registry: local operator bootstrap
 
+For an end-to-end setup, start with the [lobby runbook](lobby-runbook.md);
+this guide details the registry and its commands.
+
 HOST-1 / [#96](https://github.com/coghex/tesserae/issues/96) adds a separate
 SQLite registry for stable host players, credentials, campaign locations and
 access grants. The registry is local operator data, not a campaign database.
