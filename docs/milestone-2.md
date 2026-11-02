@@ -57,6 +57,16 @@ and private campaign integration are not hidden requirements of M2-2. There is
 no universal character attributes schema. Browser login remains memory-only,
 and the first lobby stays localhost-only (the VM may use an SSH tunnel).
 
+## Third slice: M2-3
+
+Characters, creation and scoped play: tracker
+[#110](https://github.com/coghex/tesserae/issues/110), planned in the
+[character lifecycle design](designs/character_lifecycle_design.md), with its
+exact rules in the [character contract](designs/character_contract.md)
+(CHR-1, #111). Nothing of it is implemented yet. A returning player picks a
+ready character; a newcomer creates one privately with the referee, approves
+it and enters play. Characters are served by the lobby host only.
+
 ## Later browser work
 
 LAN certificate trust and interactive maps follow M2-1. Their exact scope and
