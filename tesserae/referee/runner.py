@@ -7,6 +7,7 @@ job with the prompt on stdin. It knows nothing about game rules, WebSockets
 or the store; the host wires those together (#69).
 """
 
+import copy
 import fcntl
 import json
 import os
@@ -57,6 +58,30 @@ REPLY_SCHEMA = {
             "properties": {"job_id": {"type": "string"}, "step_id": {"type": "string"}}}},
     },
 }  # fmt: skip
+
+
+def reply_schema(*, characters: bool = False, creation: bool = False) -> dict:
+    """The reply schema for one job (character contract sections 7 and 8).
+
+    A game without characters uses REPLY_SCHEMA, the file setup writes. In
+    a character game each ask names an `actor` (a character ID, or a
+    participant ID for their setup question). A creation job's reply may go
+    only to its sender, and asks and resolves at most one question.
+    """
+    if not characters:
+        return REPLY_SCHEMA
+    schema = copy.deepcopy(REPLY_SCHEMA)
+    choices = schema["properties"]["choices"]["properties"]
+    ask = choices["ask"]["items"]
+    ask["required"] = ["actor", "question"]
+    ask["properties"] = {"actor": {"type": "string"},
+                         "question": ask["properties"]["question"]}  # fmt: skip
+    if creation:
+        message = schema["properties"]["messages"]["items"]["properties"]
+        message["audience"] = {"enum": ["sender"]}
+        choices["ask"]["maxItems"] = choices["resolve"]["maxItems"] = 1
+    return schema
+
 
 AGENTS_TEXT = """\
 # Referee instructions
@@ -456,7 +481,7 @@ class CodexRun:
 
     def __init__(self, folder: RefereeDir, *, game_id: str, job_id: str, host_run: str,
                  lock: JobLock, codex=("codex",), timeout: float = DEFAULT_TIMEOUT,
-                 grace: float = STOP_GRACE):  # fmt: skip
+                 grace: float = STOP_GRACE, schema: dict = REPLY_SCHEMA):  # fmt: skip
         self.folder, self.game_id, self.job_id, self.host_run = (
             folder,
             game_id,
@@ -469,6 +494,7 @@ class CodexRun:
             timeout,
             grace,
         )
+        self.schema = schema
         self.process = None
         self.session_id = None
         self.version = None
@@ -488,10 +514,17 @@ class CodexRun:
     def reply_path(self) -> Path:
         return self.folder.jobs(self.game_id) / f"{self.job_id}.reply.json"
 
+    @property
+    def schema_path(self) -> Path:
+        """Setup's schema file, or this job's own when it needs another."""
+        if self.schema == REPLY_SCHEMA:
+            return self.folder.schema
+        return self.folder.jobs(self.game_id) / f"{self.job_id}.schema.json"
+
     def argv(self, session_id: str | None) -> list[str]:
         resume = ["resume", session_id] if session_id else []
         return [*self.codex, "exec", *resume, "--json", "--skip-git-repo-check", "--ignore-rules",
-                "--output-schema", str(self.folder.schema), "-o", str(self.reply_path), "-"]  # fmt: skip
+                "--output-schema", str(self.schema_path), "-o", str(self.reply_path), "-"]  # fmt: skip
 
     def start(
         self, prompt: str, *, session_id: str | None, token: str, on_session=None
@@ -513,6 +546,8 @@ class CodexRun:
             self.version = codex_version(self.codex)
             self.diagnostics.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.reply_path.unlink(missing_ok=True)
+            if self.schema_path != self.folder.schema:
+                self.schema_path.write_text(json.dumps(self.schema, indent=1) + "\n")
             self._log = self.diagnostics.open("a")
             self._log.write(json.dumps({"tesserae": "start", "job_id": self.job_id, "resume": session_id,
                                         "codex_version": self.version, "argv": self.argv(session_id)}) + "\n")  # fmt: skip
@@ -689,15 +724,9 @@ class CodexRun:
             reply = json.loads(self.reply_path.read_text())
         except (OSError, ValueError):
             return RunResult("failed", "malformed_reply", session, exit_code=code)
-        if not _reply_shape(reply):
+        if not _matches(reply, self.schema):
             return RunResult("failed", "malformed_reply", session, exit_code=code)
         return RunResult("completed", None, session, reply, code)
-
-
-def _reply_shape(reply) -> bool:
-    """Whether the reply matches REPLY_SCHEMA; the store then checks who the
-    names and audiences refer to."""
-    return _matches(reply, REPLY_SCHEMA)
 
 
 _SCHEMA_KEYWORDS = {"type", "enum", "properties", "required", "additionalProperties",
@@ -705,7 +734,7 @@ _SCHEMA_KEYWORDS = {"type", "enum", "properties", "required", "additionalPropert
 
 
 def _matches(value, schema: dict) -> bool:
-    """The JSON Schema subset REPLY_SCHEMA uses; any other keyword is an error,
+    """The JSON Schema subset the reply schemas use; any other keyword is an error,
     so the schema cannot grow a rule this silently skips."""
     if unknown := set(schema) - _SCHEMA_KEYWORDS:
         raise ValueError(f"Unsupported schema keywords: {sorted(unknown)}")

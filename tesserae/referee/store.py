@@ -1,6 +1,11 @@
 """Durable referee state: input, jobs, the busy gate, tool steps, pending
 choices, messages, rulings and the Codex session (#65, REF-2).
 
+In a character game (docs/designs/character_contract.md sections 6 to 8),
+every input keeps the actor it was accepted for: its character and mode.
+Its job acts, asks and narrates only within that actor's scope, and a
+creation exchange stays private to its player.
+
 Everything lives in the game's own SQLite file (schema 5) and is written in
 `GameStore.transaction()`, the same serialized write lock as gameplay. The
 mechanical revision never moves for conversation; messages have their own
@@ -15,7 +20,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..protocol import is_valid_request_id
-from ..store import REFEREE_PARTICIPANT, GameStore, ParticipantContext, StoreError
+from ..store import (
+    REFEREE_PARTICIPANT,
+    SETUP,
+    Actor,
+    GameStore,
+    ParticipantContext,
+    StoreError,
+    is_character_id,
+)
 
 REFEREE = REFEREE_PARTICIPANT  # the context for referee-only commands
 MAX_TEXT = 2000
@@ -54,6 +67,14 @@ class Job:
     revision_at_start: int
     error: str | None
     narrated: bool
+    # The frozen actor, in a character game only: the character (None in
+    # setup) and the mode. Both stay None in a game without characters.
+    character_id: str | None = None
+    mode: str | None = None
+
+    @property
+    def actor(self) -> Actor | None:
+        return None if self.mode is None else Actor(self.character_id, self.mode)
 
 
 @dataclass(frozen=True)
@@ -173,7 +194,7 @@ class RefereeStore:
     # --- input and the busy gate (contract section 5) ---------------------------
 
     def submit(self, context: ParticipantContext, request_id, text, private: bool,
-               host_run: str | None = None) -> Submission:  # fmt: skip
+               host_run: str | None = None, *, actor: Actor | None = None) -> Submission:  # fmt: skip
         """Accept one player's input, replay an earlier one, or refuse.
 
         In one transaction: the context's credential must still be active
@@ -182,6 +203,13 @@ class RefereeStore:
         content under that ID is `request_conflict`; otherwise a running job
         means `referee_busy`, with nothing stored; otherwise the input, the
         player's own message and a running job are stored together.
+
+        In a character game the input is accepted for `actor` (setup when
+        omitted), which is frozen with it and part of its replay content. A
+        creation input is private whatever `private` says. An actor whose
+        character is no longer the sender's, or whose phase has moved on, is
+        refused (`character_unavailable`, `character_changed`) after replay
+        and before the busy check. A game without characters takes no actor.
         """
         if (
             not isinstance(context, ParticipantContext)
@@ -196,6 +224,11 @@ class RefereeStore:
         _check_text(text, MAX_TEXT, "Player text")
         if not isinstance(private, bool):
             raise RefereeError("invalid_request", "'private' is true or false.")
+        actor = self._actor_for(actor)
+        if actor is not None and actor.mode == "creation":
+            private = True  # creation is private, enforced here (contract section 8)
+        character_id = None if actor is None else actor.character_id
+        mode = None if actor is None else actor.mode
         who = context.participant_id
         with self.store.transaction() as db:
             # Inside the write lock, before any replay or new job, as for
@@ -209,17 +242,25 @@ class RefereeStore:
                     "referee_off", "Referee mode is not enabled for this game."
                 )
             earlier = db.execute(
-                "SELECT text, private FROM referee_inputs WHERE participant_id = ? AND request_id = ?",
+                "SELECT text, private, character_id, mode FROM referee_inputs "
+                "WHERE participant_id = ? AND request_id = ?",
                 (who, request_id),
             ).fetchone()
             if earlier is not None:
-                if (earlier[0], bool(earlier[1])) != (text, private):
+                if (earlier[0], bool(earlier[1]), *earlier[2:]) != (
+                    text, private, character_id, mode,
+                ):  # fmt: skip
                     raise RefereeError(
                         "request_conflict",
                         "That request ID was already used for other input.",
                     )
                 job = self._job_for_input(db, who, request_id)
                 return Submission("replayed", job, self._reply_messages(db, job))
+            problem = (
+                None if actor is None else self.store.actor_problem(context, actor)
+            )
+            if problem is not None:
+                raise RefereeError(*problem)
             if self._running(db) is not None:
                 raise RefereeError(
                     "referee_busy", "The referee is still answering. Try again soon."
@@ -231,9 +272,9 @@ class RefereeStore:
                 )
             now = _now()
             input_id = db.execute(
-                "INSERT INTO referee_inputs (participant_id, request_id, text, private, received_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (who, request_id, text, int(private), now),
+                "INSERT INTO referee_inputs (participant_id, request_id, text, private, "
+                "received_at, character_id, mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (who, request_id, text, int(private), now, character_id, mode),
             ).lastrowid
             job_id = "j-" + secrets.token_hex(6)
             revision = db.execute("SELECT revision FROM game").fetchone()[0]
@@ -244,11 +285,23 @@ class RefereeStore:
             )
             audience = [who] if private else "table"
             db.execute(
-                "INSERT INTO referee_messages (job_id, sender, audience, text, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (job_id, who, json.dumps(audience), text, now),
-            )
+                "INSERT INTO referee_messages (job_id, sender, audience, text, created_at, "
+                "character_id, creation) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (job_id, who, json.dumps(audience), text, now, character_id,
+                 int(mode == "creation")),
+            )  # fmt: skip
             return Submission("accepted", self._job(db, job_id), ())
+
+    def _actor_for(self, actor: Actor | None) -> Actor | None:
+        """The actor an input or read is for: `actor`, or setup when omitted,
+        in a character game; always None in a game without characters."""
+        if self.store.runtime().characters is None:
+            if actor is not None:
+                raise ValueError("Only a character game's inputs have an actor.")
+            return None
+        if actor is not None and not isinstance(actor, Actor):
+            raise TypeError("A trusted Actor is required.")
+        return SETUP if actor is None else actor
 
     def running_job(self) -> Job | None:
         return self._running(self.store)
@@ -300,35 +353,53 @@ class RefereeStore:
             participants = {
                 row[0] for row in db.execute("SELECT participant_id FROM participants")
             }
-            messages, asks, resolves = _validated_reply(reply, job, participants)
-            acknowledged = self._acknowledged(db, job_id, reply["narrated"], messages)
+            scope = None if job.mode is None else self._scope_of(db, job)
+            messages, asks, resolves = _validated_reply(reply, job, participants, scope)
+            acknowledged = self._acknowledged(db, job, reply["narrated"], messages)
             now = _now()
+            creation = int(job.mode == "creation")
             stored = []
             for audience, text in messages:
                 seq = db.execute(
-                    "INSERT INTO referee_messages (job_id, sender, audience, text, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (job_id, REFEREE, json.dumps(audience), text, now),
-                ).lastrowid
-                stored.append(_message(seq, REFEREE, audience, text))
-            for participant_id in resolves:
-                db.execute(
-                    "DELETE FROM referee_choices WHERE participant_id = ?",
-                    (participant_id,),
+                    "INSERT INTO referee_messages (job_id, sender, audience, text, "
+                    "created_at, character_id, creation) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (job_id, REFEREE, json.dumps(audience), text, now,
+                     job.character_id, creation),
+                ).lastrowid  # fmt: skip
+                stored.append(
+                    _message(seq, REFEREE, audience, text, job.character_id, creation)
                 )
-            for participant_id, question in asks:
-                # Asking again replaces the participant's choice (schema 7
-                # scopes choices by character; a game without characters has
-                # only the participant's own, with no character).
-                db.execute(
+            # Each resolve and ask names one scope: (participant, character),
+            # where a null character is the participant's own setup question.
+            # A game without characters resolves participant-wide, as before.
+            for participant_id, character_id in resolves:
+                if job.mode is None:
+                    db.execute(
+                        "DELETE FROM referee_choices WHERE participant_id = ?",
+                        (participant_id,),
+                    )
+                else:
+                    db.execute(
+                        "DELETE FROM referee_choices WHERE participant_id = ? "
+                        "AND character_id IS ?",
+                        (participant_id, character_id),
+                    )
+            for (participant_id, character_id), question in asks:
+                db.execute(  # asking again replaces that scope's question
                     "DELETE FROM referee_choices WHERE participant_id = ? "
-                    "AND character_id IS NULL",
-                    (participant_id,),
+                    "AND character_id IS ?",
+                    (participant_id, character_id),
                 )
                 db.execute(
-                    "INSERT INTO referee_choices (participant_id, question, asked_in_job, asked_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (participant_id, question, job_id, now),
+                    "INSERT INTO referee_choices (participant_id, character_id, question, "
+                    "asked_in_job, asked_at) VALUES (?, ?, ?, ?, ?)",
+                    (participant_id, character_id, question, job_id, now),
+                )
+            if job.mode == "play":  # the character is now in the scene
+                db.execute(
+                    "UPDATE characters SET introduced_at = ? WHERE character_id = ? "
+                    "AND introduced_at IS NULL",
+                    (now, job.character_id),
                 )
             db.execute(
                 "UPDATE referee_steps SET narrated = 1 WHERE job_id = ? AND status = 'committed'",
@@ -351,7 +422,8 @@ class RefereeStore:
                     args: dict) -> Step:  # fmt: skip
         """Journal a step before it runs. The same step ID with the same
         kind, context, command and arguments returns the existing row; any
-        difference is `request_conflict`, across both kinds of step."""
+        difference is `request_conflict`, across both kinds of step. A
+        player step records the job's frozen character."""
         if not is_valid_request_id(step_id) or len(step_id) > MAX_STEP_ID:
             raise RefereeError(
                 "invalid_request",
@@ -365,7 +437,7 @@ class RefereeStore:
             )
         encoded = json.dumps(args, sort_keys=True)
         with self.store.transaction() as db:
-            self._require_running(db, job_id)
+            job = self._require_running(db, job_id)
             existing = db.execute(
                 "SELECT kind, context, command, args FROM referee_steps "
                 "WHERE job_id = ? AND step_id = ?",
@@ -380,7 +452,7 @@ class RefereeStore:
             else:
                 db.execute(
                     "INSERT INTO referee_steps (job_id, step_id, kind, context, command, args, "
-                    "request_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'intended')",
+                    "request_id, status, character_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'intended', ?)",
                     (
                         job_id,
                         step_id,
@@ -389,6 +461,7 @@ class RefereeStore:
                         command,
                         encoded,
                         f"ref:{job_id}:{step_id}",
+                        job.character_id if kind == "act" else None,
                     ),
                 )
             return self._step(db, job_id, step_id)
@@ -437,13 +510,21 @@ class RefereeStore:
                 settled.append(self._step(db, job_id, step_id))
         return settled
 
-    def unnarrated_steps(self) -> list[Step]:
+    def unnarrated_steps(self, for_job: Job | None = None) -> list[Step]:
         """Committed steps of finished jobs that no published reply has
-        narrated yet, oldest first (for `get_context`)."""
+        narrated yet, oldest first (for `get_context`). For a job of a
+        character game, only those it may narrate (contract section 8): a
+        creation job sees its own draft's creation results, and any other
+        job sees every result except creation results."""
+        clause, parameters = "", ()
+        if for_job is not None and for_job.mode is not None:
+            clause, parameters = _results_for(for_job)
         rows = self.store.query(
             "SELECT s.job_id, s.step_id FROM referee_steps AS s JOIN referee_jobs AS j "
-            "ON j.job_id = s.job_id WHERE s.status = 'committed' AND s.narrated = 0 "
-            "AND j.state != 'running' ORDER BY j.started_at, s.rowid"
+            "ON j.job_id = s.job_id JOIN referee_inputs AS i ON i.id = j.input_id "
+            "WHERE s.status = 'committed' AND s.narrated = 0 AND j.state != 'running'"
+            f"{clause} ORDER BY j.started_at, s.rowid",
+            parameters,
         )
         return [self._step(self.store, job_id, step_id) for job_id, step_id in rows]
 
@@ -473,71 +554,93 @@ class RefereeStore:
         """Messages this participant may see: the table's and their own private
         ones. Never another participant's private messages."""
         rows = self.store.query(
-            "SELECT seq, sender, audience, text FROM referee_messages WHERE seq > ? ORDER BY seq",
+            f"SELECT {_MESSAGE_COLUMNS} FROM referee_messages WHERE seq > ? ORDER BY seq",
             (after_seq,),
         )
         visible = []
-        for seq, sender, audience, text in rows:
-            audience = json.loads(audience)
-            if audience == "table" or participant_id in audience:
-                visible.append(_message(seq, sender, audience, text))
+        for row in rows:
+            message = _message_from(row)
+            if message["audience"] == "table" or participant_id in message["audience"]:
+                visible.append(message)
         return visible
 
     def input_message(self, job_id: str) -> dict:
         """The message holding a job's input: the player's own words."""
         [row] = self.store.query(
-            "SELECT seq, sender, audience, text FROM referee_messages "
+            f"SELECT {_MESSAGE_COLUMNS} FROM referee_messages "
             "WHERE job_id = ? AND sender != ? ORDER BY seq LIMIT 1",
             (job_id, REFEREE),
         )
-        return _message(row[0], row[1], json.loads(row[2]), row[3])
+        return _message_from(row)
 
     def transcript(self, after_seq: int = 0) -> tuple[list[dict], int | None]:
         """Referee only: the complete conversation, one page at a time, and the
         `after_seq` of the next page (None at the end). Never truncated."""
         rows = self.store.query(
-            "SELECT seq, sender, audience, text FROM referee_messages WHERE seq > ? "
+            f"SELECT {_MESSAGE_COLUMNS} FROM referee_messages WHERE seq > ? "
             "ORDER BY seq LIMIT ?",
             (after_seq, TRANSCRIPT_PAGE + 1),
         )
         page, size = [], 0
         for row in rows:
-            message = _message(*row[:2], json.loads(row[2]), row[3])
+            message = _message_from(row)
             size += len(json.dumps(message))
             if page and (len(page) == TRANSCRIPT_PAGE or size > TRANSCRIPT_PAGE_BYTES):
                 return page, page[-1]["seq"]
             page.append(message)
         return page, None
 
-    def all_choices(self) -> list[dict]:
-        """Referee only: every pending choice."""
+    def all_choices(self, for_job: Job | None = None) -> list[dict]:
+        """Referee only: every pending choice. For a job of a character game,
+        each names its character (None for a setup question), and another
+        draft's question is left out (contract section 7)."""
+        rows = self.store.query(
+            "SELECT r.participant_id, r.question, r.asked_in_job, r.character_id, "
+            "c.phase FROM referee_choices AS r LEFT JOIN characters AS c "
+            "ON c.character_id = r.character_id ORDER BY r.asked_at, r.participant_id"
+        )
+        if for_job is None or for_job.mode is None:
+            return [
+                {"participant_id": p, "question": q, "asked_in_job": j}
+                for p, q, j, _, _ in rows
+            ]
         return [
-            {"participant_id": p, "question": q, "asked_in_job": j}
-            for p, q, j in self.store.query(
-                "SELECT participant_id, question, asked_in_job FROM referee_choices "
-                "ORDER BY asked_at, participant_id"
-            )
+            {"participant_id": p, "character_id": c, "question": q, "asked_in_job": j}
+            for p, q, j, c, phase in rows
+            if phase != "draft" or c == for_job.character_id
         ]
 
-    def projection(self, participant_id: str) -> dict:
+    def projection(self, participant_id: str, actor: Actor | None = None) -> dict:
         """The recipient-scoped referee object for status, join and sync
         (contract section 7): busy or idle, only the viewer's own pending
         choice, the last message seq they can see, and their last input, all
-        read from one committed state."""
+        read from one committed state. In a character game the choice and
+        the last input are those of `actor` (setup when omitted) only."""
+        actor = self._actor_for(actor)
         with self.store.snapshot():
-            return self._projection(participant_id)
+            return self._projection(participant_id, actor)
 
-    def _projection(self, participant_id: str) -> dict:
-        choice = self.store.query(
-            "SELECT question FROM referee_choices WHERE participant_id = ?",
-            (participant_id,),
-        )
+    def _projection(self, participant_id: str, actor: Actor | None) -> dict:
+        if actor is None:
+            choice = self.store.query(
+                "SELECT question FROM referee_choices WHERE participant_id = ?",
+                (participant_id,),
+            )
+            scope, parameters = "", ()
+        else:
+            choice = self.store.query(
+                "SELECT question FROM referee_choices WHERE participant_id = ? "
+                "AND character_id IS ?",
+                (participant_id, actor.character_id),
+            )
+            scope = " AND i.character_id IS ? AND i.mode = ?"
+            parameters = (actor.character_id, actor.mode)
         visible = self.messages_for(participant_id)
         last = self.store.query(
             "SELECT i.request_id, i.text, i.private, j.job_id, j.state FROM referee_inputs AS i "
-            "JOIN referee_jobs AS j ON j.input_id = i.id WHERE i.participant_id = ? "
+            f"JOIN referee_jobs AS j ON j.input_id = i.id WHERE i.participant_id = ?{scope} "
             "ORDER BY i.id DESC LIMIT 1",
-            (participant_id,),
+            (participant_id, *parameters),
         )
         return {
             "state": "busy" if self.running_job() is not None else "idle",
@@ -553,8 +656,8 @@ class RefereeStore:
 
     _JOB_SELECT = (
         "SELECT j.job_id, i.participant_id, i.request_id, i.text, i.private, j.state, "
-        "j.host_run, j.revision_at_start, j.error, j.narrated FROM referee_jobs AS j "
-        "JOIN referee_inputs AS i ON i.id = j.input_id "
+        "j.host_run, j.revision_at_start, j.error, j.narrated, i.character_id, i.mode "
+        "FROM referee_jobs AS j JOIN referee_inputs AS i ON i.id = j.input_id "
     )
 
     @staticmethod
@@ -596,21 +699,36 @@ class RefereeStore:
             return ()
         rows = self._rows(
             db,
-            "SELECT seq, sender, audience, text FROM referee_messages "
+            f"SELECT {_MESSAGE_COLUMNS} FROM referee_messages "
             "WHERE job_id = ? AND sender = ? ORDER BY seq",
             (job.job_id, REFEREE),
         )
+        messages = (_message_from(row) for row in rows)
         return tuple(
-            _message(seq, sender, json.loads(audience), text)
-            for seq, sender, audience, text in rows
-            if json.loads(audience) == "table"
-            or job.participant_id in json.loads(audience)
+            m
+            for m in messages
+            if m["audience"] == "table" or job.participant_id in m["audience"]
         )
 
-    def _acknowledged(self, db, job_id: str, narrated, messages) -> list[tuple]:
+    def _scope_of(self, db, job: Job) -> dict:
+        """Every character's (owner, phase), for checking whom a character
+        game's reply may address."""
+        return {
+            character_id: (owner, phase)
+            for character_id, owner, phase in db.execute(
+                "SELECT character_id, participant_id, phase FROM characters"
+            )
+        }
+
+    def _acknowledged(self, db, job: Job, narrated, messages) -> list[tuple]:
         """The (job, step) pairs a reply's `narrated` list may acknowledge.
         Listing one of this job's own committed steps is allowed and changes
-        nothing (they are narrated anyway); one that did not commit is not."""
+        nothing (they are narrated anyway); one that did not commit is not.
+        In a character game only results this job may narrate count
+        (`unnarrated_steps`): never a creation result outside its draft's
+        creation jobs."""
+        job_id = job.job_id
+        clause, parameters = ("", ()) if job.mode is None else _results_for(job)
         pairs = []
         for entry in narrated:
             if entry["job_id"] == job_id:
@@ -632,8 +750,8 @@ class RefereeStore:
                 "JOIN referee_jobs AS j ON j.job_id = s.job_id "
                 "JOIN referee_inputs AS i ON i.id = j.input_id "
                 "WHERE s.job_id = ? AND s.step_id = ? AND s.status = 'committed' "
-                "AND s.narrated = 0 AND j.state != 'running'",
-                (entry["job_id"], entry["step_id"]),
+                f"AND s.narrated = 0 AND j.state != 'running'{clause}",
+                (entry["job_id"], entry["step_id"], *parameters),
             ).fetchone()
             if row is None:
                 raise RefereeError(
@@ -676,22 +794,78 @@ def _job_from(row) -> Job:
         row[7],
         row[8],
         bool(row[9]),
+        row[10],
+        row[11],
     )
 
 
-def _message(seq: int, sender: str, audience, text: str) -> dict:
-    return {"seq": seq, "sender": sender, "audience": audience, "text": text}
+_MESSAGE_COLUMNS = "seq, sender, audience, text, character_id, creation"
 
 
-def _validated_reply(reply, job: Job, participants: set[str]):
+def _message(seq: int, sender: str, audience, text: str, character_id=None,
+             creation=False) -> dict:  # fmt: skip
+    """A stored message. In a character game it also names its character
+    and whether it belongs to a creation exchange (always private)."""
+    message = {"seq": seq, "sender": sender, "audience": audience, "text": text}
+    if character_id is not None or creation:
+        message.update(character_id=character_id, creation=bool(creation))
+    return message
+
+
+def _message_from(row) -> dict:
+    seq, sender, audience, text, character_id, creation = row
+    return _message(seq, sender, json.loads(audience), text, character_id, creation)
+
+
+def _results_for(job: Job) -> tuple[str, tuple]:
+    """The SQL condition (on a step `s` and its job's input `i`) for the
+    earlier results a character game's job may see and narrate."""
+    if job.mode == "creation":
+        return " AND i.mode = 'creation' AND s.character_id = ?", (job.character_id,)
+    return " AND (i.mode IS NULL OR i.mode != 'creation')", ()
+
+
+def _validated_reply(reply, job: Job, participants: set[str], characters=None):
     """The reply's (audience, text) messages, asks and resolves, or
     RefereeError(`malformed_reply`). `sender` becomes [the job's sender], and
-    is allowed only when this job's input was private (contract section 7)."""
+    is allowed only when this job's input was private (contract section 7).
+
+    Asks are ((participant, character), question) and resolves (participant,
+    character) scopes. In a character game (`characters` maps each character
+    to its owner and phase), each names an actor: a character ID, or a
+    participant ID for that participant's setup question. A setup job may
+    address only its sender's setup question, a creation job only its own
+    draft and only privately, and a play job any ready character or
+    participant, never a draft (character contract sections 5, 7 and 8)."""
 
     def bad(why):
         return RefereeError(
             "malformed_reply", f"The referee's reply is not usable: {why}."
         )
+
+    def scope_of(actor):
+        """The (participant, character) scope an actor names, if this job
+        may address it."""
+        if not isinstance(actor, str):
+            raise bad("a choice names its actor as a string")
+        if characters is None:
+            if actor not in participants:
+                raise bad("a choice names someone who is not a participant")
+            return actor, None
+        if job.mode == "setup":
+            allowed = actor == job.participant_id
+        elif job.mode == "creation":
+            allowed = actor == job.character_id
+        else:
+            allowed = actor in participants or (
+                is_character_id(actor)
+                and characters.get(actor, (None, None))[1] == "ready"
+            )
+        if not allowed:
+            raise bad(f"a {job.mode} reply may not address that actor")
+        if actor in participants:
+            return actor, None
+        return characters[actor][0], actor
 
     if not isinstance(reply, dict) or set(reply) != {"messages", "choices", "narrated"}:
         raise bad("it needs exactly messages, choices and narrated")
@@ -716,6 +890,8 @@ def _validated_reply(reply, job: Job, participants: set[str]):
             raise bad("each message has exactly audience and text")
         audience, text = message["audience"], message["text"]
         if audience == "table":
+            if job.mode == "creation":  # never redirected: the job fails instead
+                raise bad("a creation reply is private to its player")
             target = "table"
         elif audience == "sender":
             if not job.private:
@@ -730,19 +906,19 @@ def _validated_reply(reply, job: Job, participants: set[str]):
     if not isinstance(choices, dict) or set(choices) != {"ask", "resolve"}:
         raise bad("choices has exactly ask and resolve")
     asks, resolves = choices["ask"], choices["resolve"]
+    limit = 1 if job.mode == "creation" else MAX_CHOICES
     if (
         not isinstance(asks, list)
         or not isinstance(resolves, list)
-        or len(asks) > MAX_CHOICES
-        or len(resolves) > MAX_CHOICES
+        or len(asks) > limit
+        or len(resolves) > limit
     ):
-        raise bad(f"ask and resolve are lists of at most {MAX_CHOICES}")
+        raise bad(f"ask and resolve are lists of at most {limit}")
+    key = "participant_id" if characters is None else "actor"
     asked = []
     for ask in asks:
-        if not isinstance(ask, dict) or set(ask) != {"participant_id", "question"}:
-            raise bad("each ask has exactly participant_id and question")
-        if ask["participant_id"] not in participants:
-            raise bad("a choice names someone who is not a participant")
+        if not isinstance(ask, dict) or set(ask) != {key, "question"}:
+            raise bad(f"each ask has exactly {key} and question")
         question = ask["question"]
         if (
             not isinstance(question, str)
@@ -750,8 +926,5 @@ def _validated_reply(reply, job: Job, participants: set[str]):
             or len(question) > MAX_QUESTION
         ):
             raise bad(f"a question is 1 to {MAX_QUESTION} characters")
-        asked.append((ask["participant_id"], question))
-    for participant_id in resolves:
-        if participant_id not in participants:
-            raise bad("a resolved choice names someone who is not a participant")
-    return out, asked, resolves
+        asked.append((scope_of(ask[key]), question))
+    return out, asked, [scope_of(actor) for actor in resolves]

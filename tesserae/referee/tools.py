@@ -10,6 +10,11 @@ mutation is journaled in `referee_steps` before it runs and executed by
 `GameStore.execute_command`, which validates it at the current revision and
 commits state, result and history atomically. See
 docs/designs/referee_contract.md sections 6 and 9.
+
+In a character game each job acts as its frozen actor and only as its mode
+allows (docs/designs/character_contract.md sections 5 and 7): nothing in
+setup, its own draft's creation steps in creation, and its own ready
+character's commands, and referee-only commands, in play.
 """
 
 import hmac
@@ -160,7 +165,7 @@ class BridgeTools:
         if context is None:  # the minimal default: each participant's own view
             context = {"views": {pid: runtime.view(state, pid) for pid in names}}
         page, next_after = referee.transcript(0)
-        return {
+        result = {
             "revision": store.revision(),
             "module": {"id": runtime.module.id, "version": runtime.module.version},
             "context": context,
@@ -176,11 +181,15 @@ class BridgeTools:
                 "text": job.text,
                 "private": job.private,
             },
-            "pending_choices": referee.all_choices(),
+            "pending_choices": referee.all_choices(job),
             "rulings": referee.rulings(),
-            "earlier_results": [_step(step) for step in referee.unnarrated_steps()],
+            "earlier_results": [_step(s) for s in referee.unnarrated_steps(job)],
             "transcript": {"messages": page, "next_after_seq": next_after},
         }
+        if job.mode is not None:
+            result.update(_character_context(store, runtime, state, job))
+            result["input"]["actor"] = _actor(store, job)
+        return result
 
     def _get_view(self, store, referee, job, args) -> dict:
         participant_id = args["participant_id"]
@@ -193,6 +202,8 @@ class BridgeTools:
 
     def _list_actions(self, store, referee, job, args) -> dict:
         runtime = store.runtime()
+        if job.mode is not None:
+            return _character_actions(store, runtime, job)
         actions = runtime.referee_actions(store.inspect_state(), job.participant_id)
         if actions is None:  # the minimal default: the command names
             actions = [{"command": name} for name in runtime.command_names]
@@ -208,6 +219,8 @@ class BridgeTools:
                 "invalid_request", "command is a string and args an object."
             )
         who = job.participant_id if tool == "act" else REFEREE
+        if job.mode is not None:  # before anything is journaled
+            _check_mode(store.runtime(), job, tool, args["command"])
         step = referee.intend_step(
             job.job_id, args["step_id"], tool, who, args["command"], args["args"]
         )
@@ -243,6 +256,7 @@ class BridgeTools:
             reply, committed = store.execute_command(
                 ParticipantContext(who), raw, referee=tool == "referee_act",
                 precondition=still_authorized,
+                actor=job.actor if tool == "act" else None,
             )  # fmt: skip
             if reply["type"] == "error":
                 if reply["code"] in RETRYABLE:  # nothing ran; the step stays intended
@@ -257,6 +271,82 @@ class BridgeTools:
                 self._on_commit(reply["revision"])
             referee.record_step(job.job_id, step.step_id, "committed", reply)
         return {"step_id": step.step_id, "status": "committed", "result": reply}
+
+
+def _check_mode(runtime, job: Job, tool: str, command: str):
+    """Refuse, before journaling, what the job's mode never allows
+    (character contract section 5). The store checks the actor again when
+    the command runs."""
+    step = runtime.is_step(command) if isinstance(command, str) else False
+    if tool == "referee_act":
+        allowed = job.mode == "play"
+        why = "Referee-only commands run only in play, not in setup or creation."
+    elif job.mode == "setup":
+        allowed = False
+        why = "This job's sender has no character: nothing in the game may change."
+    elif job.mode == "creation":
+        allowed = step
+        why = "A creation job takes only its draft's creation steps."
+    else:
+        allowed = not step
+        why = "Creation steps are only for drafts."
+    if not allowed:
+        raise ToolError("mode_forbidden", why)
+
+
+def _actor(store: GameStore, job: Job) -> dict:
+    """The job's frozen actor, as `get_context` names it."""
+    character = None if job.character_id is None else store.character(job.character_id)
+    return {
+        "mode": job.mode,
+        "character": None
+        if character is None
+        else {
+            "character_id": character.character_id,
+            "name": character.name,
+            "phase": character.phase,
+            "draft_revision": character.draft_revision,
+        },
+    }
+
+
+def _character_context(store: GameStore, runtime, state: dict, job: Job) -> dict:
+    """What a character game adds to `get_context`: every ready character
+    (never another player's draft) and the job's own character's sheet."""
+    ready = [
+        {"character_id": c.character_id, "name": c.name,
+         "participant_id": c.participant_id, "introduced": c.introduced_at is not None}
+        for c in store.inspect_characters()
+        if c.phase == "ready"
+    ]  # fmt: skip
+    sheet = None
+    if job.character_id is not None:
+        sheet = runtime.character_sheet(state, job.character_id)
+    return {"characters": ready, "sheet": sheet}
+
+
+def _character_actions(store: GameStore, runtime, job: Job) -> dict:
+    """`list_actions` in a character game: what the job's mode allows."""
+    state = store.inspect_state()
+    referee_commands = []
+    if job.mode == "setup":
+        actions = []
+    elif job.mode == "creation":
+        actions = runtime.creation_actions(state, job.character_id)
+        if actions is None:
+            steps = [c.name for c in runtime.characters.steps]
+            actions = [{"command": name} for name in ("character.name", *steps)]
+    else:
+        actions = runtime.character_actions(state, job.character_id)
+        if actions is None:
+            actions = [{"command": c.name} for c in runtime.module.commands]
+        referee_commands = [c.name for c in runtime.module.referee_commands]
+    return {
+        "for": {"participant_id": job.participant_id, "character_id": job.character_id,
+                "mode": job.mode},
+        "actions": actions,
+        "referee_commands": referee_commands,
+    }  # fmt: skip
 
 
 def _names(store: GameStore, job: Job) -> dict:

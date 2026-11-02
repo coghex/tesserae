@@ -54,6 +54,7 @@ referee/
   workspace/            empty; the working directory of every run
   run/                  the host's bridge sockets, one per serving game
   games/<game_id>/jobs/<job_id>.jsonl   private diagnostics: raw Codex events
+  games/<game_id>/jobs/<job_id>.schema.json   a character game job's reply schema
 ```
 
 - `tesserae referee setup [--referee-dir DIR]` creates the folder, writes
