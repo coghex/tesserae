@@ -1,6 +1,7 @@
 # M2-3: characters, creation and scoped play
 
-Status: approved for delivery, 2026-11-01; implementation not started.
+Status: approved for delivery, 2026-11-01; implementation not started. The
+exact rules are in the [character contract](character_contract.md) (CHR-1).
 Tracker [#110](https://github.com/coghex/tesserae/issues/110); children #111–#117. Based on D-24 and the
 completed M2-2 lobby, public baseline
 `b28c542c41eab1d82996677e9fa7e29970c9af45`.

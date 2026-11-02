@@ -17,7 +17,10 @@ job, startup recovery, `serve --referee-dir`, `referee stop` and `rebuild`, in
 [acceptance record](../acceptance/referee.md). It turns the
 [M1-6 delivery plan](codex_referee_design.md)
 and the owner's decisions into exact contracts for REF-2 to REF-8. Section 12
-records how the CLI shows conversation (owner decision O-1).
+records how the CLI shows conversation (owner decision O-1). Character games
+(M2-3, not yet implemented) extend sections 5 to 9 under the
+[character contract](character_contract.md): a frozen actor, modes, and
+private creation.
 
 Tested against `codex-cli 0.166.0` on macOS (arm64). The runner records the
 version it ran with; it does not pin or refuse other versions.

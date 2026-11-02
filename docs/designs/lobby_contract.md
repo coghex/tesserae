@@ -15,7 +15,9 @@ The
 
 Inside a selected campaign every message is the existing
 [protocol](../protocol.md) and [referee contract](referee_contract.md),
-unchanged except for one additive snapshot field (section 4).
+unchanged except for one additive snapshot field (section 4). Campaigns whose
+module has characters add the [character contract](character_contract.md)'s
+messages (M2-3, not yet implemented).
 
 ## 1. Decisions this contract follows
 
