@@ -20,7 +20,7 @@ combat engine. Those follow against the resulting contracts. No additional
 browser navigation item, LAN/TLS expansion, remembered login, command queue,
 universal sheet or generalized rules language is included.
 
-## Owner decisions and remaining question
+## Owner decisions
 
 Already agreed: host tokens identify players; characters belong within campaigns;
 multiple characters per player; connection-local selection; a completed character
@@ -42,11 +42,24 @@ Defaults approved with this plan:
   turns and resources come from the persisted characters and module rules,
   never from how many connections exist.
 
-One product question has been asked and is pending: should creation conversation
-be private to its player or visible to the table? Recommended: visibly marked
-private creation, followed by normal table conversation on entering play. This
-is not an accepted change to the existing unmarked-table/private-marked rule.
-The contract must record the owner's answer before that behavior is implemented.
+Decided by the owner on 2026-11-01, after the plan was filed:
+
+- **Creation is private.** Every creation exchange is private to its player and
+  visibly marked so in both clients; on entering play the character uses ordinary
+  table conversation. This is a stated exception for creation mode. The existing
+  rule (unmarked conversation goes to the table, only explicitly private
+  exchanges are private) is otherwise unchanged. The host enforces it, not the
+  client's private flag: a creation input is private whatever flag it carries,
+  and a referee message addressed to the table during a creation job never
+  reaches the table. Today a private input can receive a table-addressed reply,
+  so this needs an explicit rule in the contract.
+- **Lobby only.** Characters are served by the lobby host. A single-game host
+  (`serve --database`) keeps serving games without characters as today and
+  refuses a character-required game with a clear error.
+- **Characters belong to their campaign participant.** Relinking a host player
+  to another participant changes which characters that player sees and can
+  select. The contract states this, and what happens to that player's open
+  connections, selections, drafts and unconfirmed inputs.
 
 ## Current code that needs to change
 
@@ -112,7 +125,7 @@ different character/mode is a conflict, not a fresh action or a replay delivered
 under the wrong actor. Preserve existing unscoped historical records as history.
 Pending questions and recovery include their character/mode scope. Table history
 remains campaign conversation; private audiences remain participant recipients.
-Creation histories follow the privacy decision and must not leak drafts to others.
+Creation histories are private to their player and must not leak drafts to others.
 
 Creation uses the existing bounded job/bridge path, with module-validated tools,
 not a long-running conversation waiting for user input. Each answer is a new
@@ -163,7 +176,7 @@ participant's private messages. Rules and data projections still belong to modul
 
 | Key | Deliverable | Depends on |
 |---|---|---|
-| CHR-1 [#111](https://github.com/coghex/tesserae/issues/111) | Exact character/module/actor/onboarding contract; docs only | Owner privacy answer |
+| CHR-1 [#111](https://github.com/coghex/tesserae/issues/111) | Exact character/module/actor/onboarding contract; docs only | None |
 | CHR-2 [#112](https://github.com/coghex/tesserae/issues/112) | Character storage, optional module capability, transactions and seed support | CHR-1 [#111](https://github.com/coghex/tesserae/issues/111) |
 | CHR-3 [#113](https://github.com/coghex/tesserae/issues/113) | Frozen actor, scoped jobs/questions/retries and creation bridge | CHR-2 [#112](https://github.com/coghex/tesserae/issues/112) |
 | CHR-4 [#114](https://github.com/coghex/tesserae/issues/114) | Host character selection/lifecycle protocol and admission | CHR-3 [#113](https://github.com/coghex/tesserae/issues/113) |

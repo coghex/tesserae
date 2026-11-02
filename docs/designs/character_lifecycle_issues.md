@@ -1,6 +1,7 @@
 # M2-3 filed tracker and child specifications
 
-Approved and filed on 2026-11-01: tracker #110 and children #111–#117.
+Approved and filed on 2026-11-01: tracker #110 and children #111–#117, revised the
+same day with the owner decisions recorded in the [delivery design](character_lifecycle_design.md#owner-decisions).
 These are specifications, not implemented functionality. Runtime baseline:
 `b28c542c41eab1d82996677e9fa7e29970c9af45`. Public issue bodies below are generic;
 private module and campaign work follows separately. See the
@@ -26,16 +27,28 @@ fields and rules are supplied by the selected module.
   and exact retries. No impersonation, redirected retries or resource refresh by
   switching. Existing credential/link/grant checks continue to apply.
 - Referee-guided creation in short jobs that release busy between answers.
+- Lobby-hosted campaigns only; single-game hosts stay character-free.
 - Equivalent CLI/browser operations, including usable empty and recovery states.
   Browser retains Console/Settings, memory-only credentials and localhost scope.
 - Original public character-enabled demonstration and actual mixed-client
   acceptance; source-specific rules and the real private campaign stay external.
 
-### Decision to settle
+### Owner decisions (2026-11-01)
 
-Creation conversation privacy: owner answer pending. Recommend explicitly marked
-private creation, then ordinary table play. Record the answer in CHR-1; do not
-claim this recommendation changes the accepted default conversation rules.
+- Creation conversation is private to its player: every creation exchange is
+  marked private, visibly, in both clients. On entering play the character uses
+  ordinary table conversation. This is a stated exception for creation mode; the
+  existing rule (unmarked conversation goes to the table, only explicitly
+  private exchanges are private) is otherwise unchanged.
+- Characters are served by the lobby host only. A single-game host
+  (`serve --database`) keeps serving games without characters as today and
+  refuses a character-required game with a clear error; it gets no character
+  selection or creation.
+- A character is owned by its campaign participant. Relinking a host player to
+  another participant changes which characters that player sees and can select;
+  the contract states this explicitly rather than treating it as no transfer.
+
+CHR-1 records these in the contract.
 
 ### Children and completion
 
@@ -51,11 +64,28 @@ Current identity, commands, projections and referee jobs address a participant;
 there is no common character identity. Specify the boundary before extending the
 store or protocol. This is a documentation-only delivery under the tracker.
 
+### Owner decisions to record (2026-11-01)
+
+- Creation conversation is private to its player: every creation exchange is
+  marked private, visibly, in both clients. On entering play the character uses
+  ordinary table conversation. This is a stated exception for creation mode; the
+  existing rule (unmarked conversation goes to the table, only explicitly
+  private exchanges are private) is otherwise unchanged.
+- Characters are served by the lobby host only. A single-game host
+  (`serve --database`) keeps serving games without characters as today and
+  refuses a character-required game with a clear error; it gets no character
+  selection or creation.
+- A character is owned by its campaign participant. Relinking a host player to
+  another participant changes which characters that player sees and can select;
+  the contract states this explicitly rather than treating it as no transfer.
+
 ### Acceptance
 
 - Define exact metadata/lifecycle (`draft`, `ready`, `archived`), immutable owner,
   stable IDs, connection-local selection, and which operations modules may veto.
-  Define no-character setup questions, draft creation and ready-character play.
+  Name the connection modes exactly (no character: setup/rules questions only;
+  a selected draft: creation; a selected ready character: play) and use those
+  names throughout the contract and CHR-2–CHR-6.
 - Specify the explicit optional module capability and compatibility with current
   participant-only hooks. Separate metadata from module-owned draft/sheet data;
   resolve atomic operation outcomes, revision semantics and seeded characters.
@@ -63,10 +93,20 @@ store or protocol. This is a documentation-only delivery under the tracker.
   scope, scoped pending questions/recovery, legacy-record treatment and audiences.
   Apply existing acceptance-before-revocation job behavior without widening rights.
 - Define the creation tools and bounded question/answer loop, approval tied to a
-  draft revision, completion and narrative entry. Record the owner's privacy
-  answer, marking privacy visibly rather than silently changing the table default.
-- Publish exact host messages/errors/notifications and proposed CLI commands/UI
-  states, including archive invalidation, concurrent connections and reconnect.
+  draft revision, completion and narrative entry. Creation exchanges are private
+  to their player and marked so; define the switch to table conversation on
+  entering play, and how this exception sits beside the existing table default.
+  The host enforces creation privacy, not the client's private flag: a creation
+  input is stored and delivered as private whatever flag it carries, and a
+  referee message addressed to the table during a creation job is never
+  delivered to the table. Specify that outcome exactly (refused to the referee or
+  redirected to the creating player) for every audience the reply tools accept.
+- Publish exact lobby host messages/errors/notifications and proposed CLI
+  commands/UI states, including archive invalidation, concurrent connections and
+  reconnect. Specify the single-game host's error for a character-required game.
+- State ownership under relinks: characters stay with their participant, so a
+  relink changes which characters a host player sees; define what happens to that
+  player's open connections, selections, drafts and unconfirmed inputs.
 - Identify migrations/version negotiation. Legacy modules, existing bindings and
   utilities keep their meaning; unsupported clients cannot silently select an actor.
 - Record genuinely unresolved product questions, not invented owner decisions.
@@ -137,7 +177,12 @@ tools and scoped recovery. Use the original module to prove the flow without a U
 - Completion requires explicit approval of the displayed draft revision and
   transactional validation. The referee introduces the completed character;
   selection never advances time or creates extra turns.
-- Tests cover restart/resume, stale approval, another character's choices, relinks,
+- The host enforces creation privacy as CHR-1 specifies, independent of the
+  client: a creation input sent without the private flag is still private, and a
+  creation job's table-addressed referee message never reaches the table or
+  another participant. Tests cover both cases.
+- Tests cover restart/resume, stale approval, another character's choices, relinks
+  (characters stay with their participant),
   revocation, duplicate tool calls, actor changes across connections and archive
   races. Prove switching does not reset the fixture's mechanical resource/action
   state. Existing participant-only bridge behavior still passes.
@@ -149,8 +194,9 @@ Depends on CHR-3.
 ### Scope
 
 Implement CHR-1's host messages and per-connection character/creation selection on
-both lobby-backed campaigns and supported authenticated single-game sessions.
-No CLI/browser presentation yet.
+lobby-hosted campaigns. Single-game hosts get no character support: they keep
+serving games without characters unchanged and refuse a character-required game
+with CHR-1's clear error. No CLI/browser presentation yet.
 
 ### Acceptance
 
@@ -169,9 +215,11 @@ No CLI/browser presentation yet.
   race; no unsolicited boundary notification can consume a request's reply.
 - Late replies and retries keep their accepted actor/mode. Recovery communicates
   authoritative identity; unsupported/legacy clients fail clearly for a character-
-  required game, while existing non-character game sessions still work.
+  required game, while existing non-character game sessions (lobby and single-game)
+  still work.
 - Raw-protocol tests cover concurrent connections/players, archive during work,
-  incomplete creation, host restart, lost access and cross-owner isolation.
+  incomplete creation, host restart, lost access, cross-owner isolation, a relink
+  changing a player's characters, and the single-game refusal.
 
 ## CHR-5 [#115](https://github.com/coghex/tesserae/issues/115): Add CLI character selection and creation
 
@@ -184,7 +232,7 @@ Depends on CHR-4; may proceed alongside CHR-6.
   Match the host contract; reserve unsupported features honestly.
 - In an empty campaign-character state, explain how to create; permit contracted
   setup questions. Creation uses ordinary referee conversation, visibly identifies
-  its audience/draft and shows the module-produced sheet for approval.
+  its draft and private audience and shows the module-produced sheet for approval.
 - Approve only the displayed draft revision; incomplete/stale/archived choices have
   useful outcomes. Switching never auto-answers a question or sends gameplay.
 - Scope cached retry/unanswered/pending state to campaign, participant, character
@@ -205,7 +253,8 @@ Depends on CHR-4; may proceed alongside CHR-5.
   character. Keep Console and Settings as the only navigation items; Console is
   the in-play default. Settings provides a change/archive route.
 - Creation uses Console conversation and module-produced read-only sheet/progress
-  data. Make character, creation mode and audience explicit. Review/approval is
+  data. Make character and creation mode explicit, and mark creation exchanges
+  private to their player. Review/approval is
   tied to the displayed revision; no generic editable rules form/state patch.
 - A ready selection opens play. A person without one can still create or ask the
   contracted setup questions; they cannot accidentally trigger gameplay.
@@ -238,6 +287,9 @@ Depends on CHR-5 and CHR-6.
 - Show incomplete/stale completion, reconnect/refresh, duplicate submission,
   exact retries, archive and revocation; inspect durable ownership, jobs, questions,
   histories and recipient projections for wrong-actor execution or private leaks.
+- Creation exchanges reach only the creating player, marked private; the table
+  sees the character only once introduced into play. A single-game host refuses
+  the character-required game clearly and still serves the legacy examples.
 - Keep legacy utility/module examples working. Record exact commits, installation
   fingerprints, commands, outcomes and limits. Clean up credentials, files, owned
   processes and sockets on early failure, diagnostic failure and success.
