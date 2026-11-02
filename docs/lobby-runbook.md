@@ -16,8 +16,8 @@ access over the network, TLS for the lobby and remembered logins are later
 work. Characters are arriving in M2-3: today a player enters a campaign as their
 participant there, with no character to choose or create. A campaign whose
 module has characters (such as the original [Trailhead](trailhead.md)) is
-served, but today's CLI and browser cannot enter it yet: they are told to
-update.
+played from the CLI, below; the browser page cannot enter one yet and is told
+to update.
 
 ## 1. Install
 
@@ -132,6 +132,14 @@ tesserae connect ws://127.0.0.1:8765/ --token-file alice.token --lobby
 name), `/leave` returns to the list, and `--campaign ID` enters one right
 after logging in. Inside a referee campaign, typed lines are words to the
 referee, as in the [referee runbook](referee-runbook.md).
+
+In a campaign with characters the client lists the player's characters on
+entering. `/character N` plays one, or resumes creating a draft;
+`/character none` asks setup questions without one. `/create [NAME]` starts a
+draft with the referee, privately (every line while creating is private),
+`/sheet` shows it and `/approve` completes the revision it showed. `/archive
+N` archives a character after `/archive N confirm`. `--character ID` selects
+one right after `--campaign`. `/help` lists them all.
 
 **Browser** (on the host computer): open the `Browser:` address, paste the
 token or choose the token file, and log in. Choose a campaign from the list;

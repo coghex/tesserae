@@ -21,9 +21,10 @@ rerun is needed. CHR-4 (#114) added the host's side of sections 9 to 11 in
 `tesserae/protocol.py`, `tesserae/server.py` and `tesserae/lobby.py`: the
 character messages and errors, each connection's own selection and actor,
 `say`'s actor, scoped snapshots and status, the `actor` notices, the `select`
-gate for older clients and the single-game refusal. The clients (section 15)
-are not yet: until CHR-5 and CHR-6, today's CLI and browser are told to update
-when they select a character campaign.
+gate for older clients and the single-game refusal. CHR-5 (#115) added the
+CLI of section 15 (`tesserae/client.py`, `connect --character`). The browser
+(CHR-6) is not yet: until then the page is told to update when it selects a
+character campaign.
 
 It extends the [lobby contract](lobby_contract.md) and the
 [referee contract](referee_contract.md). Everything they say still holds for
@@ -603,8 +604,9 @@ characters the player has and what to do next. Commands:
 ```
 
 The status line names the actor: `[character] playing as Mara`,
-`[character] creating Ash (draft, revision 3); private to you`, or
-`[character] no character selected; ask setup questions, or /create`.
+`[character] creating Ash (draft), revision 3; private to you. /sheet shows
+it, /approve completes it.`, or `[character] no character selected; ask setup
+questions, /character N to choose one, or /create`.
 Creation lines read `[private · creating Ash] Referee: …`; table lines
 `[table] Alice as Mara: …`. `/private` is refused in creation (everything is
 private already). `--character ID` selects one after `--campaign`. Retry
