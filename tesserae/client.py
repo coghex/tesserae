@@ -905,6 +905,14 @@ def _readable(message: dict) -> list[str]:
     if kind == "error":
         if message["code"] == "referee_busy":
             return [f"[busy] {message['message']}"]
+        if message["code"] == "character_incomplete":
+            problems = message.get("problems")
+            if (
+                isinstance(problems, list)
+                and problems
+                and all(isinstance(problem, str) for problem in problems)
+            ):
+                return ["[character] Not finished yet: " + " ".join(problems)]
         return [f"[error] {message['message']}"]
     if kind == "snapshot":
         view = message.get("view")

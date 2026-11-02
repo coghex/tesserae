@@ -254,6 +254,18 @@ class CharacterClientTests(unittest.TestCase):
         [stored] = self.store().query("SELECT character_id, mode FROM referee_inputs")
         self.assertEqual(stored, (MARA, "play"))
 
+    def test_incomplete_approval_lists_the_missing_steps(self):
+        bob = self.entered("bob")
+        bob.type("/create")
+        bob.until("[status]")
+        bob.type("/approve")
+        self.assertEqual(
+            bob.line(),
+            "[character] Not finished yet: Give the character a name. "
+            "Choose a trait. Roll stamina.",
+        )
+        self.assertEqual(bob.finish(), 0)
+
     def test_retry_stays_with_its_actor(self):
         alice = self.entered("alice", "--character", MARA)
         alice.type("hold")
@@ -359,6 +371,22 @@ class CharacterClientTests(unittest.TestCase):
             messages.append(json.loads(alice.line()))
         listed = [m for m in messages if m["type"] == "characters"][-1]
         self.assertEqual([c["character_id"] for c in listed["characters"]], [MARA])
+        alice.type("/create Ash")
+        while True:
+            message = json.loads(alice.line())
+            if (
+                message["type"] == "snapshot"
+                and message.get("actor", {}).get("mode") == "creation"
+            ):
+                break
+        alice.type("/approve")
+        while True:
+            message = json.loads(alice.line())
+            if message["type"] == "error":
+                break
+        self.assertEqual(message["code"], "character_incomplete")
+        self.assertEqual(message["message"], "That character is not finished yet.")
+        self.assertEqual(message["problems"], ["Choose a trait.", "Roll stamina."])
         self.assertEqual(alice.finish(), 0)
 
     def test_help_lists_the_character_commands(self):

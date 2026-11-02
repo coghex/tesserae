@@ -109,8 +109,7 @@ time; the referee is free for other players between your answers.
   sheet and its draft revision.
 - **Approve:** `/approve` or **Approve NAME (revision N)** completes exactly
   the revision you were shown. If the draft changed since, you are shown the
-  new one. If it is not finished, you are told so; the browser also lists what
-  is missing, and the referee can tell you from the CLI. Approving
+  new one. If it is not finished, both clients list what is missing. Approving
   rolls nothing: anything rolled was rolled during creation, on the sheet you
   approved.
 - **Enter play:** your character is ready; on your first words in play the
