@@ -2,10 +2,12 @@
 // or one logged-in session of a lobby host (docs/designs/lobby_contract.md
 // sections 3 and 10). Protocol only: no page access. The host answers each
 // message with exactly one reply, in order, so replies pair first-in,
-// first-out with requests; `revision`, `message`, `referee` and `left` are
-// unsolicited and never pair.
+// first-out with requests; `revision`, `message`, `referee`, `left` and
+// `actor` are unsolicited and never pair. In a campaign with characters
+// (docs/designs/character_contract.md section 9) the character messages
+// below are requests like any other.
 
-const UNSOLICITED = new Set(["revision", "message", "referee", "left"]);
+const UNSOLICITED = new Set(["revision", "message", "referee", "left", "actor"]);
 
 export class SessionClosed extends Error {
   constructor(code, reason, error) {
@@ -66,8 +68,42 @@ export class Session {
     return this.request({ version: 1, type: "lobby" });
   }
 
+  // Every select says this page handles characters: a campaign with
+  // characters refuses a client that does not.
   select(campaignId) {
-    return this.request({ version: 1, type: "select", campaign_id: campaignId });
+    return this.request({ version: 1, type: "select", campaign_id: campaignId, characters: 1 });
+  }
+
+  characters() {
+    return this.request({ version: 1, type: "characters" });
+  }
+
+  // `characterId` null returns to setup questions.
+  selectCharacter(characterId) {
+    return this.request({ version: 1, type: "character_select", character_id: characterId });
+  }
+
+  createCharacter(requestId, name) {
+    return this.request({ version: 1, type: "character_create", request_id: requestId, name });
+  }
+
+  completeCharacter(requestId, characterId, draftRevision) {
+    return this.request({
+      version: 1,
+      type: "character_complete",
+      request_id: requestId,
+      character_id: characterId,
+      draft_revision: draftRevision,
+    });
+  }
+
+  archiveCharacter(requestId, characterId) {
+    return this.request({
+      version: 1,
+      type: "character_archive",
+      request_id: requestId,
+      character_id: characterId,
+    });
   }
 
   leave() {
@@ -85,14 +121,13 @@ export class Session {
     return reply;
   }
 
-  say(requestId, text, isPrivate) {
-    return this.request({
-      version: 1,
-      type: "say",
-      request_id: requestId,
-      text,
-      private: isPrivate,
-    });
+  // `actor`, in a campaign with characters, is the actor this page believes
+  // it has: {character_id, mode}. The host refuses a say whose actor is not
+  // the connection's.
+  say(requestId, text, isPrivate, actor = null) {
+    const message = { version: 1, type: "say", request_id: requestId, text, private: isPrivate };
+    if (actor) message.actor = actor;
+    return this.request(message);
   }
 
   sync() {

@@ -66,6 +66,7 @@ class BackgroundLobby:
             referee_executor_for=self.executor_for,
             browser_assets=load_assets(lobby=True),
         )
+        self.lobby = host  # for tests that reach its campaigns
         self.stop_future, ready = self.loop.create_future(), self.loop.create_future()
         self.task = asyncio.create_task(
             host.run(port, self.stop_future, on_ready=ready.set_result)

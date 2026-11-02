@@ -16,8 +16,7 @@ access over the network, TLS for the lobby and remembered logins are later
 work. Characters are arriving in M2-3: today a player enters a campaign as their
 participant there, with no character to choose or create. A campaign whose
 module has characters (such as the original [Trailhead](trailhead.md)) is
-played from the CLI, below; the browser page cannot enter one yet and is told
-to update.
+played from the CLI or the browser, below.
 
 ## 1. Install
 
@@ -146,6 +145,14 @@ token or choose the token file, and log in. Choose a campaign from the list;
 **Leave campaign**, beside the status line or in Settings, returns to the
 list. A campaign without a referee shows its state only in the browser; play
 it from the CLI.
+
+In a campaign with characters the page then shows your characters: **Play**
+one, **Resume** a draft, or **Create character** (a name is optional). With
+none selected you can ask setup and rules questions. While creating, the
+status line says so, everything you say is private to you, and your sheet
+shows read-only with **Approve** for the revision shown. Settings shows the
+character and offers **Change character** and **Archive character…** (after
+a confirmation naming it).
 
 Each connection chooses its own campaign: one player can be in Harbor from the
 CLI and in another campaign from the browser at the same time. While one

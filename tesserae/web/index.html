@@ -81,6 +81,21 @@
           <p class="notice" id="console-no-referee" hidden>This campaign has no
             referee, so the browser shows its state only. Play it from the command
             line with <code>tesserae connect --lobby</code>.</p>
+          <div class="panel characters" id="console-characters" hidden>
+            <h2 id="characters-title">Your characters</h2>
+            <ul class="character-list" id="character-list"
+                aria-labelledby="characters-title"></ul>
+            <p class="note" id="characters-empty" hidden>You have no characters here
+              yet. Create one with the referee: the conversation is private to you.
+              Until then you can ask setup and rules questions below; nothing in the
+              game changes.</p>
+            <div class="create-character">
+              <label>Name (optional)
+                <input type="text" id="create-name" maxlength="100" autocomplete="off">
+              </label>
+              <button type="button" id="character-create">Create character</button>
+            </div>
+          </div>
           <ol class="conversation" id="conversation" role="log"
               aria-label="Conversation"></ol>
           <div class="panel question" id="console-question" aria-live="polite" hidden>
@@ -109,17 +124,26 @@
             </div>
             <p class="note" id="console-resend-target"></p>
           </div>
+          <div class="panel sheet" id="console-sheet" hidden>
+            <h2 id="sheet-title">Your character</h2>
+            <div id="sheet-body"></div>
+            <p class="note" id="sheet-revision"></p>
+            <div class="actions">
+              <button type="button" id="character-approve" hidden>Approve</button>
+            </div>
+            <p class="note" id="sheet-note" aria-live="polite"></p>
+          </div>
           <div class="panel state" id="console-state">
             <h2>Your view</h2>
             <div id="console-state-body"></div>
             <p class="note" id="console-state-revision"></p>
           </div>
           <div class="composer" id="console-composer">
-            <label for="composer-text">Say to the referee</label>
+            <label for="composer-text" id="composer-label">Say to the referee</label>
             <textarea id="composer-text" rows="3" maxlength="2000"
                       spellcheck="true"></textarea>
             <div class="composer-actions">
-              <label class="check">
+              <label class="check" id="composer-private-label">
                 <input type="checkbox" id="composer-private">
                 Private: only the referee sees this
               </label>
@@ -145,6 +169,9 @@
             <dt class="lobby-only" hidden>Campaign</dt>
             <dd class="lobby-only" id="settings-campaign" hidden>Shown after choosing
               one</dd>
+            <dt class="lobby-only" hidden>Character</dt>
+            <dd class="lobby-only" id="settings-character" hidden>Shown after choosing
+              one</dd>
             <dt class="game-only">Game</dt>
             <dd class="game-only" id="settings-game">Shown after joining</dd>
             <dt>Joined as</dt><dd id="settings-name">Shown after joining</dd>
@@ -167,8 +194,19 @@
           <div class="actions">
             <button type="button" class="leave-button lobby-only" id="settings-leave"
                     disabled hidden>Leave campaign</button>
+            <button type="button" class="lobby-only" id="settings-change-character"
+                    disabled hidden>Change character</button>
+            <button type="button" class="lobby-only" id="settings-archive"
+                    disabled hidden>Archive character…</button>
             <button type="button" id="settings-disconnect" disabled>Disconnect</button>
             <button type="button" id="settings-change" disabled>Change identity</button>
+          </div>
+          <div class="panel confirm" id="archive-confirm" hidden>
+            <p id="archive-confirm-text"></p>
+            <div class="actions">
+              <button type="button" id="archive-yes">Archive</button>
+              <button type="button" id="archive-no">Keep it</button>
+            </div>
           </div>
           <p class="note">Your token stays in this page's memory only. After a
             refresh you provide it again.</p>
