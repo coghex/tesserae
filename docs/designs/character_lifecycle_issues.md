@@ -275,10 +275,13 @@ Depends on CHR-5 and CHR-6.
 
 ### Scope and acceptance
 
+- Follow the [model-free testing policy](../testing.md): no live AI agent,
+  inference usage, AI account or login is required. Use scripted Python fixtures.
 - Use a clean pinned installation and only the small original public module. An
   existing CLI player selects a seeded character and starts a short scene. A second
-  browser player joins later with no characters, creates one with the real referee,
-  explicitly approves it and is introduced into play.
+  browser player joins later with no characters, creates one with a scripted
+  referee through the real runner and bridge, explicitly approves it and is
+  introduced into play.
 - The existing player can interact between creation answers; jobs do not remain busy
   waiting for input. The new player's draft never acts in the scene before ready.
 - One player owns two characters: selection stays per connection, mechanical state
@@ -298,4 +301,4 @@ Depends on CHR-5 and CHR-6.
   If raw evidence is kept privately, obtain a named-head manual review before close.
 - Distinguish this accepted generic flow from the still-separate private rules,
   campaign import/continuation and actual two-client campaign playtest. Close the
-  tracker only after live combined acceptance is reviewed.
+  tracker only after combined scripted acceptance is reviewed.

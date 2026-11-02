@@ -4,6 +4,7 @@ timeouts, shutdown, the job lock and orphan stopping. No model is run."""
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -551,13 +552,25 @@ class CommandLineTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name) / "referee"
+        # Exercise the real CLI without resolving the owner's Codex install,
+        # even for --version and login status. All output is from our fixture.
+        bin_dir = Path(directory.name) / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "codex"
+        fake.write_text("#!/bin/sh\nexec " + shlex.join(CODEX) + ' "$@"\n')
+        fake.chmod(0o700)
+        environment = {
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        }
         run = lambda *a: subprocess.run([sys.executable, "-m", "tesserae", "referee", *a, "--referee-dir", str(root)],  # noqa: E731
-                                        capture_output=True, text=True)  # fmt: skip
+                                        capture_output=True, text=True, env=environment)  # fmt: skip
         setup = run("setup")
         self.assertEqual(setup.returncode, 0, setup.stderr)
         self.assertIn(f"CODEX_HOME={root / 'codex-home'} codex login", setup.stdout)
         self.assertTrue((root / "codex-home" / "config.toml").is_file())
         check = run("check")
+        self.assertIn("codex-cli 0.0.0-fake", check.stdout)
         self.assertIn("Config current: yes", check.stdout)
 
     def test_check_without_codex_installed(self):
