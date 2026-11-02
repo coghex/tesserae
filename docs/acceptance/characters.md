@@ -31,6 +31,11 @@ lobby host's character messages over raw WebSocket messages, the CLI with real
 client processes, and the browser page in Chromium, each with a scripted
 referee. Ruff and both CI jobs pass at the merged commit.
 
+Follow-up [#128](https://github.com/coghex/tesserae/issues/128) adds the
+module's missing-step list to readable CLI approval errors, matching the
+browser. Client-process tests cover that display and the unchanged JSON
+reply. The historical acceptance run below predates this display improvement.
+
 ## Acceptance run
 
 | | |
@@ -79,8 +84,6 @@ checks the same.
 
 - The referee was scripted: this says nothing about how a model narrates,
   judges or paces creation. Live model play needs an explicit owner request.
-- The CLI says only that a draft is unfinished; the browser lists what is
-  missing.
 - The private module's character rules, importing or continuing the private
   campaign and its two-client playtest are separate, later work.
 - Localhost only; no transfer, un-archiving or renaming after approval; the
