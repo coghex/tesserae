@@ -94,16 +94,17 @@ A module opts in with one new optional field, `Module.characters`, holding a
 ```python
 @dataclass(frozen=True)
 class CharacterRules:
-    version: int                                   # 1; any other is refused
-    start: Callable[[Action], Outcome]             # a new draft's module data
-    steps: tuple[Command, ...]                     # creation commands
-    problems: Callable[[dict, str], list[str]]     # pure: why not complete; [] = complete
-    complete: Callable[[Action], Outcome]          # the draft becomes playable data
-    sheet: Callable[[dict, str], dict]             # pure: the owner's view of one character
-    archive_veto: Callable[[dict, str], str | None]  # pure: a reason, or None to allow
-    actions: Callable[[dict, str], list] | None = None           # play: what it may do now
-    creation_actions: Callable[[dict, str], list] | None = None  # creation: next steps
-    validate_seed: Callable[[dict, frozenset[str], Mapping[str, str]], None] | None = None
+    version: int  # 1; any other is refused
+    start: Callable[[Action], Outcome]  # a new draft's module data
+    steps: tuple[Command, ...]  # creation commands
+    problems: Callable[[dict, str], list[str]]  # pure: why not complete yet
+    complete: Callable[[Action], Outcome]  # the draft becomes playable data
+    sheet: Callable[[dict, str], dict]  # pure: the owner's view of one character
+    archive_veto: Callable[[dict, str], str | None]  # pure: a reason, or None
+    actions: Callable[[dict, str], list] | None = None  # play: what it may do
+    creation_actions: Callable[[dict, str], list] | None = None  # next steps
+    # state, participant IDs, {character ID: owner participant ID}
+    validate_seed: Callable[[dict, frozenset, Mapping], None] | None = None
 ```
 
 - `Action` gains one field, `character_id: str | None = None`. The host sets
