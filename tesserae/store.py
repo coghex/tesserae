@@ -823,7 +823,11 @@ class GameStore:
     def snapshot(self):
         """A read transaction: every read inside sees one committed state,
         even if another connection commits meanwhile (WAL). For companion
-        stores' multi-read views."""
+        stores' multi-read views. Inside one already open, it simply joins
+        it, so a caller can read several views from one state."""
+        if self._connection.in_transaction:
+            yield self._connection
+            return
         self._connection.execute("BEGIN")
         try:
             yield self._connection

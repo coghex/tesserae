@@ -292,19 +292,22 @@ class CampaignService:
         game has no view, so its snapshot is metadata only.
         """
         context = session.context
-        current = await self._call(GameStore.participant_view, context, session=session)
-        if current is None:
+        # One guarded read of one committed state: the revision, the view, the
+        # actor's sheet and the referee projection always agree.
+        found = await self._call(
+            _snapshot_parts,
+            context,
+            session.character_id,
+            self.characters,
+            self.referee_mode,
+            session=session,
+        )
+        if found is None:
             return None
-        actor = summary = sheet = None
-        if self.characters:
-            actor, summary, sheet = await self._actor(session, keep_lost=False)
-        referee = None
-        if self.referee_mode:
-            referee = await self._call(
-                _referee_projection, context, actor, session=session
-            )
-            if referee is None:
-                return None
+        current, view, referee, lost = found
+        if lost:  # the selection is no longer the caller's: back in setup
+            session.character_id = None
+        actor, summary, sheet = view or (None, None, None)
         return snapshot_message(
             self.game_id,
             context.participant_id,
@@ -608,23 +611,55 @@ class CampaignService:
     def _tell_others(self, session: "_Session", character: dict, kind: str):
         """Every other connection of this participant with this character
         selected learns that it was completed (now in play) or archived (back
-        in setup), unsolicited, after any reply it is being sent."""
-        archived = kind == "character_archive"
+        in setup), unsolicited, after any reply it is being sent. Each notice
+        is decided when it is sent (`_actor_notice`), never here."""
         for other in list(self._sessions):
             if (
-                other is session
-                or other.context.participant_id != session.context.participant_id
-                or other.character_id != character["character_id"]
+                other is not session
+                and other.context.participant_id == session.context.participant_id
+                and other.character_id == character["character_id"]
             ):
-                continue
-            if archived:
-                other.character_id = None
-                notice = actor_notice("archived", actor_object("setup", None))
-            else:
-                notice = actor_notice("completed", actor_object("play", character))
-            task = asyncio.create_task(_send_quietly(other, notice))
-            self._notices.add(task)
-            task.add_done_callback(self._notices.discard)
+                task = asyncio.create_task(
+                    self._actor_notice(other, character["character_id"])
+                )
+                self._notices.add(task)
+                task.add_done_callback(self._notices.discard)
+
+    async def _actor_notice(self, session: "_Session", character_id: str):
+        """Tell `session` what became of its character, under its send lock:
+        only if that is still its selection, only while its access holds,
+        and only what is true now (character contract section 9)."""
+        ended = None
+
+        async def decide():
+            nonlocal ended
+            if session.character_id != character_id:
+                return None  # it has chosen something else since
+            try:
+                found = await self._call(
+                    _notice_view, session.context, character_id, session=session
+                )
+            except Exception:
+                logger.exception("Could not check a session for an actor notice")
+                ended = session.unreachable
+                return None
+            if found is None:  # its access has gone: nothing about the character
+                ended = session.revoked
+                return None
+            actor, summary, _ = found
+            if actor.mode == "creation":
+                return None  # still a draft: nothing to tell
+            if actor.mode == "setup":
+                session.character_id = None
+            reason = "completed" if actor.mode == "play" else "archived"
+            return actor_notice(reason, actor_object(actor.mode, summary))
+
+        try:
+            await session.send_decided(decide)
+            if ended is not None:
+                await ended()
+        except (ConnectionClosed, _SlowConsumer):
+            pass
 
     async def _run_job(self, job):
         """Run one job with the executor, then store and deliver how it ended."""
@@ -1132,11 +1167,39 @@ def _unavailable(request_id) -> dict:
     )
 
 
-async def _send_quietly(session: "_Session", message: dict):
-    try:
-        await session.send(message)
-    except (ConnectionClosed, _SlowConsumer):
-        pass
+def _snapshot_parts(store: GameStore, context, character_id, characters: bool,
+                    referee_mode: bool):  # fmt: skip
+    """Everything a snapshot holds, from one committed state: the view, the
+    actor view (setup if the selection is no longer the caller's, with
+    `lost` set) and the referee projection. None if revoked."""
+    with store.snapshot():
+        current = store.participant_view(context)
+        if current is None:
+            return None
+        view, lost = None, False
+        if characters:
+            view = _actor_view(store, context, character_id)
+            if view is None:
+                view, lost = (SETUP, None, None), True
+        referee = None
+        if referee_mode:
+            actor = None if view is None else view[0]
+            referee = _referee_projection(store, context, actor)
+            if referee is None:
+                return None
+        return current, view, referee, lost
+
+
+def _notice_view(store: GameStore, context, character_id):
+    """For an actor notice: the character's actor view now, setup if it is no
+    longer the caller's, or None if the caller's access has ended. The sheet
+    read checks access in the same read as the character."""
+    found = _actor_view(store, context, character_id)
+    if found is not None:
+        return found
+    if store.session_revision(context) is None:
+        return None
+    return SETUP, None, None
 
 
 _UNCHECKED = object()
@@ -1201,6 +1264,14 @@ class _Session:
     async def send(self, message: dict):
         async with self._lock:
             await self._send(message)
+
+    async def send_decided(self, decide):
+        """Under the send lock, await `decide()` and send what it returns, if
+        anything: for an unsolicited message that must hold when it is sent."""
+        async with self._lock:
+            message = await decide()
+            if message is not None:
+                await self._send(message)
 
     async def send_read(self, read) -> dict:
         """Await `read()` and send the message it returns, holding back

@@ -6,24 +6,31 @@ docs/designs/character_contract.md sections 9 to 11. The campaigns are
 original Trailhead games; a scripted executor stands in for Codex and, where
 a job acts, drives the real bridge tools."""
 
+import asyncio
 import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from websockets.exceptions import ConnectionClosed
+
+from tesserae import server
 from tesserae.builtin import CATALOG, DICE_RUNTIME
+from tesserae.credentials import new_token
 from tesserae.referee.store import RefereeStore
 from tesserae.referee.tools import BridgeTools
 from tesserae.seed import parse_seed
 from tesserae.server import GameHost, HostConfigError
-from tesserae.store import Actor, GameStore
+from tesserae.store import Actor, GameStore, ParticipantContext
 
 try:  # tests/ is on sys.path under `unittest discover -s tests`
-    from test_lobby_host import LOBBY, Lobby, message
+    from test_lobby_host import LOBBY, SYNC, TIMEOUT, Lobby, message
 except ImportError:  # running as `python -m unittest tests.test_...`
-    from tests.test_lobby_host import LOBBY, Lobby, message
+    from tests.test_lobby_host import LOBBY, SYNC, TIMEOUT, Lobby, message
 
 TRAILHEAD = CATALOG.resolve("trailhead")
 ALICE = "p_a1a1a1a1a1a1a1a1"
@@ -464,6 +471,132 @@ class OtherConnectionTests(Trail):
         )  # its recorded outcome
         self.assertEqual(
             self.trail().query("SELECT count(*) FROM referee_jobs"), [(1,)]
+        )
+
+
+class ReviewRegressionTests(Trail):
+    """Notices and snapshots under races (review of 9947973)."""
+
+    def ready_for_alice(self, name: str) -> str:
+        """Another ready character for Alice's seeded participant."""
+        alice = ParticipantContext(ALICE)
+        with self.trail() as store:
+            made, _ = store.create_character(alice, f"make-{name}", name)
+            cid = made["result"]["character"]["character_id"]
+            for step, (command, args) in enumerate((("trailhead.trait", {"trait": "steady"}),
+                                                    ("trailhead.stamina", {}))):  # fmt: skip
+                raw = message("command", request_id=f"{name}-{step}",
+                              expected_revision=store.revision(), command=command, args=args)  # fmt: skip
+                self.assertTrue(
+                    store.execute_command(alice, raw, actor=Actor(cid, "creation"))[1]
+                )
+            self.assertTrue(store.complete_character(alice, f"done-{name}", cid, 3)[1])
+        return cid
+
+    async def test_a_rotated_out_connection_gets_no_notice(self):
+        await self.start_host()
+        old, _ = await self.enter("bob")
+        cid = (await self.create(old, name="Ash"))["character_id"]
+        with self.trail() as store:
+            bob = store.admit_host_player(self.host_id, self.players["bob"], "Bob")
+            for step, (command, args) in enumerate((("trailhead.trait", {"trait": "keen"}),
+                                                    ("trailhead.stamina", {}))):  # fmt: skip
+                raw = message("command", request_id=f"s-{step}", expected_revision=store.revision(),
+                              command=command, args=args)  # fmt: skip
+                self.assertTrue(
+                    store.execute_command(bob, raw, actor=Actor(cid, "creation"))[1]
+                )
+        await self.ask(old, "character_select", character_id=cid)
+        self.tokens["bob"] = new_token()
+        with self.registry() as registry:
+            registry.rotate_credential(self.players["bob"], self.tokens["bob"])
+        new, _ = await self.enter("bob")
+        done = await self.ask(
+            new,
+            "character_complete",
+            request_id="k-1",
+            character_id=cid,
+            draft_revision=3,
+        )
+        self.assertEqual(done["character"]["phase"], "ready")
+        received = []
+        with self.assertRaises(ConnectionClosed) as ended:
+            while True:
+                received.append(await self.next(old))
+        self.assertEqual(
+            (ended.exception.rcvd.code, ended.exception.rcvd.reason),
+            (1008, "session_revoked"),
+        )
+        self.assertNotIn("actor", [m["type"] for m in received])
+        self.assertNotIn("Ash", json.dumps(received))
+
+    async def test_a_notice_never_contradicts_a_newer_selection(self):
+        wren = self.ready_for_alice("Wren")
+        await self.start_host()
+        first, _ = await self.enter("alice")
+        second, _ = await self.enter("alice")
+        for connection in (first, second):
+            await self.ask(connection, "character_select", character_id=MARA)
+        # Hold the second connection's selection of Wren mid-request, with its
+        # send lock held and Mara still selected, while the first archives Mara.
+        reached, release = threading.Event(), threading.Event()
+        original = server._actor_view
+
+        def held(store, context, character_id):
+            if character_id == wren and not release.is_set():
+                reached.set()
+                release.wait(TIMEOUT)
+            return original(store, context, character_id)
+
+        with mock.patch.object(server, "_actor_view", held):
+            await second.send(message("character_select", character_id=wren))
+            await asyncio.to_thread(reached.wait, TIMEOUT)
+            archived = await self.ask(
+                first, "character_archive", request_id="a-1", character_id=MARA
+            )
+            self.assertEqual(archived["character"]["phase"], "archived")
+            await asyncio.sleep(0.1)  # the notice task is waiting for the lock
+            release.set()
+            selected = await self.next(second)
+        self.assertEqual((selected["type"], selected["actor"]["character"]["character_id"]),
+                         ("snapshot", wren))  # fmt: skip
+        await second.send(SYNC)  # nothing obsolete comes before its reply
+        between = []
+        while (received := await self.next(second))["type"] != "snapshot":
+            between.append(received)
+        self.assertNotIn("actor", [m["type"] for m in between], between)
+        status = received
+        self.assertEqual((status["type"], status["actor"]["character"]["character_id"]),
+                         ("snapshot", wren))  # fmt: skip
+
+    async def test_a_snapshot_is_one_committed_state(self):
+        await self.start_host()
+        alice, _ = await self.enter("alice")
+        before = await self.ask(alice, "character_select", character_id=MARA)
+        original = server._actor_view
+        pushed = []
+
+        def commit_first(store, context, character_id):
+            if not pushed:  # another writer commits between the snapshot's reads
+                with GameStore.open_existing(
+                    self.trail_path, randint=lambda low, high: 2
+                ) as other:
+                    raw = message("command", request_id="push-1", expected_revision=other.revision(),
+                                  command="trailhead.push", args={})  # fmt: skip
+                    pushed.append(other.execute_command(
+                        ParticipantContext(ALICE), raw, actor=Actor(MARA, "play"))[1])  # fmt: skip
+            return original(store, context, character_id)
+
+        with mock.patch.object(server, "_actor_view", commit_first):
+            snapshot = await self.ask(alice, "sync")
+        self.assertEqual(pushed, [True])
+        self.assertEqual(
+            (snapshot["revision"], snapshot["sheet"]["stamina"]),
+            (before["revision"], 3),
+        )  # the state it read, not the newer one
+        after = await self.ask(alice, "sync")
+        self.assertEqual(
+            (after["revision"], after["sheet"]["stamina"]), (before["revision"] + 1, 2)
         )
 
 
