@@ -38,10 +38,11 @@ play ([character contract](docs/designs/character_contract.md)). The
 [acceptance record](docs/acceptance/characters.md) shows a CLI player and a
 browser newcomer, with a scripted referee.
 
-The next [delivery design draft](docs/designs/campaign_authority_design.md)
-proposes campaign hosts, configurable requirements, guest approval requests
-and host sheet/world administration (M2-4). It separates that public framework
-work from later private campaign integration; it is not implemented yet.
+The next [delivery plan](docs/designs/campaign_authority_design.md),
+[#131](https://github.com/coghex/tesserae/issues/131), covers campaign hosts,
+configurable requirements, guest approval requests and host sheet/world
+administration (M2-4). Later private campaign integration is tracked separately
+in [#140](https://github.com/coghex/tesserae/issues/140). Neither is implemented yet.
 
 ## First executable slice
 
