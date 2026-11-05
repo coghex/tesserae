@@ -1,8 +1,6 @@
 # M2-4 draft: campaign hosts, rules and administration
 
-Status: design draft, 2026-11-02; not implemented. Tracker
-[#131](https://github.com/coghex/tesserae/issues/131); the exact rules are in
-the [governance contract](governance_contract.md) (GOV-1).
+Status: design draft, 2026-11-02; not implemented and no tracker filed.
 The owner approved the product decisions below. Delivery slices and technical
 proposals still need review. Public baseline:
 `51f53e14816dd7b1fefa1f3c891e0e2e26d9abfa` (M2-3 and its CLI follow-up merged).

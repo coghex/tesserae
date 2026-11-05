@@ -77,7 +77,7 @@ referee, under the [model-free testing policy](testing.md): the
 [acceptance record](acceptance/characters.md) shows it. The private module's
 character rules and the private campaign continuation follow separately.
 
-## Fourth slice: M2-4
+## Proposed fourth slice: M2-4
 
 The owner selected campaign hosts, rules and administration after M2-3.
 The [delivery draft](designs/campaign_authority_design.md) records one host
@@ -90,10 +90,8 @@ conversations and referee preparation; other guests retain their privacy.
 These are agreed product decisions, not delivered features. The proposed
 public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
-acceptance, tracked by [#131](https://github.com/coghex/tesserae/issues/131);
-the [governance contract](designs/governance_contract.md) (GOV-1) gives their
-exact rules. Existing Console/Settings navigation, memory-only login and
-localhost scope remain.
+acceptance. No tracker is filed yet. Existing Console/Settings navigation,
+memory-only login and localhost scope remain.
 
 ## Subsequent private integration
 
