@@ -116,7 +116,11 @@ delivers them in the CLI: roles, rules and requirements, requests and exact
 decisions, host inspection, confirmed administration and transfer, with
 stale, busy and privilege-loss refusals, and GOV-7
 ([#138](https://github.com/coghex/tesserae/issues/138)) in the browser's
-Console and Settings.
+Console and Settings. GOV-8 ([#139](https://github.com/coghex/tesserae/issues/139))
+publishes the [governance runbook](governance-runbook.md) and the
+[acceptance record](acceptance/governance.md): a model-free run across both
+clients passed all 94 checks; the tracker closes once its private record is
+reviewed.
 The filed public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
 acceptance (#132–#139); the
