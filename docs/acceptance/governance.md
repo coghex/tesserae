@@ -64,12 +64,12 @@ same document.
 | A guest's request, waiting | Bob's browser created Ash; an unsupported bonus was refused to the referee and nothing was stored; a bonus of 1 was stored pending and shown in his Console; no job stayed busy, and Alice played a turn as Mara meanwhile. His Settings said the campaign host can read his creation, and showed no host data |
 | Approval and validation | Hana approved it in her browser's Settings with a note: a new settings revision became active. Approving Ash at the revision Bob had been shown was refused as stale; his page showed the approval and note, re-read the draft, and approving the new revision gave Ash the bonus |
 | Denial, and a claim of consent | Alice's "the host agreed" was only a ruling: her job was refused the host tool and nothing changed. Her own request was denied by Hana's own referee job on Hana's explicit words, audited as Hana's via the referee; Kit started with no bonus and kept its agreed background with its provenance |
-| Competing, retried and conflicting decisions | Two of Hana's connections decided one request at once: the first won and the second was refused as already decided; an exact retry returned the recorded decision; the same request ID for another decision was a conflict; a guest's decision was refused |
+| Competing, retried and conflicting decisions | Two of Hana's connections sent an approval and a denial of one request at the same moment, before either reply was read: exactly one was applied (in this run the denial) and the other refused as already decided, with one audit row, one replay record and no settings change from the loser. An exact retry of the winner returned its recorded decision; the same request ID for the other decision was a conflict; a guest's decision was refused |
 | A host with several characters | Hana created two drafts of her own; her creation job set the referee's preparation through the host tool |
 | Inspection and isolation | Hana's `/history-all` showed Bob's private creation and to whom it went; Alice never saw it; a guest's inspection was refused; nothing of the preparation or of any host view reached Bob's page |
 | Stale state | An edit confirmed after the game moved on was refused and changed nothing; a retried import returned the same candidate; the page's activation, made against older settings, was refused as stale |
 | Transfer, recovery, revocation, restart | `/transfer` (confirmed) made Alice host and told her at once; Hana's edit was refused and her page cleared its host panels by itself. The operator's `set-host` restored Hana, noticed at her next request; the registry recorded all three designations and who made them. Rotating Hana's token ended her old session; with the new one she was host still. After a host restart Bob's page reconnected to Ash and Alice's decided requests were still listed |
-| The stores | Two requests approved and one denied; one audit row per decision naming its request; each approval's effect a settings revision made from it; exactly one revision active; operations, imports, activations and decisions audited |
+| The stores | Three requests, each decided once (here one approved and two denied); one audit row per decision naming its request; each approval's effect a settings revision made from it; exactly one revision active; operations, imports, activations and decisions audited |
 | M2-3 invariants and legacy | `/retry` replayed Alice's last input with no second job; no settings change refreshed or reallocated a ready walker; a single-game host refused the character game, has no campaign host, and served a Relay game with a game token as before; `tesserae roll` rolled |
 | Model-free | The stand-in answered all 13 jobs through the real bridge's tools; no other agent command was attempted |
 | The pages | No script error in any page |
@@ -80,8 +80,9 @@ it issued, removes its token files, keeps its referee diagnostics and removes
 its own referee folder, then records that none is left. This run's record
 says so. The driver's cleanup test fails the scenario mid-way (with the host
 running, the campaign host's page inspecting and a CLI client playing),
-before anything is served, in its summary, and while keeping the referee
-diagnostics, and checks the same each time.
+before anything is served, in its summary, while keeping the referee
+diagnostics, and in its preflight (the installation and fingerprint checks),
+and checks the same each time.
 
 ## Remaining limits
 
