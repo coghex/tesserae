@@ -898,7 +898,9 @@ as `referee_busy` or `internal_error` can be resent exactly (Retry exactly);
 a stale one says to review again. A `proposal` notice re-reads the sheet of
 a shown draft, whose revision an approval may have moved. All host data is
 also cleared when the connection drops, and any reply that arrives after it
-was cleared is dropped.
+was cleared is dropped. The rules are the actor's: they are read again when
+the actor changes, and a reply asked for an earlier actor is dropped. The
+messages and the audit are read a page at a time (Show more), to the end.
 
 ## 16. Compatibility
 

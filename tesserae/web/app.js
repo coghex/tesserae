@@ -117,7 +117,8 @@ function emptyHost() {
     messages: [], // host_messages pages, in order
     nextAfter: null, // the next page's after_seq, or null at the end
     messagesShown: false,
-    audit: null, // host_audit records, as last read
+    audit: null, // host_audit records, as read so far
+    auditNext: null, // the next page's `after`, or null at the end
     confirmTransfer: null, // the player ID awaiting Hand it over
     note: "",
     retry: null, // {message, describe, onReply}: a change to resend exactly
@@ -518,6 +519,8 @@ function changeActor(actor) {
   const changed = actorKey(actor) !== actorKey(state.actor);
   if (changed && state.actor) clearActor();
   state.actor = actor;
+  // The rules are the actor's: read them for the new one, once it is set.
+  if (changed && state.phase === "joined") queueMicrotask(loadRules);
   return changed;
 }
 
@@ -716,7 +719,6 @@ async function chooseCharacter(characterId) {
   if (reply.type === "snapshot") {
     applySnapshot(reply);
     render();
-    loadRules();
     if (state.referee) $("composer-text").focus();
   } else {
     state.characterNote = reply.message || "That character cannot be chosen now.";
@@ -999,9 +1001,13 @@ async function ask(send, { host = false } = {}) {
 // character) sees them: never another character's exception.
 async function loadRules() {
   if (!LOBBY) return;
+  const here = scope; // the actor asked for: a reply for an earlier one is dropped
+  const asked = actorKey(state.actor);
   const character = state.actor && state.actor.character;
-  const reply = await ask((current) => current.rulesView(character ? character.character_id : null));
-  if (reply && reply.type === "rules_view") {
+  const wanted = character ? character.character_id : null;
+  const reply = await ask((current) => current.rulesView(wanted));
+  if (!reply || here !== scope || actorKey(state.actor) !== asked) return;
+  if (reply.type === "rules_view" && (reply.character_id ?? null) === wanted) {
     state.rules = reply;
     render();
   }
@@ -1251,10 +1257,14 @@ async function loadMessages(more) {
   }
 }
 
-async function loadAudit() {
-  const reply = await ask((current) => current.hostAudit(0), { host: true });
+// The audit, oldest first, a page at a time: Show more reads the next.
+async function loadAudit(more) {
+  const after = more ? state.host.auditNext : 0;
+  if (after === null) return;
+  const reply = await ask((current) => current.hostAudit(after), { host: true });
   if (reply && reply.type === "host_audit") {
-    state.host.audit = reply.records;
+    state.host.audit = more ? [...(state.host.audit || []), ...reply.records] : reply.records;
+    state.host.auditNext = reply.next_after;
     render();
   }
 }
@@ -1848,6 +1858,7 @@ function renderHost(joined) {
       ),
     );
   }
+  $("host-audit-more").hidden = host.audit === null || host.auditNext === null;
   const transferring = host.confirmTransfer;
   $("host-transfer-confirm").hidden = !transferring;
   $("host-transfer-text").textContent = transferring
@@ -2019,7 +2030,8 @@ function start() {
   $("host-inspect-load").addEventListener("click", loadInspect);
   $("host-messages-load").addEventListener("click", () => loadMessages(false));
   $("host-messages-more").addEventListener("click", () => loadMessages(true));
-  $("host-audit-load").addEventListener("click", loadAudit);
+  $("host-audit-load").addEventListener("click", () => loadAudit(false));
+  $("host-audit-more").addEventListener("click", () => loadAudit(true));
   $("host-transfer-ask").addEventListener("click", askTransfer);
   $("host-transfer-yes").addEventListener("click", transfer);
   $("host-transfer-no").addEventListener("click", () => {

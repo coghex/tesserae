@@ -157,6 +157,81 @@ class HandoverTests(GovernanceCase):
         self.assertEqual(self.errors, [])
 
 
+class ReviewRegressionTests(GovernanceCase):
+    def test_a_rules_reply_for_an_earlier_actor_is_never_shown(self):
+        page, held, released = self.open(), [], []
+
+        def route(socket):
+            server = socket.connect_to_server()
+
+            def from_host(message):
+                kind = json.loads(message)["type"]
+                if self.holding or (released and kind == "rules_view"):
+                    held.append(message)
+                else:
+                    socket.send(message)
+
+            server.on_message(from_host)
+            socket.on_message(server.send)
+            self.page_socket = socket
+
+        self.holding = False
+        page.route_web_socket(f"{self.host.uri}**", route)
+        alice = self.entered("alice", page)
+        self.settings(alice)
+        expect(alice.locator("#settings-rules-body")).to_contain_text(
+            "trait (mechanical):"
+        )
+        self.console(alice)
+        self.holding = True
+        alice.locator("#character-list").get_by_role("button", name="Play Mara").click()
+        self.settings(alice)  # still in setup here: its rules are asked for again
+        alice.locator("#settings-rules-refresh").click()
+        while len(held) < 2:
+            alice.wait_for_timeout(20)
+        self.holding = False
+        released.append(True)  # Mara's selection and setup's rules; Mara's rules wait
+        for message in held[:2]:
+            self.page_socket.send(message)
+        del held[:2]
+        self.expect_status(alice, "Trail · Mara · Joined as Alice")
+        alice.wait_for_timeout(200)
+        expect(alice.locator("#settings-rules-body")).to_have_text("")  # never setup's
+        while not held:
+            alice.wait_for_timeout(20)
+        released.clear()
+        for message in held:
+            self.page_socket.send(message)
+        expect(alice.locator("#settings-rules-body")).to_contain_text(
+            "trait (mechanical, done)"
+        )
+        self.assertEqual(self.errors, [])
+
+    def test_the_audit_is_read_a_page_at_a_time(self):
+        with GameStore.open_existing(self.trail) as store, store.transaction() as db:
+            db.executemany(
+                "INSERT INTO host_audit (kind, host_id, player_id, via, detail, "
+                "revision, created_at) VALUES ('operation', NULL, ?, 'client', ?, 0, 'now')",
+                [(self.players["bob"], json.dumps({"n": n})) for n in range(205)],
+            )
+        bob = self.entered("bob")
+        self.settings(bob)
+        bob.locator("#host-audit-load").click()
+        expect(bob.locator("#host-audit-more")).to_be_visible()  # a page, not all
+        first = bob.locator("#host-audit-list li").count()
+        self.assertLess(first, 205)
+        for _ in range(3):  # pages of 200 rows or 32 KiB: a few at most
+            if not bob.locator("#host-audit-more").is_visible():
+                break
+            shown = bob.locator("#host-audit-list li").count()
+            bob.locator("#host-audit-more").click()
+            expect(bob.locator("#host-audit-list li")).not_to_have_count(shown)
+        expect(bob.locator("#host-audit-list li")).to_have_count(205)
+        expect(bob.locator("#host-audit-list li").last).to_contain_text('{"n":204}')
+        expect(bob.locator("#host-audit-more")).to_be_hidden()
+        self.assertEqual(self.errors, [])
+
+
 class RequestTests(GovernanceCase):
     def test_a_guest_waits_while_the_host_decides_her_request(self):
         alice = self.entered("alice")
