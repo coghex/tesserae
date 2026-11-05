@@ -347,10 +347,12 @@ ordinary guest privacy and table recipient rules remain. Administrative edits
 must be explicit, validated and auditable. The local operator can recover the
 host designation; clients and the referee cannot manufacture host authority.
 
-The [M2-4 delivery draft](designs/campaign_authority_design.md) separates this
-public framework work from subsequent private creation/campaign integration.
-These decisions are agreed direction. The design/slices still need review;
-neither delivery is implemented and no tracker is filed yet.
+The reviewed [M2-4 delivery plan](designs/campaign_authority_design.md), tracker
+[#131](https://github.com/coghex/tesserae/issues/131), separates this public
+framework work from subsequent private creation/campaign integration, tracker
+[#140](https://github.com/coghex/tesserae/issues/140). The owner authorized issue
+filing after design review. Neither delivery is implemented by this plan;
+GOV-1 specifies exact contracts before runtime work.
 
 ## Proposed implementation boundaries
 
