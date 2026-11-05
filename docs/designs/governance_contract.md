@@ -25,7 +25,8 @@ rule and audit, and target digests (for GOV-5). GOV-5
 10 and 11 and schema 9: proposals and host decisions, the referee's
 proposal and host tools, and narrative facts in the original module.
 GOV-6 ([#137](https://github.com/coghex/tesserae/issues/137)) delivers
-section 15's CLI; its browser controls (GOV-7) are not implemented yet.
+section 15's CLI, and GOV-7 ([#138](https://github.com/coghex/tesserae/issues/138))
+its browser controls.
 
 It extends the [lobby contract](lobby_contract.md), the
 [character contract](character_contract.md) and the
@@ -821,7 +822,7 @@ active with that exception and bumps the draft's revision; the guest's next
 look at the sheet shows the new revision, and approval completes with the
 bonus. A denial leaves revision 1 and the draft unchanged.
 
-## 15. Clients (the CLI delivered by GOV-6; the browser proposed for GOV-7)
+## 15. Clients (the CLI delivered by GOV-6, the browser by GOV-7)
 
 **CLI** (`connect --lobby`, inside a campaign):
 
@@ -875,6 +876,29 @@ mutation reuses its `request_id`. The Console shows a guest's
 pending requests and outcomes, and creation says that the campaign host can
 read it. Host data is cleared on a `role` of `guest`, on leaving, on lost
 access and on reconnect until reauthorized; nothing is stored in the browser.
+
+As delivered (GOV-7): Settings' "This campaign" panel shows the role (a
+guest is told the campaign host can read its private creation and
+conversation, and no other guest can) and `rules_view` for the selected
+character. The host's panels follow it, shown only while the snapshot or the
+last `role` says host: Requests (each request's exact content, an optional
+note, Approve and Deny), Rules (the revisions; Show, Activate… after a
+confirmation naming the revision it replaces, Reject; import of a JSON
+file), Administration (an operation from `host_operations`, its arguments
+as one JSON object prefilled from the module's description rather than a
+generated form, Review showing exactly what runs at which revision, then
+Run it), Inspection (`host_view`, `host_messages` and `host_audit`, in
+their own panel, never merged into the Console's conversation) and Hand the
+campaign over (a player ID, then a confirmation; the reply's `role` of
+`guest` clears every host datum at once). The Console lists the
+player's own requests from its referee projection, with Withdraw for a
+pending one. Nothing is changed without a button press; reads happen on
+entering, on a `role` or `proposal` notice and on Refresh. A change refused
+as `referee_busy` or `internal_error` can be resent exactly (Retry exactly);
+a stale one says to review again. A `proposal` notice re-reads the sheet of
+a shown draft, whose revision an approval may have moved. All host data is
+also cleared when the connection drops, and any reply that arrives after it
+was cleared is dropped.
 
 ## 16. Compatibility
 

@@ -103,6 +103,13 @@
             <p id="console-question-text"></p>
             <p class="note">Answer by typing below, like anything else you say.</p>
           </div>
+          <div class="panel requests" id="console-requests" aria-live="polite" hidden>
+            <h2>Your requests to the campaign host</h2>
+            <ul class="request-list" id="console-request-list"></ul>
+            <p class="note" id="console-requests-note"></p>
+            <p class="note">The campaign host decides these. Nothing changes until it
+              approves, and other players keep playing meanwhile.</p>
+          </div>
           <div class="panel unconfirmed" id="console-unconfirmed" aria-live="polite" hidden>
             <h2>Not confirmed</h2>
             <p>The connection dropped before the host answered, so it is not known
@@ -210,6 +217,117 @@
           </div>
           <p class="note">Your token stays in this page's memory only. After a
             refresh you provide it again.</p>
+        </div>
+        <div class="panel campaign-rules lobby-only" id="settings-rules-panel" hidden>
+          <h2>This campaign</h2>
+          <p id="settings-role"></p>
+          <div id="settings-rules-body"></div>
+          <div class="actions">
+            <button type="button" id="settings-rules-refresh">Refresh the rules</button>
+          </div>
+        </div>
+        <div class="host-only" id="host-panels" hidden>
+          <p class="notice" id="host-note" aria-live="polite" hidden></p>
+          <div class="panel host-requests" id="host-requests">
+            <h2>Requests</h2>
+            <ul class="request-list" id="host-request-list"></ul>
+            <p class="note" id="host-requests-empty">No requests yet.</p>
+            <div class="actions">
+              <button type="button" id="host-requests-refresh">Refresh requests</button>
+            </div>
+          </div>
+          <div class="panel host-rules" id="host-rules">
+            <h2>Rules</h2>
+            <p id="host-rules-active"></p>
+            <ul class="revision-list" id="host-revision-list"></ul>
+            <div class="actions">
+              <button type="button" id="host-rules-refresh">Refresh the revisions</button>
+            </div>
+            <div class="panel confirm" id="host-activate-confirm" hidden>
+              <p id="host-activate-text"></p>
+              <div class="actions">
+                <button type="button" id="host-activate-yes">Activate</button>
+                <button type="button" id="host-activate-no">Not now</button>
+              </div>
+            </div>
+            <div class="shown-document" id="host-rules-shown" hidden>
+              <h3 id="host-rules-shown-title"></h3>
+              <pre id="host-rules-shown-text"></pre>
+            </div>
+            <fieldset class="import">
+              <legend>Import a settings document</legend>
+              <label>Document (JSON file)
+                <input type="file" id="host-rules-file" accept=".json,application/json">
+              </label>
+              <button type="button" id="host-rules-import">Import as a candidate</button>
+            </fieldset>
+          </div>
+          <div class="panel host-admin" id="host-admin">
+            <h2>Administration</h2>
+            <div class="actions">
+              <button type="button" id="host-admin-load">Show the operations</button>
+            </div>
+            <div id="host-admin-form" hidden>
+              <label>Operation
+                <select id="host-admin-operation"></select>
+              </label>
+              <p class="note" id="host-admin-description"></p>
+              <label>Arguments (JSON)
+                <textarea id="host-admin-args" rows="4" spellcheck="false"></textarea>
+              </label>
+              <div class="actions">
+                <button type="button" id="host-admin-review">Review</button>
+              </div>
+            </div>
+            <div class="panel confirm" id="host-admin-confirm" hidden>
+              <p id="host-admin-confirm-text"></p>
+              <pre id="host-admin-confirm-args"></pre>
+              <div class="actions">
+                <button type="button" id="host-admin-run">Run it</button>
+                <button type="button" id="host-admin-cancel">Not now</button>
+              </div>
+            </div>
+          </div>
+          <div class="panel host-inspect" id="host-inspect">
+            <h2>Inspection</h2>
+            <p class="note">Everything in this campaign, private creation and
+              conversation included. It is shown only here, to you.</p>
+            <div class="actions">
+              <button type="button" id="host-inspect-load">Inspect the campaign</button>
+              <button type="button" id="host-messages-load">Show every message</button>
+              <button type="button" id="host-audit-load">Show what hosts changed</button>
+            </div>
+            <ol class="host-audit" id="host-audit-list" aria-label="Host changes"></ol>
+            <div id="host-inspect-body"></div>
+            <ol class="host-messages" id="host-message-list" aria-label="Every message"></ol>
+            <div class="actions">
+              <button type="button" id="host-messages-more" hidden>Show more</button>
+            </div>
+          </div>
+          <div class="panel host-transfer" id="host-transfer">
+            <h2>Hand the campaign over</h2>
+            <label>Player ID (u_…)
+              <input type="text" id="host-transfer-player" autocomplete="off"
+                     spellcheck="false">
+            </label>
+            <div class="actions">
+              <button type="button" id="host-transfer-ask">Hand over…</button>
+            </div>
+            <div class="panel confirm" id="host-transfer-confirm" hidden>
+              <p id="host-transfer-text"></p>
+              <div class="actions">
+                <button type="button" id="host-transfer-yes">Hand it over</button>
+                <button type="button" id="host-transfer-no">Keep it</button>
+              </div>
+            </div>
+          </div>
+          <div class="panel retry" id="host-retry" hidden>
+            <p id="host-retry-text"></p>
+            <div class="actions">
+              <button type="button" id="host-retry-send">Retry exactly</button>
+              <button type="button" id="host-retry-drop">Drop it</button>
+            </div>
+          </div>
         </div>
       </section>
     </main>

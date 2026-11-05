@@ -114,7 +114,9 @@ checked again at every call; and Trailhead records agreed narrative facts
 with their provenance. GOV-6 ([#137](https://github.com/coghex/tesserae/issues/137))
 delivers them in the CLI: roles, rules and requirements, requests and exact
 decisions, host inspection, confirmed administration and transfer, with
-stale, busy and privilege-loss refusals; the browser's come with GOV-7.
+stale, busy and privilege-loss refusals, and GOV-7
+([#138](https://github.com/coghex/tesserae/issues/138)) in the browser's
+Console and Settings.
 The filed public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
 acceptance (#132–#139); the

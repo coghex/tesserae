@@ -182,6 +182,17 @@ shows read-only with **Approve** for the revision shown. Settings shows the
 character and offers **Change character** and **Archive character…** (after
 a confirmation naming it).
 
+In a campaign with a campaign host, Settings shows your role and the
+campaign's rules, with your character's requirements; the Console lists your
+requests to the host and what it decided, with **Withdraw** for a pending
+one. The campaign host's Settings also has **Requests** (approve or deny each
+exactly as asked), **Rules** (show, import, activate after confirming,
+reject), **Administration** (choose an operation, edit its arguments,
+**Review**, then **Run it**) and **Inspection** (every sheet, the module's
+data and every message, private ones included, shown only there). The host
+needs no character for any of it. Host panels empty themselves when you are
+no longer the host, leave, lose the connection or change identity.
+
 Each connection chooses its own campaign: one player can be in Harbor from the
 CLI and in another campaign from the browser at the same time. While one
 campaign's referee is answering, the others are not busy.
@@ -250,8 +261,7 @@ the [character runbook](character-runbook.md).
 
 Campaign governance (tracker [#131](https://github.com/coghex/tesserae/issues/131)):
 one campaign host per campaign, its settings and inspection, administration,
-and guests' requests for its decisions, from the CLI; the browser's controls
-come with GOV-7.
+and guests' requests for its decisions, from the CLI and the browser.
 
 Not yet: the private campaign continuation, browser access from other
 computers, TLS for the lobby, remembered logins, and registry migration or

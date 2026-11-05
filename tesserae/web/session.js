@@ -144,6 +144,43 @@ export class Session {
     return this.request({ version: 1, type: "messages", after_seq: afterSeq });
   }
 
+  // Campaign governance reads (docs/designs/governance_contract.md
+  // sections 7 and 13). Changes are sent with request(), as one exact
+  // message the page keeps, so a retry resends it unchanged.
+  rulesView(characterId = null) {
+    const message = { version: 1, type: "rules_view" };
+    if (characterId) message.character_id = characterId;
+    return this.request(message);
+  }
+
+  rulesList() {
+    return this.request({ version: 1, type: "rules_list" });
+  }
+
+  rulesExport(revision) {
+    return this.request({ version: 1, type: "rules_export", revision });
+  }
+
+  requests() {
+    return this.request({ version: 1, type: "requests" });
+  }
+
+  hostView() {
+    return this.request({ version: 1, type: "host_view" });
+  }
+
+  hostMessages(afterSeq) {
+    return this.request({ version: 1, type: "host_messages", after_seq: afterSeq });
+  }
+
+  hostAudit(after) {
+    return this.request({ version: 1, type: "host_audit", after });
+  }
+
+  hostOperations() {
+    return this.request({ version: 1, type: "host_operations" });
+  }
+
   // Ends the session from this side; no further callbacks.
   close() {
     this.ended = true;
