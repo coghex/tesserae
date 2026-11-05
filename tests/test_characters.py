@@ -41,9 +41,17 @@ def command(request_id: str, name: str, args: dict, revision: int) -> str:
     })  # fmt: skip
 
 
+def as_schema_8(path):
+    """Turn a current store back into schema 8: no host requests. The
+    referee steps' wider kinds need no undoing (only new kinds use them)."""
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executescript("DROP TABLE host_requests; PRAGMA user_version = 8;")
+
+
 def as_schema_7(path):
     """Turn a current store back into schema 7: no settings documents, host
     mutations or host audit (governance contract section 12)."""
+    as_schema_8(path)
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(
             "DROP TABLE campaign_documents; DROP TABLE host_mutations;"

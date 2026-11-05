@@ -60,6 +60,8 @@ ERROR_CODES = frozenset(
         "not_campaign_host",
         "stale_policy",
         "invalid_document",
+        "proposal_unavailable",
+        "proposal_decided",
     }
 )
 # One fixed message per session error, so failures never vary with the
@@ -132,6 +134,14 @@ _RULES_FIELDS = {
     "rules_reject": (frozenset({"version", "type", "request_id", "revision"}), None),
 }
 RULES_TYPES = frozenset(_RULES_FIELDS)
+# Guest requests for host decisions (governance contract section 9).
+_PROPOSAL_FIELDS = {
+    "requests": frozenset({"version", "type"}),
+    "request_decide": frozenset(
+        {"version", "type", "request_id", "proposal_id", "decision", "note"}
+    ),
+    "request_cancel": frozenset({"version", "type", "request_id", "proposal_id"}),
+}
 
 
 class ProtocolError(ValueError):
@@ -237,6 +247,19 @@ class RulesRequest:
 
 
 @dataclass(frozen=True)
+class ProposalRequest:
+    """`requests` (anyone: their own, or every one for the campaign host),
+    `request_decide` (the campaign host) or `request_cancel` (the requester),
+    governance contract section 13. Who may is the host's to judge."""
+
+    kind: str
+    request_id: str | None = None
+    proposal_id: str | None = None
+    decision: str | None = None
+    note: str | None = None
+
+
+@dataclass(frozen=True)
 class RefereeStatusRequest:
     """A read of the caller's referee projection."""
 
@@ -327,6 +350,8 @@ def parse_client_message(text: str | bytes, runtime: Runtime = DICE_RUNTIME):
         return _parse_host(kind, data)
     if isinstance(kind, str) and kind in _RULES_FIELDS:
         return _parse_rules(kind, data)
+    if isinstance(kind, str) and kind in _PROPOSAL_FIELDS:
+        return _parse_proposal(kind, data)
     if kind == "messages":
         _check_fields(data, _MESSAGES_FIELDS, "A messages request")
         if not is_valid_revision(data["after_seq"]):
@@ -539,6 +564,40 @@ def _parse_rules(kind: str, data: dict) -> RulesRequest:
         error.request_id = request_id
         raise
     return RulesRequest(kind, request_id, character_id, revision, expected, content)
+
+
+def _parse_proposal(kind: str, data: dict) -> ProposalRequest:
+    request_id = data.get("request_id")
+    request_id = request_id if is_valid_request_id(request_id) else None
+    try:
+        _check_fields(data, _PROPOSAL_FIELDS[kind], f"A {kind} request")
+        if kind == "requests":
+            return ProposalRequest(kind)
+        if request_id is None:
+            raise ProtocolError(
+                "invalid_request",
+                f"'request_id' must be a string of 1 to {MAX_REQUEST_ID_LENGTH} "
+                "characters without whitespace.",
+            )
+        if not is_valid_identifier(data["proposal_id"]):
+            raise ProtocolError(
+                "invalid_request", "'proposal_id' must be a proposal ID."
+            )
+        if kind == "request_cancel":
+            return ProposalRequest(kind, request_id, data["proposal_id"])
+        if data["decision"] not in ("approve", "deny"):
+            raise ProtocolError("invalid_request", "'decision' is approve or deny.")
+        note = data["note"]
+        if note is not None and (not isinstance(note, str) or len(note) > 1000):
+            raise ProtocolError(
+                "invalid_request", "'note' is null or up to 1000 characters."
+            )
+    except ProtocolError as error:
+        error.request_id = request_id
+        raise
+    return ProposalRequest(
+        kind, request_id, data["proposal_id"], data["decision"], note
+    )
 
 
 def _check_fields(data: dict, fields: frozenset, subject: str):

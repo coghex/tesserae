@@ -430,7 +430,9 @@ class SocketTests(BridgeCase):
                              "2025-06-18")  # fmt: skip
             names = [tool["name"] for tool in rpc(2, "tools/list")["result"]["tools"]]
             self.assertEqual(names, ["get_context", "get_transcript", "get_view", "list_actions", "act",
-                                     "referee_act", "record_ruling"])  # fmt: skip
+                                     "referee_act", "record_ruling", "propose_host_decision",
+                              "host_operations", "host_act", "host_decide",
+                              "host_propose_rules", "host_activate_rules"])  # fmt: skip
             acted = rpc(3, "tools/call", {"name": "act", "arguments": {
                 "step_id": "s1", "command": "relay.enlist", "args": {"name": "Wren"}}})["result"]  # fmt: skip
             self.assertFalse(acted["isError"])

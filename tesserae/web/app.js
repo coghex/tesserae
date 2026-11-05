@@ -531,6 +531,9 @@ function receive(message) {
     if (state.revision === null || message.revision > state.revision) readView();
   } else if (message.type === "role") {
     state.role = message.role; // host controls are later work (GOV-7)
+  } else if (message.type === "proposal") {
+    // A request's state changed; showing requests is later work (GOV-7).
+    if (state.referee) readStatus();
   }
   render();
 }

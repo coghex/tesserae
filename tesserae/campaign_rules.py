@@ -97,32 +97,7 @@ class CampaignRules:
         content = {"content": document}
 
         def apply(db):
-            runtime = self.store.runtime()
-            binding = self.store.binding()
-            checked = _checked(
-                document,
-                {"id": binding.module_id, "version": binding.version,
-                 "state_version": binding.state_version},
-                runtime,
-            )  # fmt: skip
-            problems = policies.check_against(
-                checked, runtime, self.store.inspect_state(), self._character_ids()
-            )
-            if problems:
-                raise _invalid(problems)
-            text = policies.canonical(checked)
-            sha = policies.digest(text)
-            revision = (
-                1
-                + db.execute(
-                    "SELECT ifnull(max(revision), 0) FROM campaign_documents"
-                ).fetchone()[0]
-            )
-            db.execute(
-                "INSERT INTO campaign_documents (revision, content, sha256, origin, "
-                "state, created_at) VALUES (?, ?, ?, ?, 'candidate', ?)",
-                (revision, text, sha, origin, _now()),
-            )
+            revision, sha = self.store_candidate(db, document, origin)
             self._audit(db, by, "import", {"revision": revision, "sha256": sha,
                                            "request_id": request_id})  # fmt: skip
             return {"revision": revision, "state": "candidate"}
@@ -154,41 +129,10 @@ class CampaignRules:
                     f"{expected_policy_revision}; review them again.",
                     {"policy_revision": current},
                 )
-            busy = self.store.busy_refusal()
+            busy = self.store.busy_refusal(by.job_id)
             if busy is not None:
                 raise busy
-            runtime = self.store.runtime()
-            document = json.loads(row[0])
-            problems = policies.check_against(
-                document, runtime, self.store.inspect_state(), self._character_ids()
-            )
-            if problems:
-                raise _invalid(problems)
-            bumped = []
-            for (character_id,) in db.execute(
-                "SELECT character_id FROM characters WHERE phase = 'draft' "
-                "ORDER BY created_at, rowid"
-            ).fetchall():
-                before = policies.effective(runtime, current, old, character_id)
-                after = policies.effective(runtime, revision, document, character_id)
-                # As JSON, not Python values: false is not 0, nor 1.0 1.
-                if policies.canonical(before["settings"]) != policies.canonical(
-                    after["settings"]
-                ):
-                    bumped.append(character_id)
-            db.executemany(
-                "UPDATE characters SET draft_revision = draft_revision + 1 "
-                "WHERE character_id = ?",
-                [(character_id,) for character_id in bumped],
-            )
-            db.execute(
-                "UPDATE campaign_documents SET state = 'superseded' WHERE state = 'active'"
-            )
-            db.execute(
-                "UPDATE campaign_documents SET state = 'active', activated_at = ?, "
-                "activated_by = ? WHERE revision = ?",
-                (_now(), by.player_id, revision),
-            )
+            bumped = self.make_active(db, revision, json.loads(row[0]), by)
             self._audit(db, by, "activation", {
                 "revision": revision, "previous": current, "drafts": bumped,
                 "request_id": request_id,
@@ -196,6 +140,78 @@ class CampaignRules:
             return {"revision": revision, "state": "active"}
 
         return self._mutation(by, request_id, "rules_activate", content, apply, check)
+
+    # --- Inside a caller's transaction (also an approved request's) ---------
+
+    def store_candidate(self, db, document, origin: str) -> tuple[int, str]:
+        """Check a document whole against the game now and store it as a new
+        candidate: (revision, sha256). Raises Refusal (`invalid_document`)."""
+        runtime = self.store.runtime()
+        binding = self.store.binding()
+        checked = _checked(
+            document,
+            {"id": binding.module_id, "version": binding.version,
+             "state_version": binding.state_version},
+            runtime,
+        )  # fmt: skip
+        problems = policies.check_against(
+            checked, runtime, self.store.inspect_state(), self._character_ids()
+        )
+        if problems:
+            raise _invalid(problems)
+        text = policies.canonical(checked)
+        sha = policies.digest(text)
+        revision = (
+            1
+            + db.execute(
+                "SELECT ifnull(max(revision), 0) FROM campaign_documents"
+            ).fetchone()[0]
+        )
+        db.execute(
+            "INSERT INTO campaign_documents (revision, content, sha256, origin, "
+            "state, created_at) VALUES (?, ?, ?, ?, 'candidate', ?)",
+            (revision, text, sha, origin, _now()),
+        )
+        return revision, sha
+
+    def make_active(self, db, revision: int, document: dict, by: Decider) -> list:
+        """Check a stored candidate against the game now and make it the
+        active document: the previous one superseded, and every draft whose
+        effective settings change given a new draft revision. The drafts
+        bumped. Raises Refusal (`invalid_document`)."""
+        current, old = self.store.active_document()
+        runtime = self.store.runtime()
+        problems = policies.check_against(
+            document, runtime, self.store.inspect_state(), self._character_ids()
+        )
+        if problems:
+            raise _invalid(problems)
+        bumped = []
+        for (character_id,) in db.execute(
+            "SELECT character_id FROM characters WHERE phase = 'draft' "
+            "ORDER BY created_at, rowid"
+        ).fetchall():
+            before = policies.effective(runtime, current, old, character_id)
+            after = policies.effective(runtime, revision, document, character_id)
+            # As JSON, not Python values: false is not 0, nor 1.0 1.
+            if policies.canonical(before["settings"]) != policies.canonical(
+                after["settings"]
+            ):
+                bumped.append(character_id)
+        db.executemany(
+            "UPDATE characters SET draft_revision = draft_revision + 1 "
+            "WHERE character_id = ?",
+            [(character_id,) for character_id in bumped],
+        )
+        db.execute(
+            "UPDATE campaign_documents SET state = 'superseded' WHERE state = 'active'"
+        )
+        db.execute(
+            "UPDATE campaign_documents SET state = 'active', activated_at = ?, "
+            "activated_by = ? WHERE revision = ?",
+            (_now(), by.player_id, revision),
+        )
+        return bumped
 
     def reject(
         self, revision: int, by: Decider, *, request_id=None, check=None
@@ -218,31 +234,7 @@ class CampaignRules:
     # --- Internals ----------------------------------------------------------
 
     def _mutation(self, by, request_id, kind, content, apply, check):
-        recorded = policies.canonical({"kind": kind, **content})
-        with self.store.transaction() as db:
-            if check is not None:
-                check()
-            if request_id is not None:
-                row = db.execute(
-                    "SELECT content, result FROM host_mutations "
-                    "WHERE sender = ? AND request_id = ?",
-                    (by.sender, request_id),
-                ).fetchone()
-                if row is not None:
-                    if row[0] != recorded:
-                        raise Refusal(
-                            "request_conflict",
-                            "This request_id was already used for a different request.",
-                        )
-                    return json.loads(row[1]), False
-            result = apply(db)
-            if request_id is not None:
-                db.execute(
-                    "INSERT INTO host_mutations (sender, request_id, kind, content, "
-                    "result, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (by.sender, request_id, kind, recorded, json.dumps(result), _now()),
-                )
-        return result, True
+        return mutation(self.store, by.sender, request_id, kind, content, apply, check)
 
     def _candidate(self, db, revision, verb: str):
         row = db.execute(
@@ -265,6 +257,40 @@ class CampaignRules:
 
     def _audit(self, db, by: Decider, kind: str, detail: dict):
         self.store.audit(by, kind, detail)
+
+
+def mutation(store: GameStore, sender: str, request_id, kind, content, apply, check):
+    """One host mutation (governance contract section 8): in one
+    transaction, `check()` (the caller's authority), then the exact replay of
+    `sender`'s `request_id` (the recorded reply, or `request_conflict` for
+    other content), else `apply(db)` and its reply recorded with it.
+    Returns (reply, applied); a Refusal changes nothing and records
+    nothing."""
+    recorded = policies.canonical({"kind": kind, **content})
+    with store.transaction() as db:
+        if check is not None:
+            check()
+        if request_id is not None:
+            row = db.execute(
+                "SELECT content, result FROM host_mutations "
+                "WHERE sender = ? AND request_id = ?",
+                (sender, request_id),
+            ).fetchone()
+            if row is not None:
+                if row[0] != recorded:
+                    raise Refusal(
+                        "request_conflict",
+                        "This request_id was already used for a different request.",
+                    )
+                return json.loads(row[1]), False
+        result = apply(db)
+        if request_id is not None:
+            db.execute(
+                "INSERT INTO host_mutations (sender, request_id, kind, content, "
+                "result, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (sender, request_id, kind, recorded, json.dumps(result), _now()),
+            )
+    return result, True
 
 
 def requirements(store: GameStore, runtime, policy, state, character_id) -> list | None:

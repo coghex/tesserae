@@ -1,5 +1,5 @@
-"""The host side of the referee bridge (#67, REF-4): the seven whitelisted
-tools, the job token that authorizes them, and the game's Unix socket.
+"""The host side of the referee bridge (#67, REF-4): the whitelisted tools,
+the job token that authorizes them, and the game's Unix socket.
 
 Codex reaches these only through `python -m tesserae.referee.bridge`, which
 forwards each MCP tool call here as one JSON line. Every read of the game and
@@ -15,6 +15,11 @@ In a character game each job acts as its frozen actor and only as its mode
 allows (docs/designs/character_contract.md sections 5 and 7): nothing in
 setup, its own draft's creation steps in creation, and its own ready
 character's commands, and referee-only commands, in play.
+
+Any job may propose an exact host decision (`propose_host_decision`). Only a
+job of the campaign host has the host tools, and each call takes the
+registry guard for that host's session again: a transfer or a revocation
+ends them mid-job (docs/designs/governance_contract.md section 10).
 """
 
 import hmac
@@ -24,11 +29,13 @@ import os
 import secrets
 import socketserver
 import threading
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from ..campaign_rules import requirements
+from ..campaign_rules import CampaignRules, requirements, rules_message
+from ..host_requests import RECENT, HostRequests, proposal_message
 from ..protocol import PROTOCOL_VERSION
-from ..store import GameStore, ParticipantContext
+from ..store import GameStore, ParticipantContext, Refusal
 from .store import REFEREE, Job, RefereeError, RefereeStore, Step
 
 MAX_REQUEST = 256 * 1024  # one request line from the bridge
@@ -40,7 +47,22 @@ TOOL_ARGUMENTS = {
     "act": frozenset({"step_id", "command", "args"}),
     "referee_act": frozenset({"step_id", "command", "args"}),
     "record_ruling": frozenset({"text", "scope"}),
+    # Governance (docs/designs/governance_contract.md section 10).
+    "propose_host_decision": frozenset(
+        {"step_id", "kind", "scope", "target", "payload", "explanation"}
+    ),
+    "host_operations": frozenset(),
+    "host_act": frozenset({"step_id", "command", "args"}),
+    "host_decide": frozenset({"step_id", "proposal_id", "decision", "note"}),
+    "host_propose_rules": frozenset({"step_id", "content"}),
+    "host_activate_rules": frozenset(
+        {"step_id", "revision", "expected_policy_revision"}
+    ),
 }
+HOST_TOOLS = frozenset(
+    {"host_operations", "host_act", "host_decide", "host_propose_rules",
+     "host_activate_rules"}
+)  # fmt: skip
 # A refusal that settles a step. A stale revision does not: nothing ran, and
 # the same step ID may be retried at the new revision.
 RETRYABLE = frozenset({"stale_revision"})
@@ -58,20 +80,35 @@ class ToolError(Exception):
         self.message = message
 
 
+class NotCampaignHost(Exception):
+    """Raised by a host authority: this job's sender is not (or no longer)
+    the campaign host."""
+
+
 class BridgeTools:
     """The tools for one game. `open_store()` returns a new GameStore for the
     calling thread; `on_commit(revision)` is called after each fresh commit, so
     the host can notify players; `log(entry)` receives every call and result
     (never a token). Safe to call from several threads.
 
+    `host_authority(job)`, given by a lobby host, returns a context manager
+    that takes the registry guard for the job's sender's session and yields
+    its `Decider` while it is the campaign host, else raises
+    NotCampaignHost; without it no job has host tools. `on_proposal(id)` is
+    called after a proposal is made or decided, so the host can tell the
+    people involved.
+
     An action is authorized again inside its own write transaction, and
     revoke() waits for one already committing, so once revoke() returns no
     action of the revoked job can commit."""
 
-    def __init__(self, open_store, *, on_commit=None, log=None):
+    def __init__(self, open_store, *, on_commit=None, log=None,
+                 host_authority=None, on_proposal=None):  # fmt: skip
         self._open = open_store
         self._on_commit = on_commit
         self._log = log
+        self.host_authority = host_authority
+        self.on_proposal = on_proposal
         self._grant = None  # (job_id, token) of the running job
         self._guard = threading.Lock()
         # Held from an action's command transaction until its step is
@@ -103,6 +140,8 @@ class BridgeTools:
             response = {"ok": True, "result": result}
         except ToolError as error:
             response = _error(error.code, error.message)
+        except Refusal as refusal:
+            response = _error(refusal.code, refusal.text)
         except RefereeError as error:
             response = _error(error.code, str(error))
         except Exception:
@@ -145,6 +184,16 @@ class BridgeTools:
             raise ToolError("job_ended", "This job's access has ended; nothing ran.")
         if tool in ("act", "referee_act"):
             return self._act(store, referee, grant, job, tool, args)
+        if tool == "propose_host_decision":
+            return self._propose(store, referee, grant, job, args)
+        if tool in HOST_TOOLS:
+            with self._host(job) as by:
+                if tool == "host_operations":
+                    with store.snapshot():
+                        return {"revision": store.revision(),
+                                "operations": store.runtime().host_operations(
+                                    store.inspect_state())}  # fmt: skip
+                return self._host_step(store, referee, grant, job, by, tool, args)
         if tool == "record_ruling":
             referee.record_ruling(job.job_id, args["text"], args["scope"])
             return {"recorded": True}
@@ -156,10 +205,142 @@ class BridgeTools:
                 )
             page, next_after = referee.transcript(after)
             return {"messages": page, "next_after_seq": next_after}
+        if tool == "get_context":  # whether this is a host job, held while read
+            with self._host(job, optional=True) as by:
+                with store.snapshot():
+                    return self._get_context(store, referee, job, args, by)
         with store.snapshot():  # one committed state for every read below
             return getattr(self, f"_{tool}")(store, referee, job, args)
 
-    def _get_context(self, store, referee, job, args) -> dict:
+    @contextmanager
+    def _host(self, job: Job, *, optional=False):
+        """The job's campaign host authority for one call (a Decider via the
+        referee), held for the call; with `optional`, None for a guest's job
+        instead of `not_campaign_host`."""
+        with ExitStack() as stack:
+            by = None
+            if self.host_authority is not None:
+                try:
+                    by = stack.enter_context(self.host_authority(job))
+                except NotCampaignHost:
+                    pass
+            if by is None and not optional:
+                raise _not_host()
+            yield by
+
+    def _still_running(self, referee, grant, job):
+        """A precondition for a step's own transaction: the job may have been
+        interrupted, or its access revoked, since the step was intended."""
+
+        def check():
+            with self._guard:
+                current = self._grant
+            running = referee.running_job()
+            if current is not grant or running is None or running.job_id != job.job_id:
+                raise ToolError(
+                    "job_ended", "This job's access has ended; nothing ran."
+                )
+
+        return check
+
+    def _propose(self, store, referee, grant, job: Job, args: dict) -> dict:
+        """`propose_host_decision`: checked before it is journaled (an
+        unsupported request is refused, not stored), then stored once per
+        step in the sender's namespace. It never waits: the job replies and
+        ends, and the proposal stays pending."""
+        requests = HostRequests(store)
+        with store.snapshot():
+            proposal = requests.check(job, args["kind"], args["scope"], args["target"],
+                                      args["payload"], args["explanation"])  # fmt: skip
+        content = {k: v for k, v in args.items() if k != "step_id"}
+        step = referee.intend_step(job.job_id, args["step_id"], "propose",
+                                   job.participant_id, "propose_host_decision", content)  # fmt: skip
+        recorded = _recorded(step)
+        if recorded is not None:
+            return {
+                "step_id": step.step_id,
+                "status": "committed",
+                "proposal": recorded,
+            }
+        with self._acting:
+            view, created = requests.propose(
+                job, step.request_id, proposal,
+                check=self._still_running(referee, grant, job),
+            )  # fmt: skip
+            referee.record_step(job.job_id, step.step_id, "committed", view)
+        if created and self.on_proposal is not None:
+            self.on_proposal(view["proposal_id"])
+        return {"step_id": step.step_id, "status": "committed", "proposal": view}
+
+    def _host_step(self, store, referee, grant, job, by, tool, args) -> dict:
+        """One mutating host tool, journaled as a step of kind `host` in the
+        campaign host's namespace and run inside the registry guard taken for
+        this call. The busy rule does not apply to the host's own job."""
+        content = {k: v for k, v in args.items() if k != "step_id"}
+        step = referee.intend_step(job.job_id, args["step_id"], "host", by.sender,
+                                   tool, content)  # fmt: skip
+        recorded = _recorded(step)
+        if recorded is not None:
+            return {"step_id": step.step_id, "status": "committed", "result": recorded}
+        check = self._still_running(referee, grant, job)
+        with self._acting:
+            try:
+                reply, committed = self._run_host_tool(store, by, step, tool, content,
+                                                       check)  # fmt: skip
+            except Refusal as refusal:
+                reply, committed = refusal.message(step.request_id, None), False
+            if reply["type"] == "error":
+                if reply["code"] in RETRYABLE:  # nothing ran; the step stays intended
+                    raise ToolError(reply["code"],
+                                    reply["message"] + " Retry with the same step_id.")  # fmt: skip
+                referee.record_step(job.job_id, step.step_id, "refused", reply)
+                raise ToolError(reply["code"], reply["message"])
+            referee.record_step(job.job_id, step.step_id, "committed", reply)
+        if committed:
+            effect = reply.get("effect") or {}
+            if reply["type"] == "result" and self._on_commit is not None:
+                self._on_commit(reply["revision"])
+            elif reply["type"] == "proposal":
+                if "revision" in effect and self._on_commit is not None:
+                    self._on_commit(effect["revision"])
+                if self.on_proposal is not None:
+                    self.on_proposal(reply["proposal_id"])
+        return {"step_id": step.step_id, "status": "committed", "result": reply}
+
+    def _run_host_tool(self, store, by, step, tool, content, check):
+        if tool == "host_act":
+            if not isinstance(content["command"], str) or not isinstance(
+                content["args"], dict
+            ):
+                raise ToolError(
+                    "invalid_request", "command is a string and args an object."
+                )
+            raw = json.dumps({
+                "version": PROTOCOL_VERSION, "type": "command",
+                "request_id": step.request_id, "expected_revision": store.revision(),
+                "command": content["command"], "args": content["args"],
+            })  # fmt: skip
+            return store.execute_host_command(by, raw, precondition=check)
+        if tool == "host_decide":
+            result, applied = HostRequests(store).decide(
+                by, step.request_id, content["proposal_id"], content["decision"],
+                content["note"], check=check,
+            )  # fmt: skip
+            return proposal_message(result, step.request_id), applied
+        rules = CampaignRules(store)
+        if tool == "host_propose_rules":
+            result, applied = rules.import_document(
+                content["content"], by, request_id=step.request_id, origin="referee",
+                check=check,
+            )  # fmt: skip
+        else:
+            result, applied = rules.activate(
+                content["revision"], content["expected_policy_revision"], by,
+                request_id=step.request_id, check=check,
+            )  # fmt: skip
+        return rules_message(result, step.request_id), applied
+
+    def _get_context(self, store, referee, job, args, by=None) -> dict:
         state, runtime = store.inspect_state(), store.runtime()
         names = _names(store, job)
         context = runtime.referee_context(state)
@@ -184,13 +365,27 @@ class BridgeTools:
             },
             "pending_choices": referee.all_choices(job),
             "rulings": referee.rulings(),
-            "earlier_results": [_step(s, store) for s in referee.unnarrated_steps(job)],
+            "earlier_results": [
+                _step(s, store)
+                for s in referee.unnarrated_steps(
+                    job, None if by is None else by.sender
+                )
+            ],
             "transcript": {"messages": page, "next_after_seq": next_after},
         }
         if job.mode is not None:
             result.update(_character_context(store, runtime, state, job))
             result["input"]["actor"] = _actor(store, job)
         result.update(_policy_context(store, runtime, state, job))
+        requests = HostRequests(store)
+        mine = requests.listing(job.participant_id, recent=RECENT)
+        if mine:  # the sender's own requests (section 9)
+            result["requests"] = mine
+        if by is not None:  # a job of the campaign host (section 10)
+            result["host"] = True
+            result["pending_requests"] = [
+                r for r in requests.listing() if r["state"] == "pending"
+            ]
         return result
 
     def _get_view(self, store, referee, job, args) -> dict:
@@ -397,6 +592,26 @@ def _step(step: Step, store: GameStore | None = None) -> dict:
                          "name": None if record is None else record.name}  # fmt: skip
         shown["actor"] = {"mode": step.mode, "character": character}
     return shown
+
+
+def _recorded(step: Step):
+    """An intended step's outcome so far: its recorded result if it
+    committed (an exact retry), else None; raises for a settled refusal or a
+    step that never ran."""
+    if step.status == "committed":
+        return step.result
+    if step.status == "refused":
+        raise ToolError(step.result["code"], step.result["message"])
+    if step.status == "not_committed":
+        raise ToolError("request_conflict", "That step did not run; use a new step_id.")
+    return None
+
+
+def _not_host() -> ToolError:
+    return ToolError(
+        "not_campaign_host",
+        "Only a job of the campaign host has host tools, and only while it is host.",
+    )
 
 
 def _error(code: str, message: str) -> dict:

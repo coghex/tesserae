@@ -40,6 +40,7 @@ class LobbyThread:
             self.loop = loop
             self.stop = loop.create_future()
             host = LobbyHost(registry, referee_executor_for=lambda _: executor)
+            self.lobby = host  # for tests that reach its campaigns
 
             def on_ready(uri):
                 self.uri = uri
@@ -273,6 +274,31 @@ class LobbyClientTests(unittest.TestCase):
         lines = alice.until("[idle]")
         self.assertIn("[role] You are now this campaign's host.", lines)
         self.assertIn("[table] Referee: Heard: Hello.", lines)
+        self.assertEqual(alice.finish(), 0)
+
+    def test_a_proposal_notice_is_shown_and_play_goes_on(self):
+        # A request of Alice's changes state (governance contract section 9):
+        # she is told, unasked, and the conversation is undisturbed.
+        harbor = self.campaigns["harbor"]
+        alice = self.client("alice", "--campaign", harbor)
+        alice.until("[status]")
+        with GameStore(self.root / "harbor.sqlite3") as store:
+            [link] = store.host_links()
+            with store.transaction() as db:
+                db.execute(
+                    "INSERT INTO host_requests (proposal_id, job_id, step_request_id, "
+                    "requester_participant, kind, payload, explanation, "
+                    "policy_revision, state, created_at) VALUES ('hp-0123456789ab', "
+                    "'j-1', 'ref:j-1:p-1', ?, 'campaign_setting', '{}', 'Asked.', 0, "
+                    "'denied', 'now')",
+                    (link.participant_id,),
+                )
+        service = self.host.lobby._services[harbor]
+        service.proposal_changed("hp-0123456789ab")
+        self.assertEqual(alice.until("[request]")[-1],
+                         "[request] hp-0123456789ab is now denied.")  # fmt: skip
+        alice.type("/status", "Hello.")
+        self.assertIn("[table] Referee: Heard: Hello.", alice.until("[idle]"))
         self.assertEqual(alice.finish(), 0)
 
     def _second_player(self) -> Path:

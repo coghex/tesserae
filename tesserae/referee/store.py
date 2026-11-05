@@ -19,8 +19,10 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from ..host_requests import RECENT, HostRequests
 from ..protocol import is_valid_request_id
 from ..store import (
+    HOST_SENDER_PREFIX,
     REFEREE_PARTICIPANT,
     SETUP,
     Actor,
@@ -341,7 +343,9 @@ class RefereeStore:
 
     # --- the reply (contract section 7) ----------------------------------------
 
-    def publish_reply(self, job_id: str, reply: dict) -> tuple:
+    def publish_reply(
+        self, job_id: str, reply: dict, host_sender: str | None = None
+    ) -> tuple:
         """Validate a running job's reply, then in one transaction store its
         messages, apply its choices, mark the steps it narrates and complete
         the job. Returns the stored messages. A reply that does not validate
@@ -350,7 +354,9 @@ class RefereeStore:
         A reply narrates this job's own committed steps, and the earlier
         unnarrated steps it lists in `narrated`. Each listed step's sender must
         be able to see at least one of the reply's messages: a result is only
-        acknowledged once it reaches the player it belongs to.
+        acknowledged once it reaches the player it belongs to. A host result
+        may be narrated only by a later job of the campaign host it ran for
+        (`host_sender`); a guest job's reply listing one is malformed.
         """
         with self.store.transaction() as db:
             job = self._require_running(db, job_id)
@@ -359,7 +365,9 @@ class RefereeStore:
             }
             scope = None if job.mode is None else self._scope_of(db, job)
             messages, asks, resolves = _validated_reply(reply, job, participants, scope)
-            acknowledged = self._acknowledged(db, job, reply["narrated"], messages)
+            acknowledged = self._acknowledged(
+                db, job, reply["narrated"], messages, host_sender
+            )
             now = _now()
             creation = int(job.mode == "creation")
             stored = []
@@ -426,15 +434,20 @@ class RefereeStore:
                     args: dict) -> Step:  # fmt: skip
         """Journal a step before it runs. The same step ID with the same
         kind, context, command and arguments returns the existing row; any
-        difference is `request_conflict`, across both kinds of step. A
-        player step records the job's frozen character."""
+        difference is `request_conflict`, across every kind of step. A
+        player step (`act`) and a proposal (`propose`, in the sender's
+        context) record the job's frozen character; a `host` step runs in the
+        campaign host's context `host:<player_id>` (governance contract
+        section 10)."""
         if not is_valid_request_id(step_id) or len(step_id) > MAX_STEP_ID:
             raise RefereeError(
                 "invalid_request",
                 f"A step ID is 1 to {MAX_STEP_ID} characters with no whitespace.",
             )
-        if kind not in ("act", "referee_act"):
+        if kind not in ("act", "referee_act", "propose", "host"):
             raise ValueError(f"Unknown step kind {kind!r}.")
+        if (kind == "host") != context.startswith(HOST_SENDER_PREFIX):
+            raise ValueError("A host step runs in a campaign host's context.")
         if (kind == "referee_act") != (context == REFEREE):
             raise ValueError(
                 "referee_act runs in the referee context, and act in a player's."
@@ -465,7 +478,7 @@ class RefereeStore:
                         command,
                         encoded,
                         f"ref:{job_id}:{step_id}",
-                        job.character_id if kind == "act" else None,
+                        job.character_id if kind in ("act", "propose") else None,
                     ),
                 )
             return self._step(db, job_id, step_id)
@@ -494,8 +507,7 @@ class RefereeStore:
                 "WHERE status = 'intended'"
             ).fetchall()
             for job_id, step_id, context, request_id in rows:
-                # The same reply the store's exact replay gives (record_step's shape).
-                found = self.store.lookup(ParticipantContext(context), request_id)
+                found = self._recorded(db, job_id, step_id, context, request_id)
                 if found is None:
                     db.execute(
                         "UPDATE referee_steps SET status = 'not_committed' WHERE job_id = ? AND step_id = ?",
@@ -505,24 +517,52 @@ class RefereeStore:
                     db.execute(
                         "UPDATE referee_steps SET status = 'committed', result = ? "
                         "WHERE job_id = ? AND step_id = ?",
-                        (
-                            json.dumps(found.to_message(), sort_keys=True),
-                            job_id,
-                            step_id,
-                        ),
+                        (json.dumps(found, sort_keys=True), job_id, step_id),
                     )
                 settled.append(self._step(db, job_id, step_id))
         return settled
 
-    def unnarrated_steps(self, for_job: Job | None = None) -> list[Step]:
+    def _recorded(self, db, job_id, step_id, context, request_id) -> dict | None:
+        """Where a step's effect is recorded (governance contract section 8,
+        "Replay"), as record_step would have stored it; None if it never
+        committed. A command (act, referee_act, host_act): the store's exact
+        replay reply. A proposal: the proposal. Any other host step: its
+        recorded reply."""
+        kind = db.execute(
+            "SELECT kind FROM referee_steps WHERE job_id = ? AND step_id = ?",
+            (job_id, step_id),
+        ).fetchone()[0]
+        if kind == "propose":
+            row = db.execute(
+                "SELECT proposal_id FROM host_requests WHERE step_request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return HostRequests(self.store)._view(row[0])
+        found = self.store.lookup(ParticipantContext(context), request_id)
+        if found is not None:
+            return found.to_message()
+        if kind != "host":
+            return None
+        row = db.execute(
+            "SELECT result FROM host_mutations WHERE sender = ? AND request_id = ?",
+            (context, request_id),
+        ).fetchone()
+        return None if row is None else json.loads(row[0])
+
+    def unnarrated_steps(
+        self, for_job: Job | None = None, host_sender: str | None = None
+    ) -> list[Step]:
         """Committed steps of finished jobs that no published reply has
         narrated yet, oldest first (for `get_context`). For a job of a
         character game, only those it may narrate (contract section 8): a
         creation job sees its own draft's creation results, and any other
-        job sees every result except creation results."""
-        clause, parameters = "", ()
-        if for_job is not None and for_job.mode is not None:
-            clause, parameters = _results_for(for_job)
+        job sees every result except creation results. Host results (steps
+        of kind `host`) are listed only to a job of the campaign host whose
+        sender `host_sender` they ran as, never to a guest's (governance
+        contract section 10)."""
+        clause, parameters = _visible_results(for_job, host_sender)
         rows = self.store.query(
             "SELECT s.job_id, s.step_id FROM referee_steps AS s JOIN referee_jobs AS j "
             "ON j.job_id = s.job_id JOIN referee_inputs AS i ON i.id = j.input_id "
@@ -657,7 +697,7 @@ class RefereeStore:
             "ORDER BY i.id DESC LIMIT 1",
             (participant_id, *parameters),
         )
-        return {
+        projection = {
             "state": "busy" if self.running_job() is not None else "idle",
             "choices": [{"question": choice[0][0]}] if choice else [],
             "last_seq": visible[-1]["seq"] if visible else 0,
@@ -666,6 +706,12 @@ class RefereeStore:
                 "job_id": last[0][3], "job_state": last[0][4],
             },
         }  # fmt: skip
+        # Its own requests for host decisions (governance contract section
+        # 9), once it has made any: pending ones and the latest decided.
+        requests = HostRequests(self.store).listing(participant_id, recent=RECENT)
+        if requests:
+            projection["requests"] = requests
+        return projection
 
     # --- internals ---------------------------------------------------------------
 
@@ -735,7 +781,9 @@ class RefereeStore:
             )
         }
 
-    def _acknowledged(self, db, job: Job, narrated, messages) -> list[tuple]:
+    def _acknowledged(
+        self, db, job: Job, narrated, messages, host_sender=None
+    ) -> list[tuple]:
         """The (job, step) pairs a reply's `narrated` list may acknowledge.
         Listing one of this job's own committed steps is allowed and changes
         nothing (they are narrated anyway); one that did not commit is not.
@@ -743,7 +791,7 @@ class RefereeStore:
         (`unnarrated_steps`): never a creation result outside its draft's
         creation jobs."""
         job_id = job.job_id
-        clause, parameters = ("", ()) if job.mode is None else _results_for(job)
+        clause, parameters = _visible_results(job, host_sender)
         pairs = []
         for entry in narrated:
             if entry["job_id"] == job_id:
@@ -835,6 +883,22 @@ def _message(seq: int, sender: str, audience, text: str, character_id=None,
 def _message_from(row) -> dict:
     seq, sender, audience, text, character_id, creation = row
     return _message(seq, sender, json.loads(audience), text, character_id, creation)
+
+
+def _visible_results(job: Job | None, host_sender: str | None) -> tuple[str, tuple]:
+    """The SQL condition (on a step `s` and its job's input `i`) for the
+    earlier results a job may see and narrate: host results only for a job
+    of the campaign host they ran for, whatever its mode; any other result
+    under the character game's mode rules (`_results_for`)."""
+    mode, parameters = (
+        ("", ()) if job is None or job.mode is None else _results_for(job)
+    )
+    if host_sender is None:
+        return " AND s.kind != 'host'" + mode, parameters
+    return (
+        f" AND ((s.kind = 'host' AND s.context = ?) OR (s.kind != 'host'{mode}))",
+        (host_sender, *parameters),
+    )
 
 
 def _results_for(job: Job) -> tuple[str, tuple]:

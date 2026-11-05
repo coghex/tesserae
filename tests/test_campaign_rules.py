@@ -307,13 +307,15 @@ class PolicyTests(RulesCase):
         self.assertEqual(
             [(e["id"], e["kind"], e["met"]) for e in entries],
             [("character.name", "mechanical", False), ("trait", "mechanical", True),
-             ("stamina", "mechanical", False), ("background", "narrative", None),
+             ("stamina", "mechanical", False), ("background", "narrative", False),
              ("home", "optional", None)],
         )  # fmt: skip
         stamina = entries[2]
         self.assertEqual((stamina["method"], stamina["die"]), ("roll", "1d3+1"))
         self.assertIn("Approval adds 1 starting stamina", stamina["description"])
-        self.assertIn("support", entries[4])
+        self.assertEqual(
+            entries[4]["method"], "trailhead.fact"
+        )  # recorded, never required
         general = self.rules.projection()["requirements"]
         self.assertTrue(all("met" not in e for e in general))
 

@@ -66,7 +66,9 @@ from .web import AssetsError, load_assets
 
 REGISTRY_THREADS = 4
 # Messages a campaign sends without being asked; every other one is a reply.
-_UNSOLICITED = frozenset({"revision", "message", "referee", "actor", "role"})
+_UNSOLICITED = frozenset(
+    {"revision", "message", "referee", "actor", "role", "proposal"}
+)
 _CANNOT_OPEN = "That campaign cannot be opened right now; ask the host."
 _LOGIN_FAILED = error_message("internal_error", "The host could not check the login.")
 _HOST_FAILED = "The host failed; nothing was changed. Try again."
