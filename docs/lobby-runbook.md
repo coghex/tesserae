@@ -16,8 +16,10 @@ access over the network, TLS for the lobby and remembered logins are later
 work. A campaign whose module has characters (such as the original
 [Trailhead](trailhead.md)) also has each player choose or create a character
 there, from the CLI or the browser: see the
-[character runbook](character-runbook.md). Other campaigns are entered as the
-player's participant, with no character.
+[character runbook](character-runbook.md). Each adopted campaign has a campaign host
+who sets its rules and decides guests' requests: see the
+[governance runbook](governance-runbook.md). Other campaigns are entered as
+the player's participant, with no character.
 
 ## 1. Install
 

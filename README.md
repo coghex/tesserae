@@ -38,13 +38,19 @@ play ([character contract](docs/designs/character_contract.md)). The
 [acceptance record](docs/acceptance/characters.md) shows a CLI player and a
 browser newcomer, with a scripted referee.
 
-The next [delivery plan](docs/designs/campaign_authority_design.md),
-[#131](https://github.com/coghex/tesserae/issues/131), covers campaign hosts,
-configurable requirements, guest approval requests and host sheet/world
-administration (M2-4). Later private campaign integration is tracked separately
-in [#140](https://github.com/coghex/tesserae/issues/140). Neither is implemented yet;
-the [governance contract](docs/designs/governance_contract.md) gives M2-4's
-exact rules.
+[Campaign hosts, rules and administration](docs/designs/campaign_authority_design.md)
+(M2-4, [#131](https://github.com/coghex/tesserae/issues/131)) is implemented:
+each campaign has one campaign host who sets its rules, decides guests'
+requests for exceptions, and inspects and administers its characters and
+world, from the CLI or the browser, with or without a character of its own
+([governance contract](docs/designs/governance_contract.md)). The
+[governance runbook](docs/governance-runbook.md) sets it up, and the
+[acceptance record](docs/acceptance/governance.md) shows a host with no
+character and two guests across both clients, with a scripted referee; the
+tracker closes once that record is reviewed. Later private campaign
+integration is tracked separately in
+[#140](https://github.com/coghex/tesserae/issues/140) and is not implemented
+yet.
 
 ## First executable slice
 
