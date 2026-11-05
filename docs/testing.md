@@ -37,6 +37,14 @@ For browser coverage, install `.[dev,browser-test]` and Chromium with
 TESSERAE_BROWSER_TESTS=1 python3 -m unittest discover -s tests -v
 ```
 
+CI runs browser tests in a separate job. Chromium and its system dependencies
+have a named installation step with a 12-minute timeout; the browser tests
+then have their own 5-minute timeout. Checkout, Python setup and Python package
+installation are also bounded. The step budgets total 24 minutes within a
+30-minute job limit, leaving room for runner setup and cleanup. An installation
+that exceeds its budget fails at its named step instead of consuming the tests'
+time budget. The browser test command and model-free fixtures are unchanged.
+
 ## Acceptance
 
 M2-3's mixed CLI/browser acceptance (#117) must use scripted referee input/output
