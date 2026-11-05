@@ -58,20 +58,24 @@ players may share one, and a name never selects an identity.
 
 ## 3. Create and open campaigns
 
-A campaign is an ordinary Tesserae game. Create it as usual, then register it,
-activate it and grant players access:
+A campaign is an ordinary Tesserae game. Create it as usual, then register it
+with its campaign host, activate it and grant the other players access:
 
 ```sh
 tesserae game create --database harbor.sqlite3 --module relay
 tesserae referee enable --database harbor.sqlite3      # for the AI referee
-tesserae host campaign add --registry host.sqlite3 --database harbor.sqlite3 --name Harbor
+tesserae host campaign add --registry host.sqlite3 --database harbor.sqlite3 --name Harbor --host HOST_PLAYER_ID
 tesserae host campaign activate --registry host.sqlite3 CAMPAIGN_ID
 tesserae host campaign grant --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID
 tesserae host campaign list --registry host.sqlite3
 ```
 
 The campaign ID is the game's own ID. Registration only reads the file; a new
-campaign is inactive until you activate it. A player sees a campaign only when
+campaign is inactive until you activate it. The **campaign host** (`--host`)
+is the one player with authority over the campaign; they are granted access
+with it, and may play any number of characters or none. To adopt a campaign
+registered before this version, replace a lost host, or learn what the host
+can see, read [the campaign host](host-registry.md#the-campaign-host). A player sees a campaign only when
 it is active and they have an unrevoked grant. Keep the file where you
 registered it: there is no command to change a campaign's location yet.
 
@@ -79,7 +83,7 @@ registered it: there is no command to change a campaign's location yet.
 selection creates a new participant for them in that campaign, named as in the
 registry, with no game token. To give a player an existing participant instead
 (for example their character's participant in an older game), link them before
-they first select it:
+you activate the campaign:
 
 ```sh
 tesserae participant list --database harbor.sqlite3

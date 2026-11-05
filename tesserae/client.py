@@ -127,6 +127,9 @@ class _Client:
         # archive waiting for its confirmation.
         self.character_wanted = None
         self.actor = None
+        # A campaign with a campaign host: "host" or "guest" here, else None
+        # (docs/designs/governance_contract.md section 4).
+        self.role = None
         self.roster = []
         self.shown_revision = None
         self.confirming = None
@@ -370,6 +373,16 @@ class _Client:
                     self._show(message)
                     self._back_in_lobby()
                     continue
+                if message.get("type") == "role" and "request_id" not in message:
+                    if not (
+                        message.get("version") == 1
+                        and message.get("role") in ("host", "guest")
+                    ):
+                        raise _Failure("the host sent a malformed role notice")
+                    self._show(message)
+                    if self.selection is not None:
+                        self.role = message["role"]
+                    continue
                 if message.get("type") == "actor" and self.actor is not None:
                     if not (
                         message.get("version") == 1
@@ -542,6 +555,7 @@ class _Client:
         elif sent_type == "select" and kind == "snapshot":
             self._enter(message)
         elif kind == "snapshot" and self.actor is not None:
+            self.role = message.get("role")
             self._show(message)
             self._set_actor(message["actor"])
             if message["actor"]["mode"] == "creation":
@@ -599,7 +613,7 @@ class _Client:
             self.shown_revision = None
         elif actor["mode"] == "creation":
             return  # the same draft, renamed or revised: no news
-        self._note(_actor_line(actor))
+        self._note(_actor_line(actor, self.role))
 
     def _lobby_reply(self, message: dict):
         self.catalog = message["campaigns"]
@@ -611,6 +625,7 @@ class _Client:
         self.session = _session_of(snapshot)
         self.referee = isinstance(snapshot.get("referee"), dict)
         self.actor = snapshot.get("actor")  # None: a campaign without characters
+        self.role = snapshot.get("role")
         self.roster, self.shown_revision, self.confirming = [], None, None
         self.sending, self.last_say, self.reported_input = self.saved.pop(
             self._retry_key(), ({}, None, None)
@@ -650,6 +665,7 @@ class _Client:
         )
         self.sending, self.last_say, self.reported_input = {}, None, None
         self.selection, self.referee, self.actor = None, False, None
+        self.role = None
         self.roster, self.shown_revision, self.confirming = [], None, None
         if not quiet:
             self._note(
@@ -877,6 +893,10 @@ def _readable(message: dict) -> list[str]:
         return [f"[character] Your character was {why} on another connection."]
     if kind == "left":
         return ["[left] That campaign is no longer available to you."]
+    if kind == "role":
+        if message["role"] == "host":
+            return ["[role] You are now this campaign's host."]
+        return ["[role] You are now a guest in this campaign."]
     if kind == "message":
         return [_line(message)]
     if kind == "messages":
@@ -985,16 +1005,18 @@ def _label(character) -> str:
     return character["name"] or "an unnamed character"
 
 
-def _actor_line(actor: dict) -> str:
-    """Where the connection now is (character contract section 15)."""
+def _actor_line(actor: dict, role: str | None = None) -> str:
+    """Where the connection now is (character contract section 15). A
+    guest's creation is also the campaign host's to read."""
     character = actor["character"]
     if actor["mode"] == "play":
         return f"[character] playing as {character['name']}"
     if actor["mode"] == "creation":
+        private = "you and the campaign host" if role == "guest" else "you"
         return (
             f"[character] creating {_label(character)}, revision "
-            f"{character['draft_revision']}; private to you. /sheet shows it, "
-            "/approve completes it."
+            f"{character['draft_revision']}; private to {private}. /sheet shows "
+            "it, /approve completes it."
         )
     return (
         "[character] no character selected; ask setup questions, /character N "

@@ -1,6 +1,8 @@
 """Local host identities and campaign access, separate from game state.
 
-One registry/connection per thread. Short authorization guards use rollback
+Each campaign may designate one campaign host: a host player with an active
+grant to it (docs/designs/governance_contract.md section 3). One
+registry/connection per thread. Short authorization guards use rollback
 journal read locks to order protected operations before access revocation.
 Never hold one over model execution or a human decision; this is not a
 transaction spanning the registry and a campaign database.
@@ -19,7 +21,7 @@ from .credentials import token_digest
 from .store import check_name, inspect_game_id
 
 APPLICATION_ID = 0x54524547  # TREG, distinct from a game store
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SCHEMA = """
 CREATE TABLE host (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), host_id TEXT NOT NULL);
 CREATE TABLE players (player_id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -39,12 +41,41 @@ CREATE TABLE memberships (
     PRIMARY KEY (campaign_id, player_id)
 );
 """
-_COLUMNS = {
+# Schema 1 to 2: the campaign host (governance contract section 3). New
+# registries are made at schema 1 and upgraded, so both have one layout.
+_UPGRADE_2 = """
+ALTER TABLE campaigns ADD COLUMN host_player_id TEXT REFERENCES players(player_id);
+CREATE TABLE campaign_host_changes (
+    id INTEGER PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES campaigns(campaign_id),
+    from_player_id TEXT,
+    to_player_id TEXT NOT NULL REFERENCES players(player_id),
+    by TEXT NOT NULL,
+    request_id TEXT,
+    changed_at TEXT NOT NULL,
+    UNIQUE (campaign_id, by, request_id)
+);
+"""
+OPERATOR = "operator"  # `by` for a designation made with `tesserae host`
+_COLUMNS_1 = {
     "host": ["singleton", "host_id"],
     "players": ["player_id", "name", "created_at"],
     "credentials": ["id", "player_id", "digest", "issued_at", "revoked_at"],
     "campaigns": ["campaign_id", "path", "name", "active", "created_at"],
     "memberships": ["campaign_id", "player_id", "granted_at", "revoked_at"],
+}
+_COLUMNS = {
+    **_COLUMNS_1,
+    "campaigns": [*_COLUMNS_1["campaigns"], "host_player_id"],
+    "campaign_host_changes": [
+        "id",
+        "campaign_id",
+        "from_player_id",
+        "to_player_id",
+        "by",
+        "request_id",
+        "changed_at",
+    ],
 }
 
 
@@ -58,6 +89,14 @@ class CredentialRevoked(RegistryError):
 
 class CampaignUnavailable(RegistryError):
     """The campaign is unknown, inactive or not granted to this player."""
+
+
+class HostRefused(RegistryError):
+    """A campaign host transfer was refused; `code` is its protocol error."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -88,7 +127,8 @@ def _digest(token):
 
 class HostRegistry:
     def __init__(self, path):
-        """Open and validate an existing registry; never create or migrate one."""
+        """Open and validate an existing registry, upgrading schema 1 in one
+        transaction; never create one."""
         self.path = Path(path).expanduser().resolve()
         if not self.path.is_file():
             raise RegistryError("No host registry at that path; use 'host init' first.")
@@ -114,7 +154,7 @@ class HostRegistry:
             connection.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
             connection.execute("INSERT INTO host VALUES (1, ?)", (str(uuid.uuid4()),))
             connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.execute("PRAGMA user_version = 1")
             connection.commit()
             connection.close()
             connection = None
@@ -130,18 +170,15 @@ class HostRegistry:
         connection = self._connection
         if connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
             raise RegistryError("Not a Tesserae host registry; refusing to modify it.")
+        if connection.execute("PRAGMA journal_mode").fetchone()[0] != "delete":
+            raise RegistryError("Host registry requires DELETE rollback journal mode.")
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version != SCHEMA_VERSION:
+        if version == 1:
+            self._check_columns(_COLUMNS_1)  # nothing damaged is upgraded
+            self._upgrade()
+        elif version != SCHEMA_VERSION:
             raise RegistryError(f"Unsupported host registry schema version {version}.")
-        for table, expected in _COLUMNS.items():
-            actual = [
-                row[0]
-                for row in connection.execute(
-                    "SELECT name FROM pragma_table_info(?)", (table,)
-                )
-            ]
-            if actual != expected:
-                raise RegistryError(f"Host registry table {table!r} is damaged.")
+        self._check_columns(_COLUMNS)
         rows = connection.execute("SELECT singleton, host_id FROM host").fetchall()
         if len(rows) != 1 or rows[0][0] != 1:
             raise RegistryError("Host registry must contain exactly one host.")
@@ -151,8 +188,33 @@ class HostRegistry:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise RegistryError("Host registry has an invalid host ID.") from None
-        if connection.execute("PRAGMA journal_mode").fetchone()[0] != "delete":
-            raise RegistryError("Host registry requires DELETE rollback journal mode.")
+
+    def _check_columns(self, tables):
+        for table, expected in tables.items():
+            actual = [
+                row[0]
+                for row in self._connection.execute(
+                    "SELECT name FROM pragma_table_info(?)", (table,)
+                )
+            ]
+            if actual != expected:
+                raise RegistryError(f"Host registry table {table!r} is damaged.")
+
+    def _upgrade(self):
+        """Schema 1 to 2, whole or not at all; another opener may have
+        upgraded it first."""
+        connection = self._connection
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            if connection.execute("PRAGMA user_version").fetchone()[0] == 1:
+                for statement in _UPGRADE_2.split(";"):
+                    if statement.strip():
+                        connection.execute(statement)
+                connection.execute("PRAGMA user_version = 2")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
 
     def close(self):
         self._connection.close()
@@ -258,21 +320,110 @@ class HostRegistry:
             is not None
         )
 
-    def register_campaign(self, path, name):
+    def register_campaign(self, path, name, host=None):
+        """Register a game file, inactive, reading it only. With `host`, the
+        same transaction grants that player the campaign and designates it
+        the campaign host; without, the campaign is not yet adopted."""
         check_name(name)
         path = Path(path).expanduser().resolve(strict=True)
         campaign_id = inspect_game_id(path)
         with self._transaction(write=True):
+            if host is not None:
+                self._require_player(host)
             if self._connection.execute(
                 "SELECT 1 FROM campaigns WHERE campaign_id = ? OR path = ?",
                 (campaign_id, str(path)),
             ).fetchone():
                 raise RegistryError("Campaign identity or path is already registered.")
             self._connection.execute(
-                "INSERT INTO campaigns VALUES (?, ?, ?, 0, ?)",
+                "INSERT INTO campaigns VALUES (?, ?, ?, 0, ?, NULL)",
                 (campaign_id, str(path), name, _now()),
             )
+            if host is not None:
+                self._designate(campaign_id, None, host, OPERATOR)
         return campaign_id
+
+    def _designate(
+        self, campaign_id, from_player_id, to_player_id, by, request_id=None
+    ):
+        """Within a write transaction: grant (if needed) and designate."""
+        self._grant(campaign_id, to_player_id)
+        self._connection.execute(
+            "UPDATE campaigns SET host_player_id = ? WHERE campaign_id = ?",
+            (to_player_id, campaign_id),
+        )
+        self._connection.execute(
+            "INSERT INTO campaign_host_changes (campaign_id, from_player_id, "
+            "to_player_id, by, request_id, changed_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (campaign_id, from_player_id, to_player_id, by, request_id, _now()),
+        )
+
+    def set_host(self, campaign_id, player_id) -> bool:
+        """The operator designates the campaign host: adopting a campaign
+        with none, or replacing it (recovery). Grants the player if needed.
+        False if that player already was the host (its grant is restored)."""
+        with self._transaction(write=True):
+            current = self._campaign(campaign_id)["host_player_id"]
+            self._require_player(player_id)
+            if current == player_id:
+                self._grant(campaign_id, player_id)
+                return False
+            self._designate(campaign_id, current, player_id, OPERATOR)
+            return True
+
+    def transfer_host(self, context, campaign_id, player_id, request_id) -> bool:
+        """The current campaign host hands the campaign to `player_id`, a
+        player with an active grant and credential, in one registry write.
+        True if transferred now, False for an exact replay (answered to the
+        former host too). Raises CredentialRevoked, CampaignUnavailable or
+        HostRefused; a refusal changes nothing."""
+        with self._transaction(write=True):
+            self._require_context(context)
+            campaign = self._granted_campaign(context, campaign_id)
+            recorded = self._connection.execute(
+                "SELECT to_player_id FROM campaign_host_changes "
+                "WHERE campaign_id = ? AND by = ? AND request_id = ?",
+                (campaign_id, context.player_id, request_id),
+            ).fetchone()
+            if recorded is not None:
+                if recorded[0] != player_id:
+                    raise HostRefused(
+                        "request_conflict",
+                        "That request ID was already used for another transfer.",
+                    )
+                return False
+            if campaign["host_player_id"] != context.player_id:
+                raise HostRefused(
+                    "not_campaign_host", "Only the campaign host can do that."
+                )
+            if player_id == context.player_id:
+                raise HostRefused(
+                    "invalid_request", "You are already the campaign host."
+                )
+            if not self._connection.execute(
+                "SELECT 1 FROM memberships m JOIN credentials c ON c.player_id = m.player_id "
+                "WHERE m.campaign_id = ? AND m.player_id = ? AND m.revoked_at IS NULL "
+                "AND c.revoked_at IS NULL",
+                (campaign_id, player_id),
+            ).fetchone():
+                raise HostRefused(
+                    "invalid_request",
+                    "That player cannot become the campaign host: they need access "
+                    "to this campaign and an active token.",
+                )
+            self._designate(
+                campaign_id, context.player_id, player_id, context.player_id, request_id
+            )
+            return True
+
+    def host_changes(self, campaign_id):
+        """Operator records: every designation of this campaign, oldest first."""
+        self._campaign(campaign_id)
+        return self._records(
+            "SELECT from_player_id, to_player_id, by, request_id, changed_at "
+            "FROM campaign_host_changes WHERE campaign_id = ? ORDER BY id",
+            (campaign_id,),
+        )
 
     def campaigns(self):
         """Operator records including private paths; never a player payload."""
@@ -300,18 +451,27 @@ class HostRegistry:
         with self._transaction(write=True):
             self._campaign(campaign_id)
             self._require_player(player_id)
-            self._connection.execute(
-                "INSERT INTO memberships VALUES (?, ?, ?, NULL) "
-                "ON CONFLICT (campaign_id, player_id) DO UPDATE SET "
-                "granted_at = CASE WHEN revoked_at IS NULL THEN granted_at ELSE excluded.granted_at END, "
-                "revoked_at = NULL",
-                (campaign_id, player_id, _now()),
-            )
+            self._grant(campaign_id, player_id)
+
+    def _grant(self, campaign_id, player_id):
+        self._connection.execute(
+            "INSERT INTO memberships VALUES (?, ?, ?, NULL) "
+            "ON CONFLICT (campaign_id, player_id) DO UPDATE SET "
+            "granted_at = CASE WHEN revoked_at IS NULL THEN granted_at ELSE excluded.granted_at END, "
+            "revoked_at = NULL",
+            (campaign_id, player_id, _now()),
+        )
 
     def revoke_access(self, campaign_id, player_id):
+        """Revoke a grant; never the campaign host's own (transfer first)."""
         with self._transaction(write=True):
-            self._campaign(campaign_id)
+            campaign = self._campaign(campaign_id)
             self._require_player(player_id)
+            if campaign["host_player_id"] == player_id:
+                raise RegistryError(
+                    "That player is the campaign host; transfer the campaign host "
+                    "first (host campaign set-host)."
+                )
             return (
                 self._connection.execute(
                     "UPDATE memberships SET revoked_at = ? "
@@ -324,8 +484,10 @@ class HostRegistry:
     def members(self, campaign_id):
         self._campaign(campaign_id)
         return self._records(
-            "SELECT m.player_id, p.name, m.granted_at, m.revoked_at "
+            "SELECT m.player_id, p.name, m.granted_at, m.revoked_at, "
+            "m.player_id IS c.host_player_id AS host "
             "FROM memberships m JOIN players p ON p.player_id = m.player_id "
+            "JOIN campaigns c ON c.campaign_id = m.campaign_id "
             "WHERE m.campaign_id = ? ORDER BY m.player_id",
             (campaign_id,),
         )
@@ -354,19 +516,24 @@ class HostRegistry:
 
     @contextmanager
     def authorize_campaign(self, context, campaign_id):
-        """Yield an operator-only record for a short protected operation.
+        """Yield an operator-only record for a short protected operation,
+        with the campaign's `host_player_id` read in the same transaction.
 
-        In DELETE journal mode the read lock blocks revocation COMMIT until
-        this exits. Not reentrant; use a separate registry per worker thread.
-        This neither opens a game nor grants game participant authority.
+        In DELETE journal mode the read lock blocks revocation, set-host and
+        transfer COMMIT until this exits. Not reentrant; use a separate
+        registry per worker thread. This neither opens a game nor grants game
+        participant authority.
         """
         with self._transaction():
             self._require_context(context)
-            row = self._connection.execute(
-                "SELECT c.* FROM campaigns c JOIN memberships m ON c.campaign_id = m.campaign_id "
-                "WHERE c.campaign_id = ? AND c.active = 1 AND m.player_id = ? AND m.revoked_at IS NULL",
-                (campaign_id, context.player_id),
-            ).fetchone()
-            if row is None:
-                raise CampaignUnavailable("Campaign is not available to this player.")
-            yield dict(row)
+            yield self._granted_campaign(context, campaign_id)
+
+    def _granted_campaign(self, context, campaign_id) -> dict:
+        row = self._connection.execute(
+            "SELECT c.* FROM campaigns c JOIN memberships m ON c.campaign_id = m.campaign_id "
+            "WHERE c.campaign_id = ? AND c.active = 1 AND m.player_id = ? AND m.revoked_at IS NULL",
+            (campaign_id, context.player_id),
+        ).fetchone()
+        if row is None:
+            raise CampaignUnavailable("Campaign is not available to this player.")
+        return dict(row)

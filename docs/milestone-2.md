@@ -88,8 +88,12 @@ inspection/editing of sheets and world data. The host can own no characters
 and still administer from either CLI or browser. The host can inspect private
 conversations and referee preparation; other guests retain their privacy.
 
-These are agreed product decisions, not delivered features. The filed
-public slices begin with exact contracts, then authority, configuration,
+These are agreed product decisions. Delivered so far: GOV-2
+([#133](https://github.com/coghex/tesserae/issues/133)), one campaign host per
+lobby campaign, with operator setup, adoption, recovery and transfer, and the
+host's inspection of every sheet, conversation and the referee's preparation
+through the protocol; the host's client controls come with GOV-6 and GOV-7.
+The filed public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
 acceptance (#132–#139); the
 [governance contract](designs/governance_contract.md) (GOV-1) gives their

@@ -29,7 +29,7 @@ should begin with characters (section 3).
 ```sh
 tesserae game create --database trail.sqlite3 --module trailhead
 tesserae referee enable --database trail.sqlite3
-tesserae host campaign add --registry host.sqlite3 --database trail.sqlite3 --name Trail
+tesserae host campaign add --registry host.sqlite3 --database trail.sqlite3 --name Trail --host HOST_PLAYER_ID
 tesserae host campaign activate --registry host.sqlite3 CAMPAIGN_ID
 tesserae host campaign grant --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID
 ```
@@ -59,11 +59,13 @@ state holds exactly those characters
 ```sh
 tesserae game create --database trail.sqlite3 --module trailhead --seed trail-seed.json
 tesserae participant list --database trail.sqlite3
+tesserae host campaign add --registry host.sqlite3 --database trail.sqlite3 --name Trail --host HOST_PLAYER_ID
 tesserae host campaign link --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID p_a1a1a1a1a1a1a1a1
+tesserae host campaign activate --registry host.sqlite3 CAMPAIGN_ID
 ```
 
-Link each host player to their seeded participant **before** they first
-select the campaign, as for any existing participant
+Link each host player to their seeded participant **before** you activate
+the campaign, as for any existing participant
 ([registry guide](host-registry.md#link-existing-participants)): the
 characters belong to that participant, and the link is how the player
 reaches them. Seeded characters are ready and already in the scene; drafts
@@ -97,7 +99,9 @@ character; Settings shows it, with **Change character**.
 ## 5. Creating and approving
 
 Creation is a conversation with the referee, private to you, one answer at a
-time; the referee is free for other players between your answers.
+time; the referee is free for other players between your answers. In a
+campaign with a [campaign host](host-registry.md#the-campaign-host), the host
+can also read it (and every sheet); the clients say so while you create.
 
 - **Start:** `/create [NAME]` (CLI) or **Create character** (browser), the
   name optional. The new draft is selected.

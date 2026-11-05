@@ -8,7 +8,11 @@ decisions (D-25) into exact rules for GOV-2 to GOV-7: where the campaign host
 is recorded and how it is checked, the campaign settings document, the
 optional module capabilities, host inspection and administration, guest
 requests and host decisions, and the messages and client states that carry
-them. Nothing here is implemented yet.
+them.
+
+Implemented so far: GOV-2 ([#133](https://github.com/coghex/tesserae/issues/133))
+delivers sections 3 and 4, the snapshot's `role`, and section 7's `host_view`
+and `host_messages`. Everything else here is not implemented yet.
 
 It extends the [lobby contract](lobby_contract.md), the
 [character contract](character_contract.md) and the
@@ -191,7 +195,11 @@ handled after a transfer commits is checked then, and refused.
 the host sends it, unsolicited, `{"type": "role", "role": "host" | "guest"}`,
 following `left`'s and `actor`'s rules: never in place of a reply, decided
 under the recipient's send lock, and only while its access holds. A client
-drops every host-only datum it holds on a `role` of `guest`.
+drops every host-only datum it holds on a `role` of `guest`. A transfer
+tells every connection of the campaign at once. An operator's `set-host`
+is made by another process, so each connection learns of it at its next
+guarded check (its next request or delivery), and that request's reply is
+sent first.
 
 ## 5. The campaign settings document
 
@@ -385,10 +393,13 @@ All host reads are guarded (section 4) and refused to guests with
 | Message | Reply |
 |---|---|
 | `host_view` | `{"type": "host_view", "revision", "inspect", "characters": [every character with owner, phase, sheet], "participants", "pending_choices", "rulings", "policy": {"revision", "document"}}` |
-| `host_messages {after_seq}` | Every conversation message after `after_seq`, private and creation ones included, in the referee transcript's pages (up to 200 messages or 32 KiB), with `next_after_seq` |
+| `host_messages {after_seq}` | Every conversation message after `after_seq`, private and creation ones included, in the referee transcript's pages (up to 200 messages or 32 KiB), with `next_after_seq`. Each is a conversation message as its recipients saw it; a private one adds `to`, `[{"participant_id", "name"}]` |
 | `host_operations` | `Administration.describe(state)` with the game revision, so clients can offer each operation and its arguments (section 6) |
 | `host_audit {after}` | The audit records (section 8) after an ID, paged as above |
 
+- Until a settings document exists (GOV-3), `host_view`'s `policy` is null.
+  Without `Administration` (GOV-4), `inspect` is `referee_context(state)`, or
+  each participant's view as the referee's `get_context` shows them.
 - Host data is never pushed: the host asks. Ordinary guest projections,
   snapshots, `messages` and deliveries are unchanged, so the host's own
   connection still sees only its own private messages in its ordinary
@@ -652,8 +663,8 @@ fit must raise a scoped public paging requirement; this contract adds none.
 ## 13. Messages
 
 All version 1, inside a selected lobby campaign. Each reply follows the
-existing pairing rules; errors carry the message's `request_id`, or its
-`type` for a read without one.
+existing pairing rules; errors carry the message's `request_id`, or null
+for a read without one (paired by order, as every reply is).
 
 | Message | Fields | Who | Reply |
 |---|---|---|---|
@@ -671,11 +682,11 @@ existing pairing rules; errors carry the message's `request_id`, or its
 | `rules_reject` | `request_id`, `revision` | Host | `rules {revision, state}` |
 | `request_decide` | `request_id`, `proposal_id`, `decision`, `note` | Host | `proposal {proposal_id, state, effect}` |
 | `request_cancel` | `request_id`, `proposal_id` | The requester | `proposal {proposal_id, state}` |
-| `campaign_host_transfer` | `request_id`, `player_id` | Host | `role {role: "guest"}` for the old host |
+| `campaign_host_transfer` | `request_id`, `player_id` | Host | `role {role: "guest", request_id}` for the old host; `invalid_request` if the player is the host already or lacks an active grant or token |
 
 Every mutation replays exactly (section 8, "Replay"). The snapshot of a
-campaign with a designated host gains `role` (`host` or `guest`) and
-`policy_revision`; its referee projection gains `requests` (section 9).
+campaign with a designated host gains `role` (`host` or `guest`) and, from
+GOV-3, `policy_revision`; its referee projection gains `requests` (section 9).
 Unsolicited: `role` (section 4) and `proposal` (section 9).
 
 New errors (a host mutation during a job reuses `referee_busy`; a reused

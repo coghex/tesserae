@@ -259,6 +259,22 @@ class LobbyClientTests(unittest.TestCase):
         self.host.release.set()
         self.assertEqual((alice.finish(), other.finish()), (0, 0))
 
+    def test_a_role_notice_is_shown_and_play_goes_on(self):
+        # The campaign host changes under a connected guest (governance
+        # contract section 4); host controls themselves are GOV-6.
+        harbor = self.campaigns["harbor"]
+        with self.registry() as registry:
+            registry.set_host(harbor, self.players["bob"])
+        alice = self.client("alice", "--campaign", harbor)
+        alice.until("[status]")
+        with self.registry() as registry:
+            registry.set_host(harbor, self.players["alice"])
+        alice.type("/status", "Hello.")
+        lines = alice.until("[idle]")
+        self.assertIn("[role] You are now this campaign's host.", lines)
+        self.assertIn("[table] Referee: Heard: Hello.", lines)
+        self.assertEqual(alice.finish(), 0)
+
     def _second_player(self) -> Path:
         token, path = new_token(), self.root / "carol.token"
         with self.registry() as registry:

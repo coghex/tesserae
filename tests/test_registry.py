@@ -11,7 +11,15 @@ from pathlib import Path
 
 from tesserae.builtin import DICE_RUNTIME
 from tesserae.credentials import new_token
-from tesserae.registry import HostRegistry, RegistryError
+from tesserae.registry import (
+    _SCHEMA,
+    CampaignUnavailable,
+    CredentialRevoked,
+    HostRefused,
+    HostRegistry,
+    RegistryError,
+)
+from tesserae.registry import APPLICATION_ID as REGISTRY_ID
 from tesserae.store import (
     APPLICATION_ID,
     GameStore,
@@ -294,3 +302,208 @@ class RegistryTests(unittest.TestCase):
             with self.registry.authorize_campaign(self.context, self.campaign):
                 raise RuntimeError("operation failed")
         self.assertTrue(self.registry.revoke_access(self.campaign, self.player))
+
+
+class CampaignHostTests(unittest.TestCase):
+    """The campaign host designation (governance contract section 3)."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.path = self.root / "host.sqlite3"
+        self.registry = self.enterContext(HostRegistry.create(self.path))
+        self.tokens = {name: new_token() for name in ("hana", "gil", "dora")}
+        self.ids = {
+            name: self.registry.add_player(name.title(), token)
+            for name, token in self.tokens.items()
+        }
+        self.game = self.root / "game.sqlite3"
+        with GameStore.create(self.game, DICE_RUNTIME):
+            pass
+        self.campaign = self.registry.register_campaign(
+            self.game, "Harbor", self.ids["hana"]
+        )
+        self.registry.grant(self.campaign, self.ids["gil"])
+        self.registry.set_campaign_active(self.campaign, True)
+
+    def context(self, name):
+        return self.registry.authenticate(self.tokens[name])
+
+    def host(self):
+        return self.registry.campaign(self.campaign)["host_player_id"]
+
+    def transfer(self, sender, to, request_id="t-1"):
+        return self.registry.transfer_host(
+            self.context(sender), self.campaign, self.ids.get(to, to), request_id
+        )
+
+    def test_schema_1_registry_is_upgraded_in_place_and_kept(self):
+        old = self.root / "old.sqlite3"
+        with sqlite3.connect(old) as connection:
+            connection.executescript(_SCHEMA)
+            connection.execute("INSERT INTO host VALUES (1, ?)", (str(uuid.uuid4()),))
+            connection.execute(
+                "INSERT INTO players VALUES ('u_0123456789abcdef', 'Ann', 'then')"
+            )
+            connection.execute(
+                "INSERT INTO campaigns VALUES (?, '/old/path', 'Old', 1, 'then')",
+                (str(uuid.uuid4()),),
+            )
+            connection.execute(f"PRAGMA application_id = {REGISTRY_ID}")
+            connection.execute("PRAGMA user_version = 1")
+        connection.close()
+        damaged = self.root / "damaged.sqlite3"
+        shutil.copyfile(old, damaged)
+        with sqlite3.connect(damaged) as connection:
+            connection.execute("DROP TABLE memberships")
+        connection.close()
+        before = damaged.read_bytes()
+        with self.assertRaises(RegistryError):
+            HostRegistry(damaged)
+        self.assertEqual(damaged.read_bytes(), before)  # never half-upgraded
+        with HostRegistry(old) as upgraded:
+            [campaign] = upgraded.campaigns()
+            self.assertEqual(
+                (campaign["name"], campaign["host_player_id"]), ("Old", None)
+            )
+            self.assertEqual(upgraded.players()[0]["name"], "Ann")
+            self.assertEqual(upgraded.host_changes(campaign["campaign_id"]), [])
+        with sqlite3.connect(old) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (2,))
+        connection.close()
+        HostRegistry(old).close()  # opening it again changes nothing
+
+    def test_registration_with_a_host_grants_and_designates_it_at_once(self):
+        self.assertEqual(self.host(), self.ids["hana"])
+        [change] = self.registry.host_changes(self.campaign)
+        self.assertEqual(
+            (change["from_player_id"], change["to_player_id"], change["by"]),
+            (None, self.ids["hana"], "operator"),
+        )
+        members = {
+            m["player_id"]: m["host"] for m in self.registry.members(self.campaign)
+        }
+        self.assertEqual(members, {self.ids["hana"]: 1, self.ids["gil"]: 0})
+        other = self.root / "other.sqlite3"
+        with GameStore.create(other, DICE_RUNTIME):
+            pass
+        with self.assertRaises(RegistryError):
+            self.registry.register_campaign(other, "Other", "u_0000000000000000")
+        self.assertEqual(len(self.registry.campaigns()), 1)  # nothing registered
+        legacy = self.registry.register_campaign(other, "Other")
+        self.assertIsNone(self.registry.campaign(legacy)["host_player_id"])
+
+    def test_the_host_grant_stays_until_another_player_is_host(self):
+        with self.assertRaisesRegex(RegistryError, "transfer the campaign host first"):
+            self.registry.revoke_access(self.campaign, self.ids["hana"])
+        # A revoked or rotated credential keeps the designation; nobody is
+        # promoted in its place.
+        self.registry.revoke_credential(self.ids["hana"])
+        self.assertEqual(self.host(), self.ids["hana"])
+        self.tokens["hana"] = new_token()
+        self.registry.rotate_credential(self.ids["hana"], self.tokens["hana"])
+        self.assertEqual(self.host(), self.ids["hana"])
+        context = self.context("hana")
+        with self.registry.authorize_campaign(context, self.campaign) as campaign:
+            self.assertEqual(campaign["host_player_id"], self.ids["hana"])
+        self.registry.set_campaign_active(self.campaign, False)  # allowed
+        self.assertEqual(self.host(), self.ids["hana"])
+
+    def test_operator_adopts_and_recovers_with_set_host(self):
+        other = self.root / "legacy.sqlite3"
+        with GameStore.create(other, DICE_RUNTIME):
+            pass
+        legacy = self.registry.register_campaign(other, "Legacy")
+        self.assertTrue(self.registry.set_host(legacy, self.ids["dora"]))  # adopted
+        self.assertEqual(
+            self.registry.campaign(legacy)["host_player_id"], self.ids["dora"]
+        )
+        self.assertEqual(
+            [m["player_id"] for m in self.registry.members(legacy)], [self.ids["dora"]]
+        )
+        self.registry.revoke_credential(self.ids["hana"])  # a lost host token
+        self.assertTrue(self.registry.set_host(self.campaign, self.ids["gil"]))
+        self.assertFalse(self.registry.set_host(self.campaign, self.ids["gil"]))
+        self.assertTrue(self.registry.revoke_access(self.campaign, self.ids["hana"]))
+        with self.assertRaises(RegistryError):
+            self.registry.set_host(self.campaign, "u_0000000000000000")
+        self.assertEqual(
+            [(c["from_player_id"], c["to_player_id"], c["by"])
+             for c in self.registry.host_changes(self.campaign)],
+            [(None, self.ids["hana"], "operator"),
+             (self.ids["hana"], self.ids["gil"], "operator")],
+        )  # fmt: skip
+
+    def test_transfer_replays_exactly_and_refuses_everything_else(self):
+        for sender, to, code in (
+            ("gil", "hana", "not_campaign_host"),  # a guest
+            ("hana", "hana", "invalid_request"),  # already the host
+            ("hana", "dora", "invalid_request"),  # no grant
+            ("hana", "u_0000000000000000", "invalid_request"),  # no such player
+        ):
+            with self.subTest(sender=sender, to=to):
+                with self.assertRaises(HostRefused) as refused:
+                    self.transfer(sender, to)
+                self.assertEqual(refused.exception.code, code)
+        self.registry.grant(self.campaign, self.ids["dora"])
+        self.registry.revoke_credential(self.ids["dora"])
+        with self.assertRaises(HostRefused):  # no active credential
+            self.transfer("hana", "dora")
+        self.assertEqual(self.host(), self.ids["hana"])
+        self.assertEqual(len(self.registry.host_changes(self.campaign)), 1)
+
+        self.assertTrue(self.transfer("hana", "gil"))
+        self.assertEqual(self.host(), self.ids["gil"])
+        # The former host's exact retry is its recorded reply, even as a guest.
+        self.assertFalse(self.transfer("hana", "gil"))
+        with self.assertRaises(HostRefused) as conflict:
+            self.transfer("hana", "dora")
+        self.assertEqual(conflict.exception.code, "request_conflict")
+        with self.assertRaises(HostRefused) as guest:
+            self.transfer("hana", "gil", "t-2")
+        self.assertEqual(guest.exception.code, "not_campaign_host")
+        self.assertTrue(self.transfer("gil", "hana"))  # its own namespace
+        self.assertEqual(
+            [(c["by"], c["request_id"])
+             for c in self.registry.host_changes(self.campaign)],
+            [("operator", None), (self.ids["hana"], "t-1"), (self.ids["gil"], "t-1")],
+        )  # fmt: skip
+
+    def test_transfer_needs_the_senders_access(self):
+        context = self.context("hana")
+        self.registry.set_campaign_active(self.campaign, False)
+        with self.assertRaises(CampaignUnavailable):
+            self.registry.transfer_host(context, self.campaign, self.ids["gil"], "t")
+        self.registry.set_campaign_active(self.campaign, True)
+        self.registry.revoke_credential(self.ids["hana"])
+        with self.assertRaises(CredentialRevoked):
+            self.registry.transfer_host(context, self.campaign, self.ids["gil"], "t")
+        self.assertEqual(self.host(), self.ids["hana"])
+
+    def test_guard_orders_a_transfer_wholly_after_the_protected_operation(self):
+        started, done = threading.Event(), threading.Event()
+        errors = []
+
+        def transfer():
+            try:
+                with HostRegistry(self.path) as registry:
+                    context = registry.authenticate(self.tokens["hana"])
+                    started.set()
+                    registry.transfer_host(
+                        context, self.campaign, self.ids["gil"], "t-1"
+                    )
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                done.set()
+
+        context = self.context("hana")
+        with self.registry.authorize_campaign(context, self.campaign) as campaign:
+            thread = threading.Thread(target=transfer)
+            thread.start()
+            self.assertTrue(started.wait(2))
+            self.assertFalse(done.wait(0.2), "A transfer committed during the guard")
+            self.assertEqual(campaign["host_player_id"], self.ids["hana"])
+        thread.join(6)
+        self.assertEqual(errors, [])
+        with self.registry.authorize_campaign(context, self.campaign) as campaign:
+            self.assertEqual(campaign["host_player_id"], self.ids["gil"])

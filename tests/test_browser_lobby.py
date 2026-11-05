@@ -382,6 +382,41 @@ class AccessTests(LobbyCase):
         self.assertEqual(self.errors, [])
 
 
+class CampaignHostTests(LobbyCase):
+    def test_a_role_change_leaves_the_page_playing(self):
+        # Bob hands Harbor to Alice while her page plays in it, and she is
+        # told (governance contract section 4); host controls are GOV-7.
+        harbor = self.campaigns["harbor"]
+        with self.registry() as registry:
+            registry.set_host(harbor, self.players["bob"])
+            registry.grant(harbor, self.players["alice"])
+        page = self.logged_in("alice")
+        self.enter(page, "Harbor")
+        with connect(self.host.uri) as bob:
+            bob.send(
+                json.dumps({"version": 1, "type": "login", "token": self.tokens["bob"]})
+            )
+            bob.recv()
+            bob.send(
+                json.dumps({"version": 1, "type": "select", "campaign_id": harbor})
+            )
+            self.assertEqual(json.loads(bob.recv())["role"], "host")
+            bob.send(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "type": "campaign_host_transfer",
+                        "request_id": "t-1",
+                        "player_id": self.players["alice"],
+                    }
+                )
+            )
+            self.assertEqual(json.loads(bob.recv())["role"], "guest")
+        self.say(page, "Still mine?")
+        self.expect_answered(page, "Heard in Harbor: Still mine?")
+        self.assertEqual(self.errors, [])
+
+
 class ReconnectTests(LobbyCase):
     def test_reconnect_enters_the_same_campaign_and_never_another_participant(self):
         page = self.logged_in("alice")

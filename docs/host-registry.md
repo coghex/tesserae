@@ -34,14 +34,18 @@ tesserae host player add --registry host.sqlite3 --name Alice --token-file alice
 tesserae host player list --registry host.sqlite3
 
 tesserae game create --database harbor.sqlite3 --module dice
-tesserae host campaign add --registry host.sqlite3 --database harbor.sqlite3 --name Harbor
+tesserae host campaign add --registry host.sqlite3 --database harbor.sqlite3 --name Harbor --host PLAYER_ID
 tesserae host campaign list --registry host.sqlite3
 ```
 
 `init` exclusively creates a new registry, with private file permissions. All
 other registry commands require an existing valid registry. Mistyped paths,
 empty files, game databases, unrelated SQLite databases, newer schemas and
-damaged registries are refused. No registry migration is implemented yet.
+damaged registries are refused. A registry from before the campaign host
+(schema 1) is upgraded to schema 2 in one transaction the first time this
+version opens it; its campaigns then have no campaign host until you adopt
+them ([below](#the-campaign-host)). Older Tesserae versions refuse an
+upgraded registry.
 
 Player listing emits JSON with a stable `u_…` player ID, display name,
 creation time and active-token status. Names are labels and may coincide.
@@ -50,7 +54,7 @@ in SQLite. The writer refuses existing files; failed issuance removes its new
 file and leaves the registry unchanged. Use a new filename for rotation.
 
 Campaign listing emits operator records with IDs, canonical absolute paths,
-titles, availability and creation times. Registration requires an existing
+titles, availability, creation times and `host_player_id`, the campaign host. Registration requires an existing
 Tesserae game database; its campaign ID is its persisted game ID. Inspection
 reads the identity/schema without upgrading it, executing its module or changing
 its journal mode. Duplicate IDs and paths are refused, including copied games
@@ -59,7 +63,13 @@ SQLite may use WAL sidecars of a concurrently open game. Registration does not
 prove that its rules module is installed or that the file will remain there.
 The future host must reopen and revalidate the identity/runtime before admission.
 
-New campaigns are inactive. Substitute the IDs printed above:
+`--host` names the campaign host (required): the same registry transaction
+registers the campaign, grants that player access and designates them. New
+campaigns are inactive. If the game already has participants, for example
+from a seed, [link](#link-existing-participants) each player who owns one
+(the host included) **before** you activate it, so nobody is admitted as a
+new participant in place of their own. Then, substituting the IDs printed
+above:
 
 ```sh
 tesserae host campaign activate --registry host.sqlite3 CAMPAIGN_ID
@@ -70,7 +80,8 @@ tesserae host campaign members --registry host.sqlite3 CAMPAIGN_ID
 Only an active campaign with an explicit unrevoked grant appears in that
 player's catalog. Activation means operator availability, not that a server is
 running. Grant/revoke are idempotent; granting again restores revoked access.
-Member inspection retains revoked grants for the operator. These local commands
+Member inspection retains revoked grants for the operator and marks the
+campaign host (`"host": 1`). These local commands
 never create a campaign participant, change game state or execute gameplay.
 No existing game participant is automatically matched by name.
 
@@ -85,8 +96,11 @@ tesserae host campaign deactivate --registry host.sqlite3 CAMPAIGN_ID
 
 Rotation replaces the active credential; old tokens and their authenticated
 contexts stop working. Revoking a token preserves the player and campaign
-grants. Revoking a grant affects that campaign; deactivation hides the campaign
-from everyone. Issuing another token with `rotate` restores a player's login,
+grants, and the campaign host stays designated (but cannot log in) until
+you rotate its token or designate someone else; no guest is promoted.
+Revoking a grant affects that campaign; the campaign host's own grant is
+refused ("transfer the campaign host first"). Deactivation hides the campaign
+from everyone and keeps its campaign host. Issuing another token with `rotate` restores a player's login,
 but does not restore revoked grants or activate campaigns. No player/campaign
 hard-delete or location-update command is included in this foundation.
 
@@ -96,6 +110,39 @@ while all registry users are closed), separately from each campaign. It contains
 credentials and access grants but no character sheets or referee history.
 Campaign files remain authoritative for those records. Keeping the registry
 path stable is separate from the canonical registered campaign paths.
+
+## The campaign host
+
+Every adopted lobby campaign has exactly one **campaign host**: a host
+player with an active grant to it, who may own any number of characters,
+including none ([governance contract](designs/governance_contract.md)
+section 3). Every other player there is a guest. The designation lives in
+this registry, never in the campaign file, and nothing a client, the referee
+or a model says can set or claim it.
+
+```sh
+tesserae host campaign set-host --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID
+```
+
+- **Adopting an older campaign** (registered before `--host`, so with no
+  host): deactivate it, link any player not yet linked, `set-host`, then
+  activate it. Until then it plays exactly as before, with no host controls.
+- **Recovery** (a lost host token, or a host who has left): `set-host` alone
+  replaces the campaign host. It grants the new host access if needed, and
+  every change is recorded with who made it.
+- **Transfer:** the campaign host can hand the campaign to another player
+  with access and an active token, with the protocol's
+  `campaign_host_transfer` (client controls are GOV-6 and GOV-7).
+- The campaign host can read everything in its campaign, but nothing of any
+  other campaign: every character and sheet, drafts included, every
+  conversation message, private and creation ones included, and the
+  referee's preparation (`host_view`, `host_messages`). Guests can see that
+  their creation is readable by the campaign host. Nothing is pushed to the
+  host; it asks.
+- Each player's snapshot in an adopted campaign says their `role` (`host` or
+  `guest`). A transfer tells every connection of the campaign at once; an
+  operator's `set-host` reaches each connection at its next request or
+  delivery.
 
 ## Python boundary
 
@@ -112,7 +159,11 @@ such as `campaigns()` and `members()` are **not** player projections.
 
 `authorize_campaign(context, campaign_id)` is a short context manager that
 rechecks credential, availability and grant, then yields an internal record
-including the database path. It grants no game participant authority. Hold it
+including the database path and `host_player_id`, read in the same
+transaction, so a transfer or `set-host` is ordered wholly before or after
+each guarded operation. `register_campaign(path, name, host)`, `set_host` and
+`transfer_host` write the designation; without `host`, a campaign is
+registered unadopted (as before this version). It grants no game participant authority. Hold it
 only for the protected local admission/read/commit operation, never over model
 execution, human input or network waits. Use one registry connection per thread;
 transactions/guards are not reentrant.
@@ -233,7 +284,8 @@ Find participant IDs with `tesserae participant list --database GAME`. These
 commands open the campaign's file (which upgrades it to the current schema
 version if needed) and change only its link table: never state, history or game tokens.
 A player has at most one active link per campaign, and a participant at most
-one player. Linking does not grant access. To move a player who was already
+one player. Linking does not grant access, and works on an inactive
+campaign. To move a player who was already
 admitted to a new participant onto an existing one, revoke their grant (or
 deactivate the campaign), `unlink`, `link`, then grant again; `unlink` keeps
 the old participant and its history.
