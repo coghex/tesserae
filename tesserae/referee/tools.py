@@ -190,8 +190,7 @@ class BridgeTools:
         if job.mode is not None:
             result.update(_character_context(store, runtime, state, job))
             result["input"]["actor"] = _actor(store, job)
-        if runtime.settings is not None:
-            result.update(_policy_context(store, runtime, state, job))
+        result.update(_policy_context(store, runtime, state, job))
         return result
 
     def _get_view(self, store, referee, job, args) -> dict:
@@ -332,9 +331,15 @@ def _policy_context(store: GameStore, runtime, state: dict, job: Job) -> dict:
     """What campaign settings add to `get_context` (governance contract
     section 10): the job's character's effective settings with the
     campaign's guidance, and what that character needs. Computed by the
-    host; never another character's exception."""
+    host; never another character's exception. Guidance reaches the referee
+    whether or not the module has settings; a game with neither settings
+    nor a document gets nothing here, as before."""
+    revision, document = store.active_document()
+    if runtime.settings is None and document is None:
+        return {}
     policy = store.effective_policy(job.character_id)
-    _, document = store.active_document()
+    if policy is None:  # guidance only: the module has no settings
+        policy = {"revision": revision, "settings": {}}
     return {
         "policy": {
             "revision": policy["revision"],

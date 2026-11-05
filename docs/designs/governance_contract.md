@@ -241,6 +241,8 @@ sent first.
   reason of up to 1,000 characters; one exception per character. GOV-5 adds
   `proposal_id` for an approved request's exception. A document is at most
   256 KiB as canonical JSON.
+- Values compare as JSON, never by a language's equality: `false` is not
+  `0`, nor `1.0` `1`, for the binding or for a draft's effective settings.
 - A document is checked whole, against the module and the game's state, when
   it is imported and again when it is activated; a refusal
   (`invalid_document`, with its `problems`) stores and changes nothing.
@@ -599,10 +601,12 @@ players keep playing; the referee is busy only while a job actually runs.
 
 ## 10. The referee
 
-**Context.** In a game with settings, `get_context` adds `policy` (the
-revision, the effective settings for the job's character and the campaign's
-`guidance`), `requirements` for the job's character (section 6; a setup
-job's are any new character's) and, from GOV-5, the requester's pending and
+**Context.** In a game whose module has settings, or that has an active
+document, `get_context` adds `policy` (the revision, the effective settings
+for the job's character, `{}` without the capability, and the campaign's
+`guidance`, which reaches the referee either way), `requirements` for the
+job's character (section 6; a setup job's are any new character's; null
+without the capability) and, from GOV-5, the requester's pending and
 recent proposals. `list_actions` describes creation and play under the same
 policy. A job of the campaign host adds
 `host: true` and the campaign's pending proposals.

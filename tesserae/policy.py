@@ -62,7 +62,7 @@ def check_shape(document, binding: dict, supported: frozenset) -> dict:
     module = document["module"]
     if not isinstance(module, dict) or _fields(module, _MODULE_FIELDS, "module"):
         problems.append('\'module\' is exactly {"id", "version", "state_version"}.')
-    elif module != binding:
+    elif canonical(module) != canonical(binding):  # as JSON: true is not 1
         problems.append(
             f"This document is for module {_shown(module['id'])} "
             f"{_shown(module['version'])} (state {_shown(module['state_version'])}); "

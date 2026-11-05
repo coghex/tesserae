@@ -186,6 +186,9 @@ class DocumentTests(RulesCase):
             "a token as a key": (document() | {"settings": {token: 1}}, "(not shown)"),
             "another module": (document(module={**BINDING, "id": "relay"}), "this game uses trailhead"),
             "another version": (document(module={**BINDING, "version": "2"}), "'2'"),
+            "a true state version": (
+                document(module={**BINDING, "state_version": True}), "this game uses",
+            ),
             "too big a bonus": (document(bonus=5), "0 to 2"),
             "a true bonus": (document(bonus=True), "0 to 2"),
             "no such character": (document(exceptions=[exception("c_ffffffffffffffff")]), "no such character"),
@@ -425,12 +428,40 @@ class CompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(store.policy_revision(), 0)
 
+    def test_a_change_of_json_type_alone_makes_an_approval_stale(self):
+        # A module may tell false from 0 (or 1.0 from 1); so does the host.
+        settings = replace(TRAILHEAD_MODULE.settings, validate=lambda s, state: [])
+        runtime = self.catalog(settings=settings).resolve("trailhead")
+        store = self.enterContext(
+            GameStore.create(self.directory / "trail.sqlite3", runtime)
+        )
+        token = new_token()
+        store.add_participant("Alice", token)
+        alice = store.authenticate(token)
+        reply, _ = store.create_character(alice, "c-1", "Ash")
+        ash = reply["result"]["character"]["character_id"]
+        rules = CampaignRules(store)
+        for revision, value in ((1, False), (2, 0.0)):  # from the default 0
+            with self.subTest(value=value):
+                result, _ = rules.import_document(
+                    document(bonus=value), OPERATOR_DECIDER
+                )
+                rules.activate(result["revision"], revision - 1, OPERATOR_DECIDER)
+                self.assertEqual(store.character(ash).draft_revision, 1 + revision)
+        stale, committed = store.complete_character(alice, "k-1", ash, 1)
+        self.assertEqual((stale["code"], committed), ("stale_draft", False))
+
     def test_a_broken_requirements_hook_is_caught(self):
         broken = CampaignSettings(1, lambda: {}, lambda s, st: [],
                                   lambda p, st, c: [{"id": "x", "kind": "class"}])  # fmt: skip
         runtime = self.catalog(settings=broken).resolve("trailhead")
         with self.assertRaises(TypeError):
             runtime.requirements({"revision": 0, "settings": {}}, {"walkers": {}}, None)
+        zero = CampaignSettings(1, lambda: {}, lambda s, st: [], lambda p, st, c: [
+            {"id": "x", "kind": "optional", "description": "x", "met": 0}])  # fmt: skip
+        runtime = self.catalog(settings=zero).resolve("trailhead")
+        with self.assertRaises(TypeError):  # 0 is not false
+            runtime.requirements({"revision": 0, "settings": {}}, {"walkers": {}}, "c")
 
     def test_seeded_walkers_may_carry_a_starting_bonus(self):
         walker = {"trait": "keen", "rolled": 3, "stamina": 6, "max_stamina": 6,
@@ -473,6 +504,42 @@ class RefereeContextTests(RulesCase):
         self.assertNotIn("private arrangement", json.dumps(context))
         actions = tools.handle({"token": token, "tool": "list_actions", "args": {}})
         self.assertTrue(actions["ok"], actions)
+
+    def test_guidance_reaches_the_referee_without_module_settings(self):
+        path = self.directory / "dice.sqlite3"
+        with GameStore.create(path, CATALOG.resolve("dice")) as dice:
+            token = new_token()
+            dice.add_participant("Alice", token)
+            alice = dice.authenticate(token)
+            referee = RefereeStore(dice)
+            referee.enable()
+            tools = BridgeTools(lambda: GameStore(path))
+
+            def context(request_id):
+                job = referee.submit(alice, request_id, "Hello", False).job
+                token = tools.grant(job.job_id)
+                found = tools.handle(
+                    {"token": token, "tool": "get_context", "args": {}}
+                )
+                tools.revoke()
+                referee.finish(job.job_id, "failed", "malformed_reply")
+                return found["result"]
+
+            self.assertNotIn("policy", context("s-1"))  # nothing configured: as before
+            binding = {"id": "dice", "version": "1", "state_version": 1}
+            rules = CampaignRules(dice)
+            result, _ = rules.import_document(
+                document(module=binding), OPERATOR_DECIDER
+            )
+            rules.activate(result["revision"], 0, OPERATOR_DECIDER)
+            found = context("s-2")
+            self.assertEqual(
+                (found["policy"], found["requirements"]),
+                (
+                    {"revision": 1, "settings": {}, "guidance": "Walkers are locals."},
+                    None,
+                ),
+            )
 
     def test_a_setup_job_gets_the_campaigns_requirements(self):
         self.rules.activate(self.imported(document(bonus=2)), 0, HOST)

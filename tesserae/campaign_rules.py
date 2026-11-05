@@ -188,7 +188,10 @@ class CampaignRules:
             ).fetchall():
                 before = policies.effective(runtime, current, old, character_id)
                 after = policies.effective(runtime, revision, document, character_id)
-                if before["settings"] != after["settings"]:
+                # As JSON, not Python values: false is not 0, nor 1.0 1.
+                if policies.canonical(before["settings"]) != policies.canonical(
+                    after["settings"]
+                ):
                     bumped.append(character_id)
             db.executemany(
                 "UPDATE characters SET draft_revision = draft_revision + 1 "

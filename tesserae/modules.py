@@ -378,7 +378,7 @@ class Runtime:
                 or not isinstance(entry.get("id"), str)
                 or entry.get("kind") not in REQUIREMENT_KINDS
                 or not isinstance(entry.get("description"), str)
-                or entry.get("met", None) not in (True, False, None)
+                or not any(entry.get("met") is value for value in (True, False, None))
             ):
                 raise TypeError(
                     "A requirement has a string id and description, a kind of "
