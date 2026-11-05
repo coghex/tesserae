@@ -56,6 +56,8 @@ ERROR_CODES = frozenset(
         "stale_draft",
         "character_incomplete",
         "character_busy",
+        # Campaign hosts (docs/designs/governance_contract.md section 13).
+        "not_campaign_host",
     }
 )
 # One fixed message per session error, so failures never vary with the
@@ -99,6 +101,13 @@ _CHARACTER_FIELDS = {
         {"version", "type", "request_id", "character_id", "draft_revision"}
     ),
     "character_archive": frozenset({"version", "type", "request_id", "character_id"}),
+}
+# Campaign hosts (governance contract section 13).
+ROLES = ("host", "guest")
+_HOST_FIELDS = {
+    "host_view": frozenset({"version", "type"}),
+    "host_messages": frozenset({"version", "type", "after_seq"}),
+    "campaign_host_transfer": frozenset({"version", "type", "request_id", "player_id"}),
 }
 
 
@@ -174,6 +183,19 @@ class CharacterRequest:
 
 
 @dataclass(frozen=True)
+class HostRequest:
+    """A campaign host message (governance contract section 13):
+    `host_view`, `host_messages` or `campaign_host_transfer`, with
+    whichever of its fields that type has. Who may send it is the host's
+    to judge, never the message's."""
+
+    kind: str
+    request_id: str | None = None
+    after_seq: int | None = None
+    player_id: str | None = None
+
+
+@dataclass(frozen=True)
 class RefereeStatusRequest:
     """A read of the caller's referee projection."""
 
@@ -241,8 +263,8 @@ def parse_request(text: str | bytes, runtime: Runtime = DICE_RUNTIME) -> Command
 
 def parse_client_message(text: str | bytes, runtime: Runtime = DICE_RUNTIME):
     """Validate any client message in an authenticated session: a
-    CommandRequest, JoinRequest, SyncRequest, SayRequest, RefereeStatusRequest
-    or MessagesRequest.
+    CommandRequest, JoinRequest, SyncRequest, SayRequest, RefereeStatusRequest,
+    MessagesRequest, CharacterRequest or HostRequest.
 
     Commands are validated exactly as by parse_request. Error messages never
     include a presented token.
@@ -260,6 +282,8 @@ def parse_client_message(text: str | bytes, runtime: Runtime = DICE_RUNTIME):
         return RefereeStatusRequest()
     if isinstance(kind, str) and kind in _CHARACTER_FIELDS:
         return _parse_character(kind, data)
+    if isinstance(kind, str) and kind in _HOST_FIELDS:
+        return _parse_host(kind, data)
     if kind == "messages":
         _check_fields(data, _MESSAGES_FIELDS, "A messages request")
         if not is_valid_revision(data["after_seq"]):
@@ -382,6 +406,38 @@ def _parse_character(kind: str, data: dict) -> CharacterRequest:
             request_id,
         )
     return CharacterRequest(kind, request_id, character_id, name, revision)
+
+
+def _parse_host(kind: str, data: dict) -> HostRequest:
+    request_id = data.get("request_id")
+    request_id = request_id if is_valid_request_id(request_id) else None
+    try:
+        _check_fields(data, _HOST_FIELDS[kind], f"A {kind} request")
+    except ProtocolError as error:
+        error.request_id = request_id
+        raise
+    if kind == "host_messages":
+        if not is_valid_revision(data["after_seq"]):
+            raise ProtocolError(
+                "invalid_request", "'after_seq' must be a whole number, 0 or more."
+            )
+        return HostRequest(kind, after_seq=data["after_seq"])
+    if kind == "campaign_host_transfer":
+        if request_id is None:
+            raise ProtocolError(
+                "invalid_request",
+                f"'request_id' must be a string of 1 to {MAX_REQUEST_ID_LENGTH} "
+                "characters without whitespace.",
+            )
+        if not is_valid_identifier(data["player_id"]):
+            raise ProtocolError(
+                "invalid_request",
+                f"'player_id' must be a string of 1 to {MAX_IDENTIFIER_LENGTH} "
+                "characters without whitespace.",
+                request_id,
+            )
+        return HostRequest(kind, request_id, player_id=data["player_id"])
+    return HostRequest(kind)
 
 
 def _check_fields(data: dict, fields: frozenset, subject: str):
@@ -593,6 +649,7 @@ def snapshot_message(
     campaign: dict | None = None,
     actor: dict | None = None,
     sheet: dict | None = None,
+    role: str | None = None,
 ) -> dict:
     """The recipient's view: the reply to a join or a sync.
 
@@ -602,7 +659,9 @@ def snapshot_message(
     authenticated host the recipient's own `participant_name` (never a roster).
     A lobby host adds the selected `campaign`, `{"campaign_id", "name"}`. A
     character game adds the connection's `actor` and its character's `sheet`
-    (null in setup), always both (character contract section 9).
+    (null in setup), always both (character contract section 9). A lobby
+    campaign with a designated campaign host adds the recipient's `role`
+    (governance contract section 13).
     """
     _check_identifier(game_id, "game_id")
     _check_identifier(participant_id, "participant_id")
@@ -636,7 +695,35 @@ def snapshot_message(
     if actor is not None:
         message["actor"] = actor
         message["sheet"] = sheet
+    if role is not None:
+        if role not in ROLES:
+            raise ValueError("A role is host or guest.")
+        message["role"] = role
     return message
+
+
+def role_message(role: str, request_id: str | None = None) -> dict:
+    """The connection's campaign role: unsolicited when it changes, or the
+    reply to `campaign_host_transfer` (with its `request_id`)."""
+    if role not in ROLES:
+        raise ValueError("A role is host or guest.")
+    message = {"version": PROTOCOL_VERSION, "type": "role", "role": role}
+    if request_id is not None:
+        _check_request_id(request_id)
+        message["request_id"] = request_id
+    return message
+
+
+def host_view_message(view: dict) -> dict:
+    """The reply to `host_view`: everything the campaign host may inspect."""
+    return {"version": PROTOCOL_VERSION, "type": "host_view", **view}
+
+
+def host_messages_message(messages: list, next_after_seq: int | None) -> dict:
+    """The reply to `host_messages`: one page of every message, and the
+    `after_seq` of the next page (None at the end)."""
+    return {"version": PROTOCOL_VERSION, "type": "host_messages",
+            "messages": list(messages), "next_after_seq": next_after_seq}  # fmt: skip
 
 
 def actor_object(mode: str, character: dict | None) -> dict:

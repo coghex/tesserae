@@ -92,6 +92,7 @@ const state = {
   choosing: false, // a character request awaits its reply
   confirmingArchive: false,
   characterNote: "",
+  role: null, // "host" or "guest" in a campaign with a campaign host
 };
 
 let session = null; // the one live Session, shared by both screens
@@ -397,6 +398,7 @@ function clearGame() {
   campaignScope = {};
   Object.assign(state, {
     campaign: null,
+    role: null,
     actor: null,
     characters: [],
     sheet: null,
@@ -497,6 +499,7 @@ function applySnapshot(snapshot) {
   state.referee = snapshot.referee || null;
   state.view = snapshot.view ?? null;
   state.revision = snapshot.revision;
+  state.role = snapshot.role ?? null; // the campaign role, with a campaign host
 }
 
 function receive(message) {
@@ -526,6 +529,8 @@ function receive(message) {
     readStatus();
   } else if (message.type === "revision") {
     if (state.revision === null || message.revision > state.revision) readView();
+  } else if (message.type === "role") {
+    state.role = message.role; // host controls are later work (GOV-7)
   }
   render();
 }
@@ -933,13 +938,19 @@ function statusText() {
   return `${where}${actorText()}Joined as ${state.me.name}${referee}`;
 }
 
+// Who sees a creation besides its player: a guest's campaign host may read
+// it (docs/designs/governance_contract.md section 7).
+function privateTo() {
+  return state.role === "guest" ? "you and the campaign host" : "you";
+}
+
 // Who this connection acts as, for the status line.
 function actorText() {
   const actor = state.actor;
   if (!actor) return "";
   if (actor.mode === "play") return `${actor.character.name} · `;
   if (actor.mode === "creation") {
-    return `Creating ${characterLabel(actor.character)} · private to you · `;
+    return `Creating ${characterLabel(actor.character)} · private to ${privateTo()} · `;
   }
   return "No character · ";
 }
@@ -1068,7 +1079,7 @@ function renderSheet(shown) {
       ? `Creating ${characterLabel(actor.character)}`
       : characterLabel(actor.character);
   $("sheet-revision").textContent = creating && state.sheetRevision !== null
-    ? `Draft revision ${state.sheetRevision}. Only you see this.`
+    ? `Draft revision ${state.sheetRevision}. ${state.role === "guest" ? "Only you and the campaign host see this." : "Only you see this."}`
     : "";
   const approveButton = $("character-approve");
   approveButton.hidden = !creating || state.sheetRevision === null;

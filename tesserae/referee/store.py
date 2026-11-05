@@ -594,15 +594,26 @@ class RefereeStore:
             page.append(message)
         return page, None
 
-    def all_choices(self, for_job: Job | None = None) -> list[dict]:
+    def all_choices(self, for_job: Job | None = None, *, every=False) -> list[dict]:
         """Referee only: every pending choice. For a job of a character game,
         each names its character (None for a setup question), and another
-        draft's question is left out (contract section 7)."""
+        draft's question is left out (contract section 7). With `every`, for
+        the campaign host: all of them, each naming its character."""
         rows = self.store.query(
             "SELECT r.participant_id, r.question, r.asked_in_job, r.character_id, "
             "c.phase FROM referee_choices AS r LEFT JOIN characters AS c "
             "ON c.character_id = r.character_id ORDER BY r.asked_at, r.participant_id"
         )
+        if every:
+            return [
+                {
+                    "participant_id": p,
+                    "character_id": c,
+                    "question": q,
+                    "asked_in_job": j,
+                }
+                for p, q, j, c, _ in rows
+            ]
         if for_job is None or for_job.mode is None:
             return [
                 {"participant_id": p, "question": q, "asked_in_job": j}

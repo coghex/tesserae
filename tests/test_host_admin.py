@@ -42,8 +42,9 @@ class HostAdminTests(unittest.TestCase):
         self.cli("init")
         token_file = self.root / "alice.token"
         self.cli("player", "add", "--name", "Alice", "--token-file", token_file)
-        [player] = json.loads(self.cli("player", "list").stdout)
-        player_id = player["player_id"]
+        self.cli("player", "add", "--name", "Hana", "--token-file", self.root / "h")
+        alice, hana = json.loads(self.cli("player", "list").stdout)
+        player_id, host_id = alice["player_id"], hana["player_id"]
         token = read_token_file(token_file)
         self.assertEqual(token_file.stat().st_mode & 0o777, 0o600)
         games = []
@@ -51,15 +52,18 @@ class HostAdminTests(unittest.TestCase):
             game_path = self.root / f"{name}.sqlite3"
             with GameStore.create(game_path, DICE_RUNTIME) as store:
                 games.append(store.game_id)
-            self.cli("campaign", "add", "--database", game_path, "--name", name)
-        self.assertEqual(len(json.loads(self.cli("campaign", "list").stdout)), 2)
+            self.cli(
+                "campaign", "add", "--database", game_path, "--name", name,
+                "--host", host_id,
+            )  # fmt: skip
+        listed = json.loads(self.cli("campaign", "list").stdout)
+        self.assertEqual([c["host_player_id"] for c in listed], [host_id, host_id])
         self.cli("campaign", "activate", games[0])
         self.cli("campaign", "grant", games[0], player_id)
+        members = json.loads(self.cli("campaign", "members", games[0]).stdout)
         self.assertEqual(
-            json.loads(self.cli("campaign", "members", games[0]).stdout)[0][
-                "player_id"
-            ],
-            player_id,
+            sorted((m["player_id"], m["host"]) for m in members),
+            sorted([(player_id, 0), (host_id, 1)]),
         )
         with HostRegistry(self.path) as registry:
             context = registry.authenticate(token)
@@ -67,6 +71,16 @@ class HostAdminTests(unittest.TestCase):
                 registry.visible_campaigns(context),
                 [{"campaign_id": games[0], "name": "Harbor"}],
             )
+        # The campaign host's own grant stays until another player is host.
+        refused = self.cli("campaign", "revoke", games[0], host_id, ok=False)
+        self.assertIn("transfer the campaign host first", refused.stderr)
+        result = self.cli("campaign", "set-host", games[1], player_id)
+        self.assertIn(f"{player_id} is now the campaign host.", result.stdout)
+        self.cli("campaign", "revoke", games[1], host_id)
+        self.assertIn(
+            "already", self.cli("campaign", "set-host", games[1], player_id).stdout
+        )
+        self.cli("campaign", "set-host", games[1], "u_0000000000000000", ok=False)
         self.cli("campaign", "revoke", games[0], player_id)
         self.cli("campaign", "deactivate", games[0])
         replacement = self.root / "new.token"
@@ -103,9 +117,19 @@ class HostAdminTests(unittest.TestCase):
             self.assertEqual(len(registry.players()), 1)
         missing = self.root / "mistyped.sqlite3"
         self.cli(
-            "campaign", "add", "--name", "Missing", "--database", missing, ok=False
-        )
+            "campaign", "add", "--name", "Missing", "--database", missing,
+            "--host", player_id, ok=False,
+        )  # fmt: skip
         self.assertFalse(missing.exists())
+        game = self.root / "harbor.sqlite3"
+        with GameStore.create(game, DICE_RUNTIME):
+            pass
+        self.cli(
+            "campaign", "add", "--name", "Harbor", "--database", game,
+            "--host", "u_0000000000000000", ok=False,
+        )  # fmt: skip
+        with HostRegistry(self.path) as registry:
+            self.assertEqual(registry.campaigns(), [])
 
     def test_operator_links_and_unlinks_existing_participants(self):
         self.cli("init")
@@ -117,8 +141,11 @@ class HostAdminTests(unittest.TestCase):
         with GameStore.create(game, DICE_RUNTIME) as store:
             wren = store.add_participant("Wren", new_token())
             campaign = store.game_id
-        self.cli("campaign", "add", "--database", game, "--name", "Harbor")
         player_id = player["player_id"]
+        self.cli(
+            "campaign", "add", "--database", game, "--name", "Harbor",
+            "--host", player_id,
+        )  # fmt: skip
         result = self.cli("campaign", "link", campaign, player_id, wren)
         self.assertIn(f"Linked player {player_id} to {wren}.", result.stdout)
         [link] = json.loads(self.cli("campaign", "links", campaign).stdout)
@@ -139,9 +166,8 @@ class HostAdminTests(unittest.TestCase):
         self.assertIn(
             "no link", self.cli("campaign", "unlink", campaign, player_id).stdout
         )
-        self.assertIn(
-            "no access", self.cli("campaign", "revoke", campaign, player_id).stdout
-        )
+        # Linking needed no active campaign; the host's grant came with `add`.
+        self.cli("campaign", "revoke", campaign, player_id, ok=False)
         with GameStore(game) as store:
             self.assertEqual([p.participant_id for p in store.participants()], [wren])
             self.assertEqual(store.revision(), 0)

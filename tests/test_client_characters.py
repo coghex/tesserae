@@ -183,6 +183,8 @@ class CharacterClientTests(unittest.TestCase):
         return cid
 
     def test_a_newcomer_creates_approves_and_plays(self):
+        with HostRegistry(self.registry_path) as registry:  # Bob is a guest here
+            registry.set_host(self.campaigns["trail"], self.players["alice"])
         bob = self.client("bob", "--campaign", self.campaigns["trail"])
         self.assertEqual(bob.until("[status]"), [
             "[lobby] Bob: 2 campaigns open to you",
@@ -202,7 +204,7 @@ class CharacterClientTests(unittest.TestCase):
         self.assertEqual(lines[0], "[character] started an unnamed draft (draft)")
         self.assertIn(
             "[character] creating an unnamed draft (draft), revision 1; private to "
-            "you. /sheet shows it, /approve completes it.",
+            "you and the campaign host. /sheet shows it, /approve completes it.",
             lines,
         )
         bob.type("build Ash keen")

@@ -45,15 +45,22 @@ def add_parser(commands):
         "link",
         "unlink",
         "links",
+        "set-host",
     ):
         parser = actions.add_parser(action)
         parser.add_argument("--registry", required=True)
         if action == "add":
             parser.add_argument("--database", required=True)
             parser.add_argument("--name", required=True)
+            parser.add_argument(
+                "--host",
+                required=True,
+                metavar="PLAYER_ID",
+                help="The campaign host: granted the campaign and designated.",
+            )
         elif action != "list":
             parser.add_argument("campaign_id")
-        if action in ("grant", "revoke", "link", "unlink"):
+        if action in ("grant", "revoke", "link", "unlink", "set-host"):
             parser.add_argument("player_id")
         if action == "link":
             parser.add_argument("participant_id")
@@ -101,8 +108,16 @@ def _campaign(registry, args):
     if action == "list":
         print(json.dumps(registry.campaigns(), indent=2))
     elif action == "add":
-        campaign_id = registry.register_campaign(args.database, args.name)
-        print(f"Registered campaign {campaign_id} (inactive).")
+        campaign_id = registry.register_campaign(args.database, args.name, args.host)
+        print(
+            f"Registered campaign {campaign_id} (inactive), hosted by {args.host}. "
+            "Link existing participants, then activate it."
+        )
+    elif action == "set-host":
+        if registry.set_host(args.campaign_id, args.player_id):
+            print(f"{args.player_id} is now the campaign host.")
+        else:
+            print(f"{args.player_id} already was the campaign host.")
     elif action == "members":
         print(json.dumps(registry.members(args.campaign_id), indent=2))
     elif action in ("link", "unlink", "links"):

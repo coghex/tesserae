@@ -178,6 +178,8 @@ class CharacterCase(BrowserCase):
 
 class CreationTests(CharacterCase):
     def test_a_newcomer_creates_privately_while_another_player_plays(self):
+        with HostRegistry(self.registry_path) as registry:  # Bob is a guest here
+            registry.set_host(self.campaign, self.players["alice"])
         bob = self.entered("bob")
         expect(bob.locator("#characters-empty")).to_be_visible()
         expect(bob.locator("#composer-label")).to_have_text(
@@ -194,7 +196,12 @@ class CreationTests(CharacterCase):
         bob.locator("#create-name").fill("Ash")
         bob.locator("#character-create").click()
         self.expect_status(
-            bob, "Trail · Creating Ash (draft) · private to you · Joined as Bob"
+            bob,
+            "Trail · Creating Ash (draft) · private to you and the campaign host · "
+            "Joined as Bob",
+        )
+        expect(bob.locator("#sheet-revision")).to_have_text(
+            "Draft revision 1. Only you and the campaign host see this."
         )
         expect(bob.locator("#composer-private-label")).to_be_hidden()
         approve = bob.locator("#character-approve")

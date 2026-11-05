@@ -31,6 +31,7 @@ from .modules import ModuleError
 from .protocol import (
     JOIN_TIMEOUT_SECONDS,
     CharacterRequest,
+    HostRequest,
     JoinRequest,
     MessagesRequest,
     ProtocolError,
@@ -46,12 +47,15 @@ from .protocol import (
     conversation_message,
     encode_message,
     error_message,
+    host_messages_message,
+    host_view_message,
     messages_message,
     parse_client_message,
     parse_request,
     referee_state_message,
     referee_status_message,
     revision_message,
+    role_message,
     session_error,
     snapshot_message,
     welcome_message,
@@ -114,6 +118,7 @@ class CampaignService:
         referee_timeout: float = DEFAULT_TIMEOUT,
         existing: bool = False,
         game_id: str | None = None,
+        host_transfer=None,
     ):
         """`runtime`, if given, is an externally loaded module's runtime
         (tesserae.external). The game must then already exist and be bound to
@@ -126,7 +131,12 @@ class CampaignService:
         RefereeJobFailed. The host stores and delivers what it returns.
         Without one, `referee_dir` (a folder made by `tesserae referee setup`)
         gives the game a CodexReferee (tesserae.referee.orchestrator), which
-        the host also opens, lets recover an earlier run's job, and closes."""
+        the host also opens, lets recover an earlier run's job, and closes.
+
+        A lobby host gives `host_transfer`, an async callable (session,
+        HostRequest) returning (reply, transferred) for
+        `campaign_host_transfer` (governance contract section 3); without
+        it, as on a single-game host, there is no campaign host."""
         self.database = Path(database).resolve()
         self.authenticated = authenticated
         self._randint = randint
@@ -197,7 +207,8 @@ class CampaignService:
         )
         self._deliveries = None
         self._recovery = None
-        self._notices: set[asyncio.Task] = set()  # actor notices being sent
+        self._notices: set[asyncio.Task] = set()  # actor and role notices
+        self._host_transfer = host_transfer
 
     def _check_serving(self):
         """A subclass's own refusals, before any referee is set up."""
@@ -301,10 +312,12 @@ class CampaignService:
             self.characters,
             self.referee_mode,
             session=session,
+            role=True,
         )
         if found is None:
             return None
-        current, view, referee, lost = found
+        current, view, referee, lost, role = found
+        session.role = role  # what this connection is told, sent under its lock
         if lost:  # the selection is no longer the caller's: back in setup
             session.character_id = None
         actor, summary, sheet = view or (None, None, None)
@@ -319,6 +332,7 @@ class CampaignService:
             session.campaign,
             None if actor is None else actor_object(actor.mode, summary),
             sheet,
+            role,
         )
 
     async def _actor(self, session: "_Session", *, keep_lost: bool = True):
@@ -406,6 +420,8 @@ class CampaignService:
             checked = True
         elif isinstance(parsed, SyncRequest):
             return await self._sync(session)
+        elif isinstance(parsed, HostRequest):
+            return await self._host(session, parsed)
         elif isinstance(parsed, CharacterRequest) and self.characters:
             return await self._character(session, parsed)
         elif isinstance(parsed, CharacterRequest) or (
@@ -608,6 +624,95 @@ class CampaignService:
             actor_object(found[0].mode, found[1]),
         )
 
+    async def _host(self, session: "_Session", request: HostRequest) -> dict:
+        """A campaign host message (governance contract sections 4 and 7):
+        checked and read inside the registry guard, refused to anyone but
+        the campaign host. Host data is only ever this reply."""
+        if request.kind == "campaign_host_transfer":
+            return await self._transfer(session, request)
+        try:
+            found = await self._call(
+                _host_read,
+                session.context,
+                request.kind,
+                request.after_seq,
+                self.characters,
+                session=session,
+                role=True,
+            )
+        except Exception:
+            return self._failure(None)
+        if found is None:
+            return session_error("session_revoked")
+        if found is _NOT_HOST:
+            return _not_host(None)
+        return found
+
+    async def _transfer(self, session: "_Session", request: HostRequest) -> dict:
+        if self._host_transfer is None or session.guard is None:
+            return await self._recheck(session, _not_host(request.request_id))
+        reply, transferred = await self._host_transfer(session, request)
+        if reply["type"] == "role":
+            session.role = reply["role"]
+            # Every connection of this campaign learns its role now, after
+            # any reply it is being sent; this one too if the reply was a
+            # replay and it is not a guest now.
+            for other in list(self._sessions):
+                self.check_role(other)
+            if transferred:
+                logger.info("Campaign %s has a new campaign host", self.game_id)
+        return reply
+
+    def check_role(self, session: "_Session"):
+        """Tell `session` its role if it has changed since it was last told,
+        unsolicited and decided when sent (governance contract section 4)."""
+        if session.role is _UNTOLD or not session.active:
+            return
+        session.role_dirty = True
+        if session.role_task is None:
+            task = asyncio.create_task(self._role_notices(session))
+            session.role_task = task
+            self._notices.add(task)
+            task.add_done_callback(self._notices.discard)
+
+    async def _role_notices(self, session: "_Session"):
+        ended = None
+
+        async def decide():
+            nonlocal ended
+            try:
+                found = await self._call(
+                    _session_role, session.context, session=session, role=True
+                )
+            except Exception:
+                logger.exception("Could not check a session for a role notice")
+                ended = session.unreachable
+                return None
+            if found is _REVOKED:  # its access has gone: nothing about roles
+                ended = session.revoked
+                return None
+            if found is None or found == session.role:
+                return None
+            session.role = found
+            return role_message(found)
+
+        try:
+            while session.role_dirty and session.active and ended is None:
+                session.role_dirty = False
+                await session.send_decided(decide)
+            if ended is not None:
+                await ended()
+        except (ConnectionClosed, _SlowConsumer):
+            pass
+        finally:
+            session.role_task = None
+
+    def _saw_role(self, session: "_Session", role):
+        """A guarded call saw `session`'s role; if it is not what the
+        connection was told, a role notice follows."""
+        if role is not _UNSEEN and session.role is not _UNTOLD and role != session.role:
+            self.check_role(session)
+
     def _tell_others(self, session: "_Session", character: dict, kind: str):
         """Every other connection of this participant with this character
         selected learns that it was completed (now in play) or archived (back
@@ -797,29 +902,41 @@ class CampaignService:
             )
         return error_message("internal_error", message, request_id=request_id)
 
-    async def _call(self, method, *args, session: "_Session | None" = None):
+    async def _call(
+        self, method, *args, session: "_Session | None" = None, role: bool = False
+    ):
         """`method(store, *args)` on a worker thread, with a fresh store.
 
         A lobby session's call runs inside its registry guard (lobby contract
         section 6). If the guard refuses, the session's context is replaced by
         one no check accepts, so `method` answers as it would for a revoked
-        session, and the session records why.
+        session, and the session records why. With `role`, `method` is also
+        given `role=`: the session's campaign role read by that guard ("host",
+        "guest", or None with no campaign host, as on a single-game host).
         """
         guard = None if session is None else session.guard
+        extra = {"role": None} if role else {}
 
         def work():
             if guard is None:
-                return self._in_store(method, args)
-            with guard() as allowed:
+                return self._in_store(method, args, extra=extra), _UNSEEN
+            checked = guard()
+            with checked as allowed:
                 if not allowed:
                     denied = replace(session.context, link_id=_NO_LINK)
                     args_ = tuple(denied if a is session.context else a for a in args)
-                    return self._in_store(method, args_)
-                return self._in_store(method, args, session)
+                    return self._in_store(method, args_, extra=extra), _UNSEEN
+                if role:
+                    extra["role"] = checked.role
+                return self._in_store(method, args, session, extra), checked.role
 
-        return await asyncio.get_running_loop().run_in_executor(self._executor, work)
+        loop = asyncio.get_running_loop()
+        result, seen = await loop.run_in_executor(self._executor, work)
+        if session is not None:
+            self._saw_role(session, seen)
+        return result
 
-    def _in_store(self, method, args, session=None):
+    def _in_store(self, method, args, session=None, extra=None):
         try:
             store = self._open()
         except StoreError as error:
@@ -831,7 +948,7 @@ class CampaignService:
                 if session is not None:
                     session.lost = "campaign_unavailable"
                 raise StoreError("The database now holds a different game.")
-            return method(store, *args)
+            return method(store, *args, **(extra or {}))
 
     def _open(self) -> GameStore:
         if self._existing:
@@ -1168,10 +1285,11 @@ def _unavailable(request_id) -> dict:
 
 
 def _snapshot_parts(store: GameStore, context, character_id, characters: bool,
-                    referee_mode: bool):  # fmt: skip
+                    referee_mode: bool, *, role=None):  # fmt: skip
     """Everything a snapshot holds, from one committed state: the view, the
     actor view (setup if the selection is no longer the caller's, with
-    `lost` set) and the referee projection. None if revoked."""
+    `lost` set), the referee projection and the guard's `role`. None if
+    revoked."""
     with store.snapshot():
         current = store.participant_view(context)
         if current is None:
@@ -1187,7 +1305,84 @@ def _snapshot_parts(store: GameStore, context, character_id, characters: bool,
             referee = _referee_projection(store, context, actor)
             if referee is None:
                 return None
-        return current, view, referee, lost
+        return current, view, referee, lost, role
+
+
+def _session_role(store: GameStore, context, *, role):
+    """For a role notice: the guard's role, or _REVOKED if access has gone."""
+    return _REVOKED if store.session_revision(context) is None else role
+
+
+def _host_read(store: GameStore, context, kind: str, after_seq, characters: bool,
+               *, role):  # fmt: skip
+    """`host_view` or a `host_messages` page, from one committed state;
+    None if revoked, _NOT_HOST unless `role` is the campaign host's."""
+    with store.snapshot():
+        if store.session_revision(context) is None:
+            return None
+        if role != "host":
+            return _NOT_HOST
+        referee = RefereeStore(store)
+        names = _names(store)
+        if kind == "host_messages":
+            page, next_after = referee.transcript(after_seq)
+            return host_messages_message(
+                [_host_wire(m, names, characters) for m in page], next_after
+            )
+        runtime, state = store.runtime(), store.inspect_state()
+        inspect = runtime.referee_context(state)
+        participants = store.participants()
+        if inspect is None:  # as the referee sees it: each participant's view
+            inspect = {
+                "views": {
+                    p.participant_id: runtime.view(state, p.participant_id)
+                    for p in participants
+                }
+            }
+        listed = []
+        for character in store.inspect_characters():
+            entry = character.summary()
+            entry["participant_id"] = character.participant_id
+            entry["introduced"] = character.introduced_at is not None
+            entry["sheet"] = (
+                None
+                if character.phase == "archived"
+                else runtime.character_sheet(state, character.character_id)
+            )
+            listed.append(entry)
+        return host_view_message(
+            {
+                "revision": store.revision(),
+                "inspect": inspect,
+                "characters": listed,
+                "participants": [
+                    {"participant_id": p.participant_id, "name": p.name}
+                    for p in participants
+                ],
+                "pending_choices": referee.all_choices(every=True),
+                "rulings": referee.rulings(),
+                "policy": None,  # the settings document (GOV-3)
+            }
+        )
+
+
+def _host_wire(message: dict, names: dict, characters: bool) -> dict:
+    """A stored message as the campaign host reads it: as its recipients
+    see it, and to whom a private one went."""
+    wired = _wire(message, names, characters)
+    if message["audience"] != "table":
+        wired["to"] = [
+            {"participant_id": p, "name": names.get(p, p)} for p in message["audience"]
+        ]
+    return wired
+
+
+def _not_host(request_id) -> dict:
+    return error_message(
+        "not_campaign_host",
+        "Only the campaign host can do that.",
+        request_id=request_id,
+    )
 
 
 def _notice_view(store: GameStore, context, character_id):
@@ -1203,6 +1398,10 @@ def _notice_view(store: GameStore, context, character_id):
 
 
 _UNCHECKED = object()
+_UNSEEN = object()  # a call that read no role: no guard, or access refused
+_UNTOLD = object()  # a session not yet sent its role in a snapshot
+_REVOKED = object()
+_NOT_HOST = object()
 _NO_LINK = -1  # a host link ID that never exists, so no check accepts it
 _JOIN_FAILED = error_message("internal_error", "The host could not check the join.")
 
@@ -1243,6 +1442,11 @@ class _Session:
         self.character_id = None
         self.active = True  # False once the connection has left this game
         self.lost = None  # why a guarded check refused, set by a worker
+        # The campaign role this connection was last told (governance
+        # contract section 4), and its pending role notice.
+        self.role = _UNTOLD
+        self.role_dirty = False
+        self.role_task = None
         self._write_timeout = write_timeout
         self._lock = lock or asyncio.Lock()
         self._sent_revision = -1  # highest revision in a snapshot or notification

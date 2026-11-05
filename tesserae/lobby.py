@@ -15,6 +15,7 @@ import signal
 import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 
@@ -38,11 +39,17 @@ from .protocol import (
     lobby_error,
     lobby_message,
     parse_lobby_message,
+    role_message,
     session_error,
 )
 from .referee.runner import DEFAULT_DIR as DEFAULT_REFEREE_DIR
 from .referee.runner import DEFAULT_TIMEOUT, RunnerError
-from .registry import CampaignUnavailable, CredentialRevoked, HostRegistry
+from .registry import (
+    CampaignUnavailable,
+    CredentialRevoked,
+    HostRefused,
+    HostRegistry,
+)
 from .server import (
     _BINARY_REPLY,
     HOST,
@@ -54,15 +61,16 @@ from .server import (
     _Session,
     _SlowConsumer,
 )
-from .store import GameStore, StoreError
+from .store import GameStore, StoreBusy, StoreError
 from .web import AssetsError, load_assets
 
 REGISTRY_THREADS = 4
 # Messages a campaign sends without being asked; every other one is a reply.
-_UNSOLICITED = frozenset({"revision", "message", "referee", "actor"})
+_UNSOLICITED = frozenset({"revision", "message", "referee", "actor", "role"})
 _CANNOT_OPEN = "That campaign cannot be opened right now; ask the host."
 _LOGIN_FAILED = error_message("internal_error", "The host could not check the login.")
 _HOST_FAILED = "The host failed; nothing was changed. Try again."
+_HOST_BUSY = "The game is busy; nothing was changed. Retry the same request."
 
 _OLD_CLIENT = error_message(
     "characters_unsupported", "This campaign uses characters; update your client."
@@ -356,6 +364,7 @@ class LobbyHost:
             referee_timeout=self._referee_timeout,
             existing=True,
             game_id=campaign_id,
+            host_transfer=self._transfer,
         )
 
     def _admit(self, guard, client: "_Client", campaign_id, service):
@@ -371,6 +380,46 @@ class LobbyHost:
                 return store.admit_host_player(
                     self.host_id, client.context.player_id, client.name
                 )
+
+    async def _transfer(self, session: "_CampaignSession", request):
+        """`campaign_host_transfer` (governance contract section 3): one
+        registry write, checked there with the sender's campaign session
+        (its participant link, and the file still holding this campaign)
+        held until it commits; (reply, transferred)."""
+        campaign_id = session.campaign["campaign_id"]
+        try:
+            transferred = await self._registry_call(
+                _transfer_host,
+                session.client.context,
+                campaign_id,
+                request.player_id,
+                request.request_id,
+                partial(_holding_session, session),
+            )
+        except CredentialRevoked:
+            session.lost = "session_revoked"
+            return session_error("session_revoked"), False
+        except (CampaignUnavailable, _NotInCampaign) as error:
+            if isinstance(error, CampaignUnavailable):
+                session.lost = "campaign_unavailable"
+            return session_error("session_revoked"), False  # back to the lobby
+        except StoreBusy:
+            reply = error_message(
+                "internal_error", _HOST_BUSY, request_id=request.request_id
+            )
+            return reply, False
+        except HostRefused as refused:
+            reply = error_message(
+                refused.code, str(refused), request_id=request.request_id
+            )
+            return reply, False
+        except Exception:
+            logger.exception("Could not transfer a campaign host")
+            reply = error_message(
+                "internal_error", _HOST_FAILED, request_id=request.request_id
+            )
+            return reply, False
+        return role_message("guest", request.request_id), transferred
 
     async def _registry_call(self, function, *args):
         loop = asyncio.get_running_loop()
@@ -406,6 +455,35 @@ def _credential_active(path, context) -> bool:
         return registry.credential_active(context)
 
 
+def _transfer_host(path, context, campaign_id, player_id, request_id, held) -> bool:
+    with HostRegistry(path) as registry:
+        return registry.transfer_host(context, campaign_id, player_id, request_id, held)
+
+
+class _NotInCampaign(Exception):
+    """The sender's participant link in the campaign has ended."""
+
+
+@contextmanager
+def _holding_session(session: "_CampaignSession"):
+    """Inside the registry's transfer: the campaign file still holds this
+    campaign and the sender's participant link is active, held by a write
+    lock (so no unlink commits) until the transfer has committed."""
+    try:
+        store = session.service.open_store()
+    except StoreBusy:
+        raise
+    except StoreError:
+        raise CampaignUnavailable("The campaign file cannot be opened.") from None
+    with store:
+        if store.game_id != session.campaign["campaign_id"]:
+            raise CampaignUnavailable("The registered file now holds a different game.")
+        with store.transaction():
+            if store.session_revision(session.context) is None:
+                raise _NotInCampaign
+            yield
+
+
 def _authorized(path, context, campaign_id) -> dict:
     with HostRegistry(path) as registry:
         with registry.authorize_campaign(context, campaign_id) as record:
@@ -415,7 +493,9 @@ def _authorized(path, context, campaign_id) -> dict:
 class _Guard:
     """The registry's authorization guard for one campaign operation, on a
     worker thread: entering yields whether access holds, and records why not
-    on the class instance for the caller."""
+    on the class instance for the caller. While it holds, `role` is the
+    player's campaign role, read in the same registry transaction: "host",
+    "guest", or None for a campaign with no campaign host."""
 
     def __init__(self, path, context, campaign_id, session=None):
         self._path, self._context, self._campaign = path, context, campaign_id
@@ -423,6 +503,7 @@ class _Guard:
         self._registry = None
         self._authorized = None
         self.lost_error = None
+        self.role = None
 
     def __enter__(self) -> bool:
         self._registry = HostRegistry(self._path)
@@ -430,7 +511,10 @@ class _Guard:
             self._authorized = self._registry.authorize_campaign(
                 self._context, self._campaign
             )
-            self._authorized.__enter__()
+            record = self._authorized.__enter__()
+            host = record["host_player_id"]
+            if host is not None:
+                self.role = "host" if host == self._context.player_id else "guest"
             return True
         except (CredentialRevoked, CampaignUnavailable) as error:
             self._authorized = None
@@ -549,7 +633,8 @@ class _CampaignSession(_Session):
         return message
 
     async def _send(self, message: dict):
-        if not self.active and message["type"] not in _UNSOLICITED:
+        unsolicited = message["type"] in _UNSOLICITED and "request_id" not in message
+        if not self.active and not unsolicited:
             # A request still being answered when the connection left the
             # campaign: it still gets exactly one reply, the lobby's, and
             # nothing of the campaign's.
