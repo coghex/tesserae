@@ -82,17 +82,20 @@ class HostRequests:
             raise Refusal(
                 "invalid_request", "An operation's payload is exactly command and args."
             )
-        self._parsed_operation(payload, "check")
-        if not isinstance(target, dict):
-            raise Refusal("invalid_request", "An operation names its target.")
-        argument = payload["args"].get("character_id")
-        if isinstance(argument, str) and target != {
-            "kind": "character",
-            "id": argument,
-        }:
+        request = self._parsed_operation(payload, "check")
+        # The target is what the operation changes, by the module's rules;
+        # the request must name exactly that, so its digest guards it.
+        changed = runtime.for_host().operation_target(request.command, request.args)
+        if changed is None:
             raise Refusal(
                 "invalid_request",
-                "The target must be the character the operation names.",
+                "This module cannot say what that operation changes, so it cannot "
+                "be requested.",
+            )
+        if target != changed:
+            raise Refusal(
+                "invalid_request",
+                "The target must be exactly what the operation changes.",
             )
         try:
             self.store.target_digest(target)

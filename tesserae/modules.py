@@ -212,7 +212,11 @@ class Administration:
     "target_kinds", "args"}`, guidance for clients and the referee, never a
     validator. `target_state(state, target)` is pure: the part of the state
     an operation or request on `target` (`{"kind", "id"}`) depends on, or
-    ArgumentError for an unknown target.
+    ArgumentError for an unknown target. `target(command, args)`, if given,
+    is pure: the target one of its operations changes, from its validated
+    arguments; a request for an operation must name exactly that target, so
+    its stale check covers what the operation changes. Without it only an
+    operation with a `character_id` argument can be requested.
     """
 
     version: int
@@ -220,6 +224,7 @@ class Administration:
     operations: tuple[Command, ...]
     describe: Callable[[dict], list]
     target_state: Callable[[dict, dict], dict]
+    target: Callable[[str, dict], dict] | None = None
 
 
 @dataclass(frozen=True)
@@ -357,6 +362,23 @@ class Runtime:
         ):
             raise TypeError("Host operations are a list of objects with a command.")
         return operations
+
+    def operation_target(self, command: str, args: dict) -> dict | None:
+        """The target a host operation changes, by the module's own rule, or
+        a `character_id` argument's character; None if neither says."""
+        administration = self.module.administration
+        if administration is not None and administration.target is not None:
+            found = administration.target(command, copy.deepcopy(args))
+            if (
+                not isinstance(found, dict)
+                or set(found) != {"kind", "id"}
+                or not all(isinstance(v, str) for v in found.values())
+            ):
+                raise TypeError('An operation\'s target is {"kind", "id"} strings.')
+            return dict(found)
+        if isinstance(args.get("character_id"), str):
+            return {"kind": "character", "id": args["character_id"]}
+        return None
 
     def target_state(self, state: dict, target: dict) -> dict:
         """What `target` depends on (Administration.target_state). Without

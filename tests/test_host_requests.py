@@ -486,3 +486,66 @@ class SchemaTests(Requests):
             self.assertEqual(store.query("PRAGMA user_version"), [(SCHEMA_VERSION,)])
             self.assertEqual(store.query("SELECT * FROM referee_steps"), steps)
             self.assertEqual(store.query("SELECT count(*) FROM host_requests"), [(0,)])
+
+
+class ReviewRegressionTests(Requests):
+    def test_an_operation_request_names_and_guards_what_it_changes(self):
+        wren = self.ready(name="Wren")
+        warden = {
+            "npc_id": "warden",
+            "name": "The warden",
+            "note": "Kind.",
+            "visible": True,
+        }
+        job, token = self.start(self.bob, Actor(None, "setup"), "Add the warden.")
+        self.ok(
+            token, "host_act", step_id="h-1", command="trailhead.npc_set", args=warden
+        )
+        self.answer(job, ("table", "The warden appears."))
+        job, token = self.start(
+            self.alice, Actor(wren, "play"), "Make the warden kind."
+        )
+        request = {"step_id": "o-1", "kind": "operation", "scope": "target",
+                   "payload": {"command": "trailhead.npc_set",
+                               "args": {**warden, "note": "Very kind."}},
+                   "explanation": "We agreed."}  # fmt: skip
+        for wrong in ({"kind": "npc", "id": "unrelated"}, {"kind": "scene", "id": "trailhead"},
+                      {"kind": "character", "id": wren}, None):  # fmt: skip
+            with self.subTest(target=wrong):
+                self.refused("invalid_request", token, "propose_host_decision",
+                             **{**request, "target": wrong})  # fmt: skip
+        proposal = self.propose(
+            token, **{**request, "target": {"kind": "npc", "id": "warden"}}
+        )
+        self.answer(job, ("table", "Asked the host."))
+        # A newer correction to the warden makes the approval stale.
+        job, token = self.start(self.bob, Actor(None, "setup"), "Correct the warden.")
+        self.ok(token, "host_act", step_id="h-2", command="trailhead.npc_set",
+                args={**warden, "note": "Stern."})  # fmt: skip
+        self.answer(job, ("table", "Corrected."))
+        self.assertEqual(self.decide(proposal["proposal_id"])[0]["state"], "stale")
+        self.assertEqual(self.store.inspect_state()["npcs"]["warden"]["note"], "Stern.")
+
+    def test_a_private_proposal_is_recovered_only_by_its_requester(self):
+        self.host_player = None  # nobody's job is the host's here
+        wren, fen = self.ready(name="Wren"), self.ready(self.bob, name="Fen")
+        job, token = self.start(
+            self.alice, Actor(wren, "play"), "A secret.", private=True
+        )
+        setting = {"step_id": "p-1", "kind": "campaign_setting", "scope": "campaign",
+                   "target": None, "payload": {"starting_stamina_bonus": 2},
+                   "explanation": "My private reason."}  # fmt: skip
+        self.propose(token, **setting)
+        self.fail(job)  # no reply: the proposal step is unnarrated
+        job, token = self.start(self.bob, Actor(fen, "play"), "Hello.")
+        context = self.ok(token, "get_context")
+        self.assertNotIn("private reason", json.dumps(context))
+        self.tools.revoke()
+        with self.assertRaises(RefereeError) as refused:
+            self.referee.publish_reply(job.job_id, reply(
+                ("table", "News."), narrated=[(job_id_of(self, "p-1"), "p-1")]))  # fmt: skip
+        self.assertEqual(refused.exception.code, "malformed_reply")
+        self.referee.finish(job.job_id, "failed", "malformed_reply")
+        job, token = self.start(self.alice, Actor(wren, "play"), "Again.", private=True)
+        [result] = self.ok(token, "get_context")["earlier_results"]
+        self.assertEqual((result["step_id"], result["kind"]), ("p-1", "propose"))

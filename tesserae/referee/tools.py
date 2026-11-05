@@ -190,6 +190,7 @@ class BridgeTools:
             with self._host(job) as by:
                 if tool == "host_operations":
                     with store.snapshot():
+                        _check_participant(store, by)
                         return {"revision": store.revision(),
                                 "operations": store.runtime().host_operations(
                                     store.inspect_state())}  # fmt: skip
@@ -208,6 +209,8 @@ class BridgeTools:
         if tool == "get_context":  # whether this is a host job, held while read
             with self._host(job, optional=True) as by:
                 with store.snapshot():
+                    if by is not None and not _participant_holds(store, by):
+                        by = None  # no longer in this game: a guest's view
                     return self._get_context(store, referee, job, args, by)
         with store.snapshot():  # one committed state for every read below
             return getattr(self, f"_{tool}")(store, referee, job, args)
@@ -228,9 +231,11 @@ class BridgeTools:
                 raise _not_host()
             yield by
 
-    def _still_running(self, referee, grant, job):
+    def _still_running(self, referee, grant, job, store=None, by=None):
         """A precondition for a step's own transaction: the job may have been
-        interrupted, or its access revoked, since the step was intended."""
+        interrupted, or its access revoked, since the step was intended; and
+        for a host step, the host's own session in this game must still hold
+        (its registry authority is held for the whole call)."""
 
         def check():
             with self._guard:
@@ -240,6 +245,8 @@ class BridgeTools:
                 raise ToolError(
                     "job_ended", "This job's access has ended; nothing ran."
                 )
+            if by is not None:
+                _check_participant(store, by)
 
         return check
 
@@ -282,7 +289,7 @@ class BridgeTools:
         recorded = _recorded(step)
         if recorded is not None:
             return {"step_id": step.step_id, "status": "committed", "result": recorded}
-        check = self._still_running(referee, grant, job)
+        check = self._still_running(referee, grant, job, store, by)
         with self._acting:
             try:
                 reply, committed = self._run_host_tool(store, by, step, tool, content,
@@ -605,6 +612,17 @@ def _recorded(step: Step):
     if step.status == "not_committed":
         raise ToolError("request_conflict", "That step did not run; use a new step_id.")
     return None
+
+
+def _participant_holds(store: GameStore, by) -> bool:
+    return by.participant is None or store.session_revision(by.participant) is not None
+
+
+def _check_participant(store: GameStore, by):
+    """Inside the caller's transaction: refuse if the host's own session in
+    this game has ended (its link, or the game in its file)."""
+    if not _participant_holds(store, by):
+        raise _not_host()
 
 
 def _not_host() -> ToolError:

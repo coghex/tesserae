@@ -710,6 +710,15 @@ def _host_operations(state: dict) -> list:
     return operations
 
 
+def _operation_target(command: str, args: dict) -> dict:
+    """What each host operation changes: a walker, an NPC, or the scene."""
+    if "character_id" in args:
+        return {"kind": "character", "id": args["character_id"]}
+    if command == "trailhead.npc_set":
+        return {"kind": "npc", "id": args["npc_id"]}
+    return {"kind": "scene", "id": SCENE["id"]}  # scene_set and prep_set
+
+
 def _target_state(state: dict, target: dict) -> dict:
     kind, target_id = target["kind"], target["id"]
     if kind == "character":
@@ -768,6 +777,7 @@ TRAILHEAD_MODULE = Module(
         ),
         describe=_host_operations,
         target_state=_target_state,
+        target=_operation_target,
     ),
     settings=CampaignSettings(
         version=1,

@@ -340,7 +340,7 @@ class CampaignService:
             if not allowed or checked.role != "host":
                 raise NotCampaignHost
             host_id, player_id = checked.host_player
-            yield Decider(player_id, host_id, "referee", job.job_id)
+            yield Decider(player_id, host_id, "referee", job.job_id, session.context)
 
     def proposal_changed(self, proposal_id: str):
         """From any thread: tell the people involved in a proposal its state
@@ -962,8 +962,12 @@ class CampaignService:
             self._outbox.put_nowait(("state", referee_state_message("idle")))
 
     def _host_sender(self, job) -> str | None:
+        """The host sender whose results this job may narrate: its sender's,
+        while that player is the campaign host and still in this game."""
         try:
-            with self._host_authority(job) as by:
+            with self._host_authority(job) as by, self._open() as store:
+                if store.session_revision(by.participant) is None:
+                    return None
                 return by.sender
         except NotCampaignHost:
             return None

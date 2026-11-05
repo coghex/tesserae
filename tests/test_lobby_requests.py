@@ -188,6 +188,31 @@ class RequestTests(RequestCase):
 
 
 class HostJobTests(RequestCase):
+    async def test_a_host_unlinked_during_its_job_can_change_nothing(self):
+        await self.start_host()
+        bob, _ = await self.enter("bob")
+        await bob.send(say("b-1", "Set the scene.", None, "setup"))
+        self.assertEqual((await self.reply(bob))["type"], "accepted")
+        await self.job("trail")
+        alice, _ = await self.enter("alice")  # to watch the job end
+        with self.trail() as store:  # Bob's participant link ends mid-job
+            store.unlink_host_player(self.host_id, self.players["bob"])
+        self.finish("trail", self.scripted(
+            ("get_context", {}),
+            ("host_operations", {}),
+            ("host_act", {"step_id": "h-1", "command": "trailhead.scene_set",
+                          "args": {"description": "Bob's scene."}}),
+            then=answer(("table", "Nothing changed.")),
+        ))  # fmt: skip
+        await self.until(alice, "referee", state="idle")
+        context, offered, acted = self.results
+        self.assertNotIn("host", context["result"])
+        self.assertEqual(offered["error"]["code"], "not_campaign_host")
+        self.assertEqual(acted["error"]["code"], "not_campaign_host")
+        with self.trail() as store:
+            self.assertNotIn("scene", store.inspect_state())
+            self.assertEqual(store.host_audit(0)[0], [])
+
     async def test_a_transfer_during_the_hosts_job_ends_its_host_tools(self):
         await self.start_host()
         bob, _ = await self.enter("bob")

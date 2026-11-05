@@ -370,6 +370,8 @@ class Administration:
     describe: Callable[[dict], list]
     # Pure: (state, target) -> the module data an operation on that target depends on.
     target_state: Callable[[dict, dict], dict]
+    # Optional, pure: (command, args) -> the target {"kind", "id"} that operation changes.
+    target: Callable[[str, dict], dict] | None = None
 ```
 
 - `inspect(state)` is the host's view of module state: every character's
@@ -401,6 +403,11 @@ class Administration:
   target. The host hashes it (canonical JSON, SHA-256) as the target's
   **digest** (section 9). A module without `Administration` has the digest of
   `CharacterRules.sheet` for a character, and no other target kinds.
+- `target(command, args)` names what an operation changes, from its
+  validated arguments. A request for an operation must name exactly that
+  target, so its digest guards what the approval will change. Without it,
+  only an operation with a `character_id` argument (that character) can be
+  requested.
 
 `HOST_API_VERSION` stays 1; unknown capability versions are refused when the
 module is resolved, as for `CharacterRules`.
@@ -578,8 +585,8 @@ CREATE TABLE host_requests (
   job's character. A campaign-wide request must say so (`"scope":
   "campaign"`; any other is `"scope": "target"`). An exception is for one of
   the sender's own unarchived characters only; an operation names its
-  target, which must be the character its `character_id` argument names, if
-  it has one. The explanation is 1 to 1,000 characters. The payload is validated now, as it will be at decision time
+  target, which must be exactly what the operation changes by the module's
+  `target` rule (section 6), else `invalid_request`. The explanation is 1 to 1,000 characters. The payload is validated now, as it will be at decision time
   (`validate` for settings; the operation's own `validate` for an
   operation); an unsupported request is refused to the referee, not stored.
   The request records the policy revision, a draft target's draft revision
@@ -698,8 +705,18 @@ end the job) and that a ruling, a choice or a claim approves nothing.
   never reaches a guest through recovery. A host result is listed only to
   later jobs of the same player while it is the campaign host (it ran as
   `host:<player_id>`), so a transfer ends every unnarrated host result: the
-  new host sees them in `host_audit`, not as results to narrate. A `propose` step is the requester's own result, under the usual
-  rules (a creation job's proposal is a creation result of its draft).
+  new host sees them in `host_audit`, not as results to narrate.
+- **Proposals stay with their requester.** A `propose` step is the
+  requester's own result: it is listed to, and may be narrated by, only a
+  later job of its requester (under the usual mode rules: a creation job's
+  proposal is a creation result of its draft). Any other job, the host's
+  included, could tell it only to the table, so it never sees it as a
+  result; the host reads requests through `pending_requests`.
+- **The host's own session.** Each host tool also checks, inside its own
+  transaction, that the host's participant session in this game still holds
+  (its link, and the game in its file), as any guarded operation does; a
+  host unlinked mid-job has no host tools and its `get_context` is a
+  guest's.
 - **What cannot authorize anything:** a ruling (`record_ruling`), a choice
   (`choices.ask`/`resolve`), a reply's text, a player's claim of consent, or
   a guest job's call. Only a decision recorded through `request_decide` or

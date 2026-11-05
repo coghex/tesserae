@@ -888,11 +888,17 @@ def _message_from(row) -> dict:
 def _visible_results(job: Job | None, host_sender: str | None) -> tuple[str, tuple]:
     """The SQL condition (on a step `s` and its job's input `i`) for the
     earlier results a job may see and narrate: host results only for a job
-    of the campaign host they ran for, whatever its mode; any other result
+    of the campaign host they ran for, whatever its mode; a proposal (the
+    requester's own request, often private) only for a later job of its
+    requester, since any other job could tell it only to the table (the
+    campaign host reads it through `pending_requests`); any other result
     under the character game's mode rules (`_results_for`)."""
     mode, parameters = (
         ("", ()) if job is None or job.mode is None else _results_for(job)
     )
+    if job is not None:
+        mode += " AND (s.kind != 'propose' OR i.participant_id = ?)"
+        parameters = (*parameters, job.participant_id)
     if host_sender is None:
         return " AND s.kind != 'host'" + mode, parameters
     return (

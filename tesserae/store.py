@@ -496,12 +496,15 @@ class Decider:
     message; or the local operator (`OPERATOR_DECIDER`). `via` says how the
     decision came: `client`, `referee` or `operator`. Its commands and replay
     records use the sender `host:<player_id>`, which no participant or token
-    is."""
+    is. Via the referee, `participant` is the host's own session in this game,
+    whose access each privileged operation checks again inside its own
+    transaction."""
 
     player_id: str
     host_id: str | None = None
     via: str = "client"
     job_id: str | None = None
+    participant: ParticipantContext | None = None
 
     def __post_init__(self):
         if not isinstance(self.player_id, str) or not self.player_id:
