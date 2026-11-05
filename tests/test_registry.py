@@ -8,11 +8,13 @@ import unittest
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from tesserae.builtin import DICE_RUNTIME
 from tesserae.credentials import new_token
 from tesserae.registry import (
     _SCHEMA,
+    _UPGRADE_2,
     CampaignUnavailable,
     CredentialRevoked,
     HostRefused,
@@ -336,11 +338,14 @@ class CampaignHostTests(unittest.TestCase):
             self.context(sender), self.campaign, self.ids.get(to, to), request_id
         )
 
-    def test_schema_1_registry_is_upgraded_in_place_and_kept(self):
-        old = self.root / "old.sqlite3"
+    def schema_1(self, name, host_id=None) -> Path:
+        """A registry as schema 1 left it, with one player and campaign."""
+        old = self.root / name
         with sqlite3.connect(old) as connection:
             connection.executescript(_SCHEMA)
-            connection.execute("INSERT INTO host VALUES (1, ?)", (str(uuid.uuid4()),))
+            connection.execute(
+                "INSERT INTO host VALUES (1, ?)", (host_id or str(uuid.uuid4()),)
+            )
             connection.execute(
                 "INSERT INTO players VALUES ('u_0123456789abcdef', 'Ann', 'then')"
             )
@@ -351,15 +356,22 @@ class CampaignHostTests(unittest.TestCase):
             connection.execute(f"PRAGMA application_id = {REGISTRY_ID}")
             connection.execute("PRAGMA user_version = 1")
         connection.close()
+        return old
+
+    def test_schema_1_registry_is_upgraded_in_place_and_kept(self):
+        old = self.schema_1("old.sqlite3")
         damaged = self.root / "damaged.sqlite3"
         shutil.copyfile(old, damaged)
         with sqlite3.connect(damaged) as connection:
             connection.execute("DROP TABLE memberships")
         connection.close()
-        before = damaged.read_bytes()
-        with self.assertRaises(RegistryError):
-            HostRegistry(damaged)
-        self.assertEqual(damaged.read_bytes(), before)  # never half-upgraded
+        bad_host = self.schema_1("bad-host.sqlite3", host_id="not-a-uuid")
+        for path in (damaged, bad_host):  # refused whole, never half-upgraded
+            with self.subTest(path=path.name):
+                before = path.read_bytes()
+                with self.assertRaises(RegistryError):
+                    HostRegistry(path)
+                self.assertEqual(path.read_bytes(), before)
         with HostRegistry(old) as upgraded:
             [campaign] = upgraded.campaigns()
             self.assertEqual(
@@ -371,6 +383,45 @@ class CampaignHostTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (2,))
         connection.close()
         HostRegistry(old).close()  # opening it again changes nothing
+
+    def test_an_upgrade_by_another_opener_is_seen_whole_or_not_at_all(self):
+        # Another opener tries to upgrade between this opener's reads of the
+        # schema version and of its tables: it has to wait, and this opener
+        # never mistakes the half-read schema for damage.
+        old = self.schema_1("old.sqlite3")
+        tried = []
+
+        def other_opener(statement):
+            if tried or "pragma_table_info" not in statement:
+                return
+            other = sqlite3.connect(old, timeout=0.2, isolation_level=None)
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                for upgrade in _UPGRADE_2.split(";"):
+                    if upgrade.strip():
+                        other.execute(upgrade)
+                other.execute("PRAGMA user_version = 2")
+                other.execute("COMMIT")
+                tried.append("committed")
+            except sqlite3.OperationalError:
+                tried.append("waited")
+            finally:
+                other.close()
+
+        connect = sqlite3.connect
+
+        def traced(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connection.set_trace_callback(other_opener)
+            return connection
+
+        with mock.patch("tesserae.registry.sqlite3.connect", traced):
+            with HostRegistry(old) as upgraded:
+                self.assertEqual(len(upgraded.campaigns()), 1)
+        self.assertEqual(tried, ["waited"])
+        with sqlite3.connect(old) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (2,))
+        connection.close()
 
     def test_registration_with_a_host_grants_and_designates_it_at_once(self):
         self.assertEqual(self.host(), self.ids["hana"])

@@ -15,6 +15,7 @@ import signal
 import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 
@@ -60,7 +61,7 @@ from .server import (
     _Session,
     _SlowConsumer,
 )
-from .store import GameStore, StoreError
+from .store import GameStore, StoreBusy, StoreError
 from .web import AssetsError, load_assets
 
 REGISTRY_THREADS = 4
@@ -69,6 +70,7 @@ _UNSOLICITED = frozenset({"revision", "message", "referee", "actor", "role"})
 _CANNOT_OPEN = "That campaign cannot be opened right now; ask the host."
 _LOGIN_FAILED = error_message("internal_error", "The host could not check the login.")
 _HOST_FAILED = "The host failed; nothing was changed. Try again."
+_HOST_BUSY = "The game is busy; nothing was changed. Retry the same request."
 
 _OLD_CLIENT = error_message(
     "characters_unsupported", "This campaign uses characters; update your client."
@@ -381,7 +383,9 @@ class LobbyHost:
 
     async def _transfer(self, session: "_CampaignSession", request):
         """`campaign_host_transfer` (governance contract section 3): one
-        registry write, checked there; (reply, transferred)."""
+        registry write, checked there with the sender's campaign session
+        (its participant link, and the file still holding this campaign)
+        held until it commits; (reply, transferred)."""
         campaign_id = session.campaign["campaign_id"]
         try:
             transferred = await self._registry_call(
@@ -390,13 +394,20 @@ class LobbyHost:
                 campaign_id,
                 request.player_id,
                 request.request_id,
+                partial(_holding_session, session),
             )
         except CredentialRevoked:
             session.lost = "session_revoked"
             return session_error("session_revoked"), False
-        except CampaignUnavailable:
-            session.lost = "campaign_unavailable"
+        except (CampaignUnavailable, _NotInCampaign) as error:
+            if isinstance(error, CampaignUnavailable):
+                session.lost = "campaign_unavailable"
             return session_error("session_revoked"), False  # back to the lobby
+        except StoreBusy:
+            reply = error_message(
+                "internal_error", _HOST_BUSY, request_id=request.request_id
+            )
+            return reply, False
         except HostRefused as refused:
             reply = error_message(
                 refused.code, str(refused), request_id=request.request_id
@@ -444,9 +455,33 @@ def _credential_active(path, context) -> bool:
         return registry.credential_active(context)
 
 
-def _transfer_host(path, context, campaign_id, player_id, request_id) -> bool:
+def _transfer_host(path, context, campaign_id, player_id, request_id, held) -> bool:
     with HostRegistry(path) as registry:
-        return registry.transfer_host(context, campaign_id, player_id, request_id)
+        return registry.transfer_host(context, campaign_id, player_id, request_id, held)
+
+
+class _NotInCampaign(Exception):
+    """The sender's participant link in the campaign has ended."""
+
+
+@contextmanager
+def _holding_session(session: "_CampaignSession"):
+    """Inside the registry's transfer: the campaign file still holds this
+    campaign and the sender's participant link is active, held by a write
+    lock (so no unlink commits) until the transfer has committed."""
+    try:
+        store = session.service.open_store()
+    except StoreBusy:
+        raise
+    except StoreError:
+        raise CampaignUnavailable("The campaign file cannot be opened.") from None
+    with store:
+        if store.game_id != session.campaign["campaign_id"]:
+            raise CampaignUnavailable("The registered file now holds a different game.")
+        with store.transaction():
+            if store.session_revision(session.context) is None:
+                raise _NotInCampaign
+            yield
 
 
 def _authorized(path, context, campaign_id) -> dict:

@@ -383,15 +383,37 @@ class AccessTests(LobbyCase):
 
 
 class CampaignHostTests(LobbyCase):
-    def test_a_role_change_leaves_the_page_playing(self):
-        # Bob hands Harbor to Alice while her page plays in it, and she is
-        # told (governance contract section 4); host controls are GOV-7.
+    def test_a_role_notice_awaiting_a_reply_is_not_taken_for_it(self):
+        # Bob hands Harbor to Alice while her page waits for the reply to
+        # what she said, and she is told (governance contract section 4): the
+        # notice is not that reply. Host controls are GOV-7.
         harbor = self.campaigns["harbor"]
         with self.registry() as registry:
             registry.set_host(harbor, self.players["bob"])
             registry.grant(harbor, self.players["alice"])
-        page = self.logged_in("alice")
+        page, held, passed, released = self.open(), [], [], []
+
+        def route(socket):
+            server = socket.connect_to_server()
+
+            def from_host(message):
+                kind = json.loads(message)["type"]
+                if not released and kind != "role" and (held or kind == "accepted"):
+                    held.append(message)  # the reply and all after it
+                else:
+                    passed.append(kind)
+                    socket.send(message)
+
+            server.on_message(from_host)
+            socket.on_message(server.send)
+            self.page_socket = socket
+
+        page.route_web_socket(f"{self.host.uri}**", route)
+        self.logged_in("alice", page)
         self.enter(page, "Harbor")
+        self.say(page, "Still mine?")
+        while not held:
+            page.wait_for_timeout(20)
         with connect(self.host.uri) as bob:
             bob.send(
                 json.dumps({"version": 1, "type": "login", "token": self.tokens["bob"]})
@@ -412,8 +434,18 @@ class CampaignHostTests(LobbyCase):
                 )
             )
             self.assertEqual(json.loads(bob.recv())["role"], "guest")
-        self.say(page, "Still mine?")
+        while "role" not in passed:  # it reached the page before the reply
+            page.wait_for_timeout(20)
+        released.append(True)
+        for message in held:
+            self.page_socket.send(message)
         self.expect_answered(page, "Heard in Harbor: Still mine?")
+        # Its reply was `accepted`: the input is the page's last accepted one.
+        expect(page.locator("#console-last-text")).to_contain_text("Still mine?")
+        expect(page.locator("#composer-text")).to_have_value("")
+        expect(page.locator("#composer-note")).to_have_text("")
+        self.say(page, "And now?")
+        self.expect_answered(page, "Heard in Harbor: And now?")
         self.assertEqual(self.errors, [])
 
 

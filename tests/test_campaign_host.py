@@ -7,7 +7,9 @@ docs/designs/governance_contract.md sections 3, 4, 7 and 13."""
 
 import json
 import unittest
+from pathlib import Path
 
+from tesserae.builtin import DICE_RUNTIME
 from tesserae.credentials import new_token
 from tesserae.referee.store import RefereeStore
 from tesserae.store import GameStore
@@ -160,6 +162,34 @@ class TransferTests(CampaignHost):
             self.assertEqual(len(registry.host_changes(self.campaigns["trail"])), 2)
         # Actor ownership and history are untouched.
         self.assertEqual(self.trail().character(MARA).participant_id, ALICE)
+
+    async def test_a_transfer_needs_the_senders_own_campaign_session(self):
+        await self.start_host()
+        bob, _ = await self.enter("bob")
+        alice, _ = await self.enter("alice")
+        with self.trail() as store:  # Bob's participant link ends
+            store.unlink_host_player(self.host_id, self.players["bob"])
+        refused = await self.transfer(bob, "alice")
+        self.assertEqual(
+            (refused["code"], refused["request_id"]), ("campaign_unavailable", None)
+        )  # back in the lobby, as for any other request
+        bob, snapshot = await self.enter("bob")  # a new participant, still host
+        self.assertEqual(snapshot["role"], "host")
+        for suffix in ("", "-wal", "-shm"):  # the file now holds another game
+            Path(f"{self.trail_path}{suffix}").unlink(missing_ok=True)
+        with GameStore.create(self.trail_path, DICE_RUNTIME):
+            pass
+        refused = await self.transfer(bob, "alice")
+        self.assertEqual(
+            (refused["code"], refused["request_id"]), ("campaign_unavailable", None)
+        )
+        with self.registry() as registry:
+            self.assertEqual(
+                registry.campaign(self.campaigns["trail"])["host_player_id"],
+                self.players["bob"],
+            )
+            self.assertEqual(len(registry.host_changes(self.campaigns["trail"])), 1)
+        await alice.close()
 
     async def test_a_guests_requests_racing_a_transfer_are_each_answered_once(self):
         await self.start_host()

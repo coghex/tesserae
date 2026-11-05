@@ -168,7 +168,12 @@ campaign's `host_player_id`, read in the same read transaction. The caller's
 **role** is `host` when it equals the context's player ID, else `guest`.
 Because the guard's read lock blocks a registry writer, a transfer, a
 `set-host` or a credential revocation is ordered wholly before or wholly after
-each guarded operation.
+each guarded operation. A transfer also needs the sender's own campaign
+session, like any campaign request: it takes the registry exclusively, then
+checks the sender's participant link and the campaign file's game identity
+under a campaign write lock held until the registry commits, so an unlink or a
+replaced file is ordered wholly before or after it too. An ended link or a
+replaced file answers as for any other request (back to the lobby).
 
 - **Direct host messages** (section 13) check the role inside the guard, then
   do their campaign work in one campaign transaction under it, in the lobby

@@ -42,8 +42,9 @@ tesserae host campaign list --registry host.sqlite3
 other registry commands require an existing valid registry. Mistyped paths,
 empty files, game databases, unrelated SQLite databases, newer schemas and
 damaged registries are refused. A registry from before the campaign host
-(schema 1) is upgraded to schema 2 in one transaction the first time this
-version opens it; its campaigns then have no campaign host until you adopt
+(schema 1) is checked whole and upgraded to schema 2 in one transaction the
+first time this version opens it, so a damaged one is refused unchanged and
+two openers never see each other's upgrade half done; its campaigns then have no campaign host until you adopt
 them ([below](#the-campaign-host)). Older Tesserae versions refuse an
 upgraded registry.
 
@@ -132,7 +133,9 @@ tesserae host campaign set-host --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID
   every change is recorded with who made it.
 - **Transfer:** the campaign host can hand the campaign to another player
   with access and an active token, with the protocol's
-  `campaign_host_transfer` (client controls are GOV-6 and GOV-7).
+  `campaign_host_transfer` (client controls are GOV-6 and GOV-7). Like any
+  campaign request, it needs the sender's own session to hold: its
+  participant link, and the registered file still holding this campaign.
 - The campaign host can read everything in its campaign, but nothing of any
   other campaign: every character and sheet, drafts included, every
   conversation message, private and creation ones included, and the
@@ -162,7 +165,11 @@ rechecks credential, availability and grant, then yields an internal record
 including the database path and `host_player_id`, read in the same
 transaction, so a transfer or `set-host` is ordered wholly before or after
 each guarded operation. `register_campaign(path, name, host)`, `set_host` and
-`transfer_host` write the designation; without `host`, a campaign is
+`transfer_host` write the designation. `transfer_host` takes the registry
+exclusively, then enters the caller's `campaign()` check (the lobby holds the
+sender's participant link under a campaign write lock) and commits before
+leaving it: the same lock order, registry then campaign, with no guard left
+holding the registry while it waits. Without `host`, a campaign is
 registered unadopted (as before this version). It grants no game participant authority. Hold it
 only for the protected local admission/read/commit operation, never over model
 execution, human input or network waits. Use one registry connection per thread;

@@ -12,7 +12,7 @@ import os
 import secrets
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -167,18 +167,41 @@ class HostRegistry:
             raise
 
     def _validate(self):
+        """Each check reads one committed state; schema 1 is checked whole
+        and upgraded in the same write transaction, so a registry is never
+        changed unless it is valid, and another opener's upgrade is seen
+        whole or not at all."""
+        with self._transaction():
+            version = self._check_schema()
+        if version == 1:
+            with self._transaction(write=True):
+                if self._check_schema() == 1:  # nobody upgraded it meanwhile
+                    for statement in _UPGRADE_2.split(";"):
+                        if statement.strip():
+                            self._connection.execute(statement)
+                    self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    self._check_schema()
+
+    def _check_schema(self) -> int:
+        """Inside a transaction: raise RegistryError unless this is a valid
+        registry; its schema version (1 or 2)."""
         connection = self._connection
         if connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
             raise RegistryError("Not a Tesserae host registry; refusing to modify it.")
         if connection.execute("PRAGMA journal_mode").fetchone()[0] != "delete":
             raise RegistryError("Host registry requires DELETE rollback journal mode.")
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version == 1:
-            self._check_columns(_COLUMNS_1)  # nothing damaged is upgraded
-            self._upgrade()
-        elif version != SCHEMA_VERSION:
+        if version not in (1, SCHEMA_VERSION):
             raise RegistryError(f"Unsupported host registry schema version {version}.")
-        self._check_columns(_COLUMNS)
+        for table, expected in (_COLUMNS_1 if version == 1 else _COLUMNS).items():
+            actual = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM pragma_table_info(?)", (table,)
+                )
+            ]
+            if actual != expected:
+                raise RegistryError(f"Host registry table {table!r} is damaged.")
         rows = connection.execute("SELECT singleton, host_id FROM host").fetchall()
         if len(rows) != 1 or rows[0][0] != 1:
             raise RegistryError("Host registry must contain exactly one host.")
@@ -188,33 +211,7 @@ class HostRegistry:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise RegistryError("Host registry has an invalid host ID.") from None
-
-    def _check_columns(self, tables):
-        for table, expected in tables.items():
-            actual = [
-                row[0]
-                for row in self._connection.execute(
-                    "SELECT name FROM pragma_table_info(?)", (table,)
-                )
-            ]
-            if actual != expected:
-                raise RegistryError(f"Host registry table {table!r} is damaged.")
-
-    def _upgrade(self):
-        """Schema 1 to 2, whole or not at all; another opener may have
-        upgraded it first."""
-        connection = self._connection
-        connection.execute("BEGIN IMMEDIATE")
-        try:
-            if connection.execute("PRAGMA user_version").fetchone()[0] == 1:
-                for statement in _UPGRADE_2.split(";"):
-                    if statement.strip():
-                        connection.execute(statement)
-                connection.execute("PRAGMA user_version = 2")
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
+        return version
 
     def close(self):
         self._connection.close()
@@ -226,8 +223,11 @@ class HostRegistry:
         self.close()
 
     @contextmanager
-    def _transaction(self, *, write=False):
-        self._connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+    def _transaction(self, *, write=False, exclusive=False):
+        """Commits on success unless already committed inside."""
+        self._connection.execute(
+            "BEGIN EXCLUSIVE" if exclusive else "BEGIN IMMEDIATE" if write else "BEGIN"
+        )
         try:
             yield
             self._connection.commit()
@@ -371,50 +371,64 @@ class HostRegistry:
             self._designate(campaign_id, current, player_id, OPERATOR)
             return True
 
-    def transfer_host(self, context, campaign_id, player_id, request_id) -> bool:
+    def transfer_host(
+        self, context, campaign_id, player_id, request_id, campaign=nullcontext
+    ) -> bool:
         """The current campaign host hands the campaign to `player_id`, a
         player with an active grant and credential, in one registry write.
         True if transferred now, False for an exact replay (answered to the
         former host too). Raises CredentialRevoked, CampaignUnavailable or
-        HostRefused; a refusal changes nothing."""
-        with self._transaction(write=True):
+        HostRefused; a refusal changes nothing.
+
+        `campaign()` is entered once access is checked: a context manager
+        that checks the sender's own campaign session and holds it (raising
+        to refuse) until the transfer commits. The registry is locked
+        exclusively first, so no guarded operation holds the registry while
+        waiting for the campaign: the lock order stays registry, then
+        campaign, and nothing can deadlock."""
+        with self._transaction(exclusive=True):
             self._require_context(context)
-            campaign = self._granted_campaign(context, campaign_id)
-            recorded = self._connection.execute(
-                "SELECT to_player_id FROM campaign_host_changes "
-                "WHERE campaign_id = ? AND by = ? AND request_id = ?",
-                (campaign_id, context.player_id, request_id),
-            ).fetchone()
-            if recorded is not None:
-                if recorded[0] != player_id:
-                    raise HostRefused(
-                        "request_conflict",
-                        "That request ID was already used for another transfer.",
-                    )
-                return False
-            if campaign["host_player_id"] != context.player_id:
+            record = self._granted_campaign(context, campaign_id)
+            with campaign():
+                transferred = self._transfer(context, record, player_id, request_id)
+                self._connection.commit()  # before the campaign is released
+            return transferred
+
+    def _transfer(self, context, campaign, player_id, request_id) -> bool:
+        campaign_id = campaign["campaign_id"]
+        recorded = self._connection.execute(
+            "SELECT to_player_id FROM campaign_host_changes "
+            "WHERE campaign_id = ? AND by = ? AND request_id = ?",
+            (campaign_id, context.player_id, request_id),
+        ).fetchone()
+        if recorded is not None:
+            if recorded[0] != player_id:
                 raise HostRefused(
-                    "not_campaign_host", "Only the campaign host can do that."
+                    "request_conflict",
+                    "That request ID was already used for another transfer.",
                 )
-            if player_id == context.player_id:
-                raise HostRefused(
-                    "invalid_request", "You are already the campaign host."
-                )
-            if not self._connection.execute(
-                "SELECT 1 FROM memberships m JOIN credentials c ON c.player_id = m.player_id "
-                "WHERE m.campaign_id = ? AND m.player_id = ? AND m.revoked_at IS NULL "
-                "AND c.revoked_at IS NULL",
-                (campaign_id, player_id),
-            ).fetchone():
-                raise HostRefused(
-                    "invalid_request",
-                    "That player cannot become the campaign host: they need access "
-                    "to this campaign and an active token.",
-                )
-            self._designate(
-                campaign_id, context.player_id, player_id, context.player_id, request_id
+            return False
+        if campaign["host_player_id"] != context.player_id:
+            raise HostRefused(
+                "not_campaign_host", "Only the campaign host can do that."
             )
-            return True
+        if player_id == context.player_id:
+            raise HostRefused("invalid_request", "You are already the campaign host.")
+        if not self._connection.execute(
+            "SELECT 1 FROM memberships m JOIN credentials c ON c.player_id = m.player_id "
+            "WHERE m.campaign_id = ? AND m.player_id = ? AND m.revoked_at IS NULL "
+            "AND c.revoked_at IS NULL",
+            (campaign_id, player_id),
+        ).fetchone():
+            raise HostRefused(
+                "invalid_request",
+                "That player cannot become the campaign host: they need access "
+                "to this campaign and an active token.",
+            )
+        self._designate(
+            campaign_id, context.player_id, player_id, context.player_id, request_id
+        )
+        return True
 
     def host_changes(self, campaign_id):
         """Operator records: every designation of this campaign, oldest first."""
