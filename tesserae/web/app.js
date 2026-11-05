@@ -13,6 +13,13 @@
 // draft (private creation) or a ready character (play). Everything of one
 // actor (its sheet, draft, question, last and unconfirmed inputs) is cleared
 // when the actor changes; the campaign's conversation stays.
+//
+// In a campaign with a campaign host (docs/designs/governance_contract.md
+// section 15) Settings shows the role and the rules, and to the host its
+// requests, rules, administration and inspection. Host data lives only in
+// `state.host`, under its own scope: it is cleared, and late replies dropped,
+// when the role is no longer host, on leaving, on lost access or identity,
+// and on any reconnect until the host says the page is still its host.
 
 import { Session, newRequestId } from "/session.js";
 import { viewNode } from "/views.js";
@@ -93,7 +100,30 @@ const state = {
   confirmingArchive: false,
   characterNote: "",
   role: null, // "host" or "guest" in a campaign with a campaign host
+  rules: null, // the rules as this connection's character sees them (rules_view)
+  requestsNote: "", // the Console's note on the player's own requests
+  host: emptyHost(), // the campaign host's data: never shown to anyone else
 };
+
+function emptyHost() {
+  return {
+    requests: null, // every request (requests)
+    rules: null, // the revisions (rules_list)
+    shown: null, // one revision's document (rules_export)
+    confirmActivate: null, // {revision, expected} awaiting Activate
+    operations: null, // host_operations
+    pendingCommand: null, // {command, args, revision} awaiting Run it
+    inspect: null, // host_view
+    messages: [], // host_messages pages, in order
+    nextAfter: null, // the next page's after_seq, or null at the end
+    messagesShown: false,
+    audit: null, // host_audit records, as read so far
+    auditNext: null, // the next page's `after`, or null at the end
+    confirmTransfer: null, // the player ID awaiting Hand it over
+    note: "",
+    retry: null, // {message, describe, onReply}: a change to resend exactly
+  };
+}
 
 let session = null; // the one live Session, shared by both screens
 let heldToken = null; // in memory only, to reconnect the joined identity
@@ -108,6 +138,9 @@ let renderedCharacters = null; // the character list the picker shows
 let renderedSheet = null; // the sheet object the sheet panel shows
 const fileTokens = new WeakMap(); // token-entry fieldset to a chosen file's token
 let entryGeneration = 0; // bumped on every clear, so an older file read is dropped
+let hostScope = {}; // replaced whenever the host data is cleared
+let renderedHost = {}; // the host objects each list shows
+let renderedOwnRequests = null; // the requests the Console shows
 
 const $ = (id) => document.getElementById(id);
 
@@ -127,6 +160,7 @@ async function join(token) {
 // the draft and any unconfirmed input stay until the host answers.
 async function reconnect() {
   if (state.phase !== "lost" || heldToken === null) return;
+  clearHost(); // until the host says this page is its host again
   state.phase = "reconnecting";
   state.notice = "";
   render();
@@ -192,6 +226,10 @@ async function entered(current, snapshot, again) {
   seenGames.add(state.me.gameId);
   render();
   if (state.actor) listCharacters();
+  if (LOBBY) {
+    loadRules();
+    if (state.role === "host") loadHostOverview();
+  }
   if (!again) $(state.referee ? "composer-text" : "console-leave").focus();
   if (!state.referee) return; // a campaign without a referee has no conversation
   try {
@@ -361,6 +399,7 @@ function lost(closed) {
     state.confirmingArchive = false;
     statusRead = null;
     syncRead = null;
+    clearHost(); // privileged data never outlives the connection
     state.phase = "lost";
     state.notice = reconnecting ? "Could not reach the host. Try again once it is running." : "";
     render();
@@ -419,11 +458,14 @@ function clearGame() {
     lastAccepted: null,
     composerNote: "",
     noteIsBusy: false,
+    rules: null,
+    requestsNote: "",
   });
   statusRead = null;
   syncRead = null;
   $("composer-text").value = "";
   $("composer-private").checked = false;
+  clearHost();
 }
 
 // Empties every token field and file choice, forgets file tokens, and makes
@@ -457,6 +499,7 @@ function clearActor() {
     noteIsBusy: false,
     confirmingArchive: false,
     characterNote: "",
+    rules: null,
   });
   if (state.referee) state.referee = { ...state.referee, choices: [], your_last_input: null };
   statusRead = null;
@@ -476,6 +519,8 @@ function changeActor(actor) {
   const changed = actorKey(actor) !== actorKey(state.actor);
   if (changed && state.actor) clearActor();
   state.actor = actor;
+  // The rules are the actor's: read them for the new one, once it is set.
+  if (changed && state.phase === "joined") queueMicrotask(loadRules);
   return changed;
 }
 
@@ -530,10 +575,21 @@ function receive(message) {
   } else if (message.type === "revision") {
     if (state.revision === null || message.revision > state.revision) readView();
   } else if (message.type === "role") {
-    state.role = message.role; // host controls are later work (GOV-7)
+    const was = state.role;
+    state.role = message.role;
+    if (message.role !== "host") {
+      clearHost(was === "host" ? "You are no longer this campaign's host." : "");
+    } else if (was !== "host") {
+      loadHostOverview();
+    }
+    loadRules();
   } else if (message.type === "proposal") {
-    // A request's state changed; showing requests is later work (GOV-7).
+    // A request's state changed: the player's own, or one for the host. An
+    // approval may have given a shown draft a new revision: read it again.
     if (state.referee) readStatus();
+    if (state.actor && state.actor.mode === "creation") readView();
+    if (state.role === "host") loadRequests();
+    loadRules();
   }
   render();
 }
@@ -898,6 +954,368 @@ function editUnconfirmed() {
   $("composer-text").focus();
 }
 
+// ---- Campaign governance (docs/designs/governance_contract.md section 15) --
+
+// Clears every host datum and makes replies to anything asked before land
+// nowhere. The page never decides authority: the host refuses, and the
+// page then shows nothing of it.
+function clearHost(note = "") {
+  hostScope = {};
+  state.host = emptyHost();
+  state.host.note = note;
+  renderedHost = {};
+  $("host-admin-args").value = "";
+  $("host-rules-file").value = "";
+  $("host-transfer-player").value = "";
+  for (const id of ["host-request-list", "host-revision-list", "host-inspect-body",
+    "host-message-list", "host-admin-operation", "host-audit-list"]) {
+    $(id).replaceChildren();
+  }
+}
+
+// One governance request from the live campaign; null if the page has left
+// it (or, with `host`, cleared its host data) since, or the host refused
+// because the sender is not its campaign host (and its host data is gone).
+async function ask(send, { host = false } = {}) {
+  const current = session;
+  const campaignHere = campaignScope;
+  const here = hostScope;
+  if (!current || state.phase !== "joined") return null;
+  let reply;
+  try {
+    reply = await send(current);
+  } catch {
+    return null; // the connection closed; lost() has already said so
+  }
+  if (!stillIn(current, campaignHere) || leftCampaign(reply)) return null;
+  if (host && here !== hostScope) return null;
+  if (reply.type === "error" && reply.code === "not_campaign_host") {
+    clearHost("Only the campaign host can do that, and you are not its host here now.");
+    render();
+    return null;
+  }
+  return reply;
+}
+
+// The rules as this connection's character (or, with none, any new
+// character) sees them: never another character's exception.
+async function loadRules() {
+  if (!LOBBY) return;
+  const here = scope; // the actor asked for: a reply for an earlier one is dropped
+  const asked = actorKey(state.actor);
+  const character = state.actor && state.actor.character;
+  const wanted = character ? character.character_id : null;
+  const reply = await ask((current) => current.rulesView(wanted));
+  if (!reply || here !== scope || actorKey(state.actor) !== asked) return;
+  if (reply.type === "rules_view" && (reply.character_id ?? null) === wanted) {
+    state.rules = reply;
+    render();
+  }
+}
+
+function loadHostOverview() {
+  loadRequests();
+  loadRevisions();
+}
+
+async function loadRequests() {
+  const reply = await ask((current) => current.requests(), { host: true });
+  if (reply && reply.type === "requests" && state.role === "host") {
+    state.host.requests = reply.requests;
+    render();
+  }
+}
+
+async function loadRevisions() {
+  const reply = await ask((current) => current.rulesList(), { host: true });
+  if (reply && reply.type === "rules_list") {
+    state.host.rules = reply;
+    render();
+  }
+}
+
+async function showRevision(revision) {
+  const reply = await ask((current) => current.rulesExport(revision), { host: true });
+  if (reply && reply.type === "rules") state.host.shown = reply;
+  else if (reply) state.host.note = reply.message;
+  render();
+}
+
+// One host change, sent as exactly `message`. Refused as busy or failed
+// with nothing stored, it can be resent unchanged (Retry exactly) until
+// anything else is done or the host data is cleared.
+async function change(message, describe, onReply) {
+  state.host.note = "";
+  state.host.retry = null;
+  render();
+  const reply = await ask((current) => current.request(message), { host: true });
+  if (!reply) return;
+  if (reply.type === "error" && ["referee_busy", "internal_error"].includes(reply.code)) {
+    state.host.retry = { message, describe, onReply };
+    state.host.note = `${reply.message} Nothing changed.`;
+  } else {
+    onReply(reply);
+  }
+  render();
+}
+
+function retryChange() {
+  const retry = state.host.retry;
+  if (retry) change(retry.message, retry.describe, retry.onReply);
+}
+
+function decide(proposalId, decision) {
+  const field = $("host-request-list").querySelector(
+    `input[data-proposal-id="${CSS.escape(proposalId)}"]`,
+  );
+  const note = field ? field.value.trim() : "";
+  const message = {
+    version: 1, type: "request_decide", request_id: newRequestId(),
+    proposal_id: proposalId, decision, note: note || null,
+  };
+  const verb = decision === "approve" ? "Approve" : "Deny";
+  change(message, `${verb} request ${proposalId}`, (reply) => {
+    if (reply.type === "proposal" && reply.state === "stale") {
+      state.host.note =
+        `Request ${proposalId} is stale: the game changed since it was asked, so ` +
+        "nothing changed. A new request is needed.";
+    } else if (reply.type === "proposal") {
+      state.host.note = `Request ${proposalId} is now ${reply.state}.`;
+    } else {
+      state.host.note = reply.message || "The host could not decide it.";
+    }
+    loadRequests();
+    loadRevisions();
+    loadRules();
+    if (state.actor) listCharacters();
+  });
+}
+
+function askActivate(revision) {
+  const rules = state.host.rules;
+  if (!rules) return;
+  state.host.confirmActivate = { revision, expected: rules.policy_revision };
+  render();
+  $("host-activate-no").focus();
+}
+
+function activate() {
+  const confirm = state.host.confirmActivate;
+  if (!confirm) return;
+  state.host.confirmActivate = null;
+  const message = {
+    version: 1, type: "rules_activate", request_id: newRequestId(),
+    revision: confirm.revision, expected_policy_revision: confirm.expected,
+  };
+  change(message, `Activate revision ${confirm.revision}`, (reply) => {
+    if (reply.type === "rules") {
+      state.host.note = `Revision ${reply.revision} is now the campaign's settings.`;
+    } else if (reply.code === "stale_policy") {
+      state.host.note =
+        "The settings changed since you looked, so nothing changed. Review the " +
+        "revisions again.";
+    } else {
+      state.host.note = problemsText(reply);
+    }
+    loadRevisions();
+    loadRules();
+    if (state.actor) listCharacters();
+  });
+}
+
+function reject(revision) {
+  const message = { version: 1, type: "rules_reject", request_id: newRequestId(), revision };
+  change(message, `Reject revision ${revision}`, (reply) => {
+    state.host.note = reply.type === "rules"
+      ? `Revision ${reply.revision} is rejected.`
+      : reply.message;
+    loadRevisions();
+  });
+}
+
+async function importRules() {
+  const file = $("host-rules-file").files && $("host-rules-file").files[0];
+  if (!file) {
+    state.host.note = "Choose a JSON settings document first.";
+    render();
+    return;
+  }
+  const here = hostScope;
+  let content;
+  try {
+    content = JSON.parse(await file.text());
+  } catch {
+    state.host.note = "That file is not a JSON document.";
+    render();
+    return;
+  }
+  if (here !== hostScope) return;
+  const message = { version: 1, type: "rules_import", request_id: newRequestId(), content };
+  change(message, `Import ${file.name}`, (reply) => {
+    state.host.note = reply.type === "rules"
+      ? `Stored as candidate revision ${reply.revision}; nothing live changed.`
+      : problemsText(reply);
+    $("host-rules-file").value = "";
+    loadRevisions();
+  });
+}
+
+function problemsText(reply) {
+  const problems = Array.isArray(reply.problems) ? reply.problems.map(String) : [];
+  return [reply.message || "The host refused it.", ...problems].join(" ");
+}
+
+async function loadOperations() {
+  const reply = await ask((current) => current.hostOperations(), { host: true });
+  if (reply && reply.type === "host_operations") {
+    state.host.operations = reply;
+    render();
+    chooseOperation();
+  }
+}
+
+// Prefills the arguments with what the module describes: a starting point
+// to edit, never a validator. The host checks them when it runs.
+function chooseOperation() {
+  const operations = (state.host.operations && state.host.operations.operations) || [];
+  const chosen = operations.find((op) => op.command === $("host-admin-operation").value);
+  $("host-admin-description").textContent = chosen ? String(chosen.description ?? "") : "";
+  const args = {};
+  for (const arg of (chosen && Array.isArray(chosen.args) ? chosen.args : [])) {
+    if (!arg || typeof arg.name !== "string") continue;
+    args[arg.name] = Array.isArray(arg.values) && arg.values.length ? arg.values[0]
+      : arg.type === "integer" ? (Number.isInteger(arg.min) ? arg.min : 0)
+        : arg.type === "boolean" ? false
+          : String(arg.type || "").startsWith("list") ? []
+            : "";
+  }
+  $("host-admin-args").value = chosen ? JSON.stringify(args, null, 2) : "";
+  state.host.pendingCommand = null;
+  render();
+}
+
+// Shows exactly what will run, at the revision the page shows now.
+function reviewCommand() {
+  const command = $("host-admin-operation").value;
+  let args;
+  try {
+    args = JSON.parse($("host-admin-args").value || "{}");
+  } catch {
+    args = null;
+  }
+  if (!command || args === null || typeof args !== "object" || Array.isArray(args)) {
+    state.host.note = "The arguments must be one JSON object.";
+    render();
+    return;
+  }
+  state.host.pendingCommand = { command, args, revision: state.revision };
+  state.host.note = "";
+  render();
+  $("host-admin-cancel").focus();
+}
+
+function runCommand() {
+  const pending = state.host.pendingCommand;
+  if (!pending) return;
+  state.host.pendingCommand = null;
+  const message = {
+    version: 1, type: "host_command", request_id: newRequestId(),
+    expected_revision: pending.revision, command: pending.command, args: pending.args,
+  };
+  change(message, `Run ${pending.command}`, (reply) => {
+    if (reply.type === "result") {
+      state.host.note = `Done at revision ${reply.revision}.`;
+      readView();
+      if (state.host.inspect) loadInspect();
+    } else if (reply.code === "stale_revision") {
+      state.host.note =
+        "The game moved on since you reviewed this, so nothing changed. Review it again.";
+      readView();
+    } else {
+      state.host.note = reply.message || "The host could not run it.";
+    }
+  });
+}
+
+async function loadInspect() {
+  const reply = await ask((current) => current.hostView(), { host: true });
+  if (reply && reply.type === "host_view") {
+    state.host.inspect = reply;
+    render();
+  }
+}
+
+async function loadMessages(more) {
+  const after = more ? state.host.nextAfter : 0;
+  if (after === null) return;
+  const reply = await ask((current) => current.hostMessages(after), { host: true });
+  if (reply && reply.type === "host_messages") {
+    state.host.messages = more ? [...state.host.messages, ...reply.messages] : reply.messages;
+    state.host.nextAfter = reply.next_after_seq;
+    state.host.messagesShown = true;
+    render();
+  }
+}
+
+// The audit, oldest first, a page at a time: Show more reads the next.
+async function loadAudit(more) {
+  const after = more ? state.host.auditNext : 0;
+  if (after === null) return;
+  const reply = await ask((current) => current.hostAudit(after), { host: true });
+  if (reply && reply.type === "host_audit") {
+    state.host.audit = more ? [...(state.host.audit || []), ...reply.records] : reply.records;
+    state.host.auditNext = reply.next_after;
+    render();
+  }
+}
+
+function askTransfer() {
+  const player = $("host-transfer-player").value.trim();
+  if (!player) {
+    state.host.note = "Type the ID of the player to hand the campaign to.";
+    render();
+    return;
+  }
+  state.host.confirmTransfer = player;
+  render();
+  $("host-transfer-no").focus();
+}
+
+// Hands the campaign over; the host's answer makes this page a guest, and
+// its host data goes with that role.
+function transfer() {
+  const player = state.host.confirmTransfer;
+  if (!player) return;
+  state.host.confirmTransfer = null;
+  const message = {
+    version: 1, type: "campaign_host_transfer", request_id: newRequestId(), player_id: player,
+  };
+  change(message, `Hand the campaign to ${player}`, (reply) => {
+    if (reply.type === "role") {
+      state.role = reply.role;
+      clearHost(`You handed the campaign to ${player}; you are a guest here now.`);
+      loadRules();
+    } else {
+      state.host.note = reply.message || "The host could not hand it over.";
+    }
+  });
+}
+
+// The player's own request, withdrawn: its only control.
+async function withdraw(proposalId) {
+  const reply = await ask((current) =>
+    current.request({
+      version: 1, type: "request_cancel", request_id: newRequestId(), proposal_id: proposalId,
+    }),
+  );
+  if (!reply) return;
+  state.requestsNote = reply.type === "proposal"
+    ? `Request ${proposalId} is withdrawn.`
+    : reply.message || "The host could not withdraw it.";
+  readStatus();
+  render();
+}
+
 // ---- Rendering -----------------------------------------------------------
 
 function render() {
@@ -1002,6 +1420,7 @@ function renderConsole() {
   $("composer-private").disabled = locked;
   $("composer-note").textContent = state.composerNote;
   renderConversation();
+  renderOwnRequests(shown);
   renderQuestion();
   renderUnconfirmed();
   renderLastInput();
@@ -1229,6 +1648,245 @@ function renderSettings() {
       : "None";
   $("settings-disconnect").disabled = state.phase === "out";
   $("settings-change").disabled = state.phase === "out";
+  renderRules(joined);
+  renderHost(joined);
+}
+
+// ---- Rendering campaign governance ----------------------------------------
+
+function textItem(tag, text, className) {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function button(label, data) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.textContent = label;
+  Object.assign(node.dataset, data);
+  return node;
+}
+
+function compact(value) {
+  return JSON.stringify(value);
+}
+
+function requestSummary(request) {
+  const target = request.target;
+  const on = target ? `${target.kind} ${target.id}` : "the campaign";
+  const who = (request.requester && (request.requester.name || request.requester.participant_id)) || "?";
+  return `${who} asks for ${request.kind} ${compact(request.payload)} on ${on}: “${request.explanation}”`;
+}
+
+// The Console: the player's own requests and what became of them.
+function renderOwnRequests(shown) {
+  const requests = (shown && state.referee && state.referee.requests) || [];
+  $("console-requests").hidden = requests.length === 0 && !state.requestsNote;
+  $("console-requests-note").textContent = state.requestsNote;
+  if (renderedOwnRequests !== requests) {
+    renderedOwnRequests = requests;
+    $("console-request-list").replaceChildren(
+      ...requests.map((request) => {
+        const item = document.createElement("li");
+        item.dataset.proposalId = String(request.proposal_id);
+        item.append(textItem("p", `${request.state}: ${request.kind} ${compact(request.payload)}`, "request-state"));
+        if (request.decision_note) {
+          item.append(textItem("p", `The host's note: ${request.decision_note}`, "note"));
+        }
+        if (request.state === "pending") {
+          item.append(button("Withdraw", { withdraw: String(request.proposal_id) }));
+        }
+        return item;
+      }),
+    );
+  }
+  const usable = state.phase === "joined";
+  for (const node of $("console-request-list").querySelectorAll("button")) node.disabled = !usable;
+}
+
+// Settings: the role and the rules, for everyone in a campaign.
+function renderRules(joined) {
+  const panel = $("settings-rules-panel");
+  panel.hidden = !LOBBY || !joined;
+  const role = state.role;
+  $("settings-role").textContent =
+    role === "host"
+      ? "You are this campaign's host."
+      : role === "guest"
+        ? "You are a guest here. The campaign host can read your private creation " +
+          "and conversation, but no other guest can."
+        : "This campaign has no campaign host.";
+  const rules = state.rules;
+  if (renderedHost.rulesView === rules) return;
+  renderedHost.rulesView = rules;
+  const body = [];
+  if (rules) {
+    body.push(textItem("p", `Settings revision ${rules.policy_revision}.`));
+    body.push(viewNode(null, rules.settings));
+    if (rules.exception) body.push(textItem("p", `Your exception: ${compact(rules.exception)}`));
+    if (rules.guidance) body.push(textItem("p", `Guidance: ${rules.guidance}`));
+    if (Array.isArray(rules.requirements)) {
+      const list = document.createElement("ul");
+      list.className = "requirements";
+      for (const entry of rules.requirements) {
+        const met = entry.met === true ? ", done" : entry.met === false ? ", to do" : "";
+        list.append(textItem("li", `${entry.id} (${entry.kind}${met}): ${entry.description}`));
+      }
+      body.push(list);
+    }
+  }
+  $("settings-rules-body").replaceChildren(...body);
+}
+
+// Settings: the campaign host's panels, only while it is the host.
+function renderHost(joined) {
+  const host = state.host;
+  const isHost = joined && state.role === "host";
+  $("host-panels").hidden = !isHost && !host.note;
+  $("host-note").textContent = host.note;
+  $("host-note").hidden = !host.note;
+  for (const id of ["host-requests", "host-rules", "host-admin", "host-inspect", "host-transfer"]) {
+    $(id).hidden = !isHost;
+  }
+  $("host-retry").hidden = !host.retry;
+  $("host-retry-text").textContent = host.retry
+    ? `${host.retry.describe}: not done yet. Retry sends exactly the same request.`
+    : "";
+
+  const requests = host.requests || [];
+  $("host-requests-empty").hidden = requests.length > 0;
+  if (renderedHost.requests !== host.requests) {
+    renderedHost.requests = host.requests;
+    $("host-request-list").replaceChildren(
+      ...requests.map((request) => {
+        const item = document.createElement("li");
+        const id = String(request.proposal_id);
+        item.dataset.proposalId = id;
+        item.append(textItem("p", `${id} (${request.state}): ${requestSummary(request)}`));
+        if (request.decision_note) item.append(textItem("p", `Note: ${request.decision_note}`, "note"));
+        if (request.state === "pending") {
+          const note = document.createElement("input");
+          note.type = "text";
+          note.maxLength = 1000;
+          note.dataset.proposalId = id;
+          note.setAttribute("aria-label", `Note for ${id}`);
+          item.append(note, button("Approve", { approve: id }), button("Deny", { deny: id }));
+        }
+        return item;
+      }),
+    );
+  }
+
+  const rules = host.rules;
+  $("host-rules-active").textContent = rules
+    ? `Active settings revision: ${rules.policy_revision || "none"}.`
+    : "";
+  if (renderedHost.rules !== rules) {
+    renderedHost.rules = rules;
+    $("host-revision-list").replaceChildren(
+      ...((rules && rules.revisions) || []).map((revision) => {
+        const item = document.createElement("li");
+        const number = String(revision.revision);
+        item.append(textItem("span", `Revision ${number}: ${revision.state} (${revision.origin}) `));
+        item.append(button("Show", { show: number }));
+        if (revision.state === "candidate") {
+          item.append(button("Activate…", { activate: number }), button("Reject", { reject: number }));
+        }
+        return item;
+      }),
+    );
+  }
+  const confirm = host.confirmActivate;
+  $("host-activate-confirm").hidden = !confirm;
+  $("host-activate-text").textContent = confirm
+    ? `Make revision ${confirm.revision} the campaign's settings, replacing revision ` +
+      `${confirm.expected}? Drafts it changes must be approved again; ready characters ` +
+      "are not changed."
+    : "";
+  const shown = host.shown;
+  $("host-rules-shown").hidden = !shown;
+  $("host-rules-shown-title").textContent = shown ? `Revision ${shown.revision} (${shown.state})` : "";
+  $("host-rules-shown-text").textContent = shown ? JSON.stringify(shown.content, null, 2) : "";
+
+  const operations = host.operations;
+  $("host-admin-form").hidden = !operations;
+  if (renderedHost.operations !== operations) {
+    renderedHost.operations = operations;
+    $("host-admin-operation").replaceChildren(
+      ...((operations && operations.operations) || []).map((op) => {
+        const option = document.createElement("option");
+        option.value = String(op.command);
+        option.textContent = String(op.command);
+        return option;
+      }),
+    );
+  }
+  const pending = host.pendingCommand;
+  $("host-admin-confirm").hidden = !pending;
+  $("host-admin-confirm-text").textContent = pending
+    ? `Run ${pending.command} at revision ${pending.revision}? If the game moves on ` +
+      "first, it is refused and nothing changes."
+    : "";
+  $("host-admin-confirm-args").textContent = pending ? JSON.stringify(pending.args, null, 2) : "";
+
+  if (renderedHost.inspect !== host.inspect) {
+    renderedHost.inspect = host.inspect;
+    $("host-inspect-body").replaceChildren(...inspectNodes(host.inspect));
+  }
+  if (renderedHost.messages !== host.messages) {
+    renderedHost.messages = host.messages;
+    $("host-message-list").replaceChildren(
+      ...host.messages.map((message) => {
+        const item = messageItem(message);
+        if (Array.isArray(message.to) && message.to.length) {
+          const names = message.to.map((to) => String(to.name ?? to.participant_id)).join(", ");
+          item.append(textItem("p", `To ${names}`, "note"));
+        }
+        return item;
+      }),
+    );
+  }
+  $("host-messages-more").hidden = !host.messagesShown || host.nextAfter === null;
+  if (renderedHost.audit !== host.audit) {
+    renderedHost.audit = host.audit;
+    $("host-audit-list").replaceChildren(
+      ...(host.audit || []).map((record) =>
+        textItem("li", `${record.kind} by ${record.player_id} (${record.via})` +
+          `${record.target ? ` on ${record.target}` : ""}: ${compact(record.detail)}`),
+      ),
+    );
+  }
+  $("host-audit-more").hidden = host.audit === null || host.auditNext === null;
+  const transferring = host.confirmTransfer;
+  $("host-transfer-confirm").hidden = !transferring;
+  $("host-transfer-text").textContent = transferring
+    ? `Hand this campaign to ${transferring}? You become a guest at once, and these ` +
+      "panels close."
+    : "";
+  const usable = isHost && !host.retry;
+  for (const node of $("host-panels").querySelectorAll("button")) {
+    if (!["host-retry-send", "host-retry-drop"].includes(node.id)) node.disabled = !usable;
+  }
+}
+
+function inspectNodes(view) {
+  if (!view) return [];
+  const names = new Map((view.participants || []).map((p) => [p.participant_id, p.name]));
+  const nodes = [textItem("p", `As of revision ${view.revision}.`, "note")];
+  const list = document.createElement("ul");
+  list.className = "host-characters";
+  for (const character of view.characters || []) {
+    const item = document.createElement("li");
+    const owner = names.get(character.participant_id) || character.participant_id;
+    item.append(textItem("h3", `${characterLabel(character)}, ${character.phase}, ${owner}`));
+    item.append(textItem("p", String(character.character_id), "note"));
+    item.append(viewNode(null, character.sheet));
+    list.append(item);
+  }
+  nodes.push(list, textItem("h3", "Everything the module keeps"), viewNode(null, view.inspect));
+  return nodes;
 }
 
 function showNotice(element) {
@@ -1334,6 +1992,58 @@ function start() {
   $("unconfirmed-resend").addEventListener("click", () => resend(state.unconfirmed, true));
   $("unconfirmed-edit").addEventListener("click", editUnconfirmed);
   $("console-resend").addEventListener("click", () => resend(resendTarget(), false));
+  // Campaign governance: everything is asked of the host; nothing runs
+  // until its button is pressed, and changes only after a confirmation.
+  $("console-request-list").addEventListener("click", (event) => {
+    const node = event.target.closest("button[data-withdraw]");
+    if (node) withdraw(node.dataset.withdraw);
+  });
+  $("settings-rules-refresh").addEventListener("click", loadRules);
+  $("host-requests-refresh").addEventListener("click", loadRequests);
+  $("host-request-list").addEventListener("click", (event) => {
+    const node = event.target.closest("button[data-approve], button[data-deny]");
+    if (node && node.dataset.approve) decide(node.dataset.approve, "approve");
+    else if (node) decide(node.dataset.deny, "deny");
+  });
+  $("host-rules-refresh").addEventListener("click", loadRevisions);
+  $("host-revision-list").addEventListener("click", (event) => {
+    const node = event.target.closest("button");
+    if (!node) return;
+    if (node.dataset.show) showRevision(Number(node.dataset.show));
+    else if (node.dataset.activate) askActivate(Number(node.dataset.activate));
+    else if (node.dataset.reject) reject(Number(node.dataset.reject));
+  });
+  $("host-activate-yes").addEventListener("click", activate);
+  $("host-activate-no").addEventListener("click", () => {
+    state.host.confirmActivate = null;
+    render();
+  });
+  $("host-rules-import").addEventListener("click", importRules);
+  $("host-admin-load").addEventListener("click", loadOperations);
+  $("host-admin-operation").addEventListener("change", chooseOperation);
+  $("host-admin-review").addEventListener("click", reviewCommand);
+  $("host-admin-run").addEventListener("click", runCommand);
+  $("host-admin-cancel").addEventListener("click", () => {
+    state.host.pendingCommand = null;
+    render();
+  });
+  $("host-inspect-load").addEventListener("click", loadInspect);
+  $("host-messages-load").addEventListener("click", () => loadMessages(false));
+  $("host-messages-more").addEventListener("click", () => loadMessages(true));
+  $("host-audit-load").addEventListener("click", () => loadAudit(false));
+  $("host-audit-more").addEventListener("click", () => loadAudit(true));
+  $("host-transfer-ask").addEventListener("click", askTransfer);
+  $("host-transfer-yes").addEventListener("click", transfer);
+  $("host-transfer-no").addEventListener("click", () => {
+    state.host.confirmTransfer = null;
+    render();
+  });
+  $("host-retry-send").addEventListener("click", retryChange);
+  $("host-retry-drop").addEventListener("click", () => {
+    state.host.retry = null;
+    state.host.note = "";
+    render();
+  });
   $("settings-disconnect").addEventListener("click", () => disconnect("Disconnected."));
   $("settings-change").addEventListener("click", () => {
     disconnect(`Disconnected. ${LOBBY ? "Log in" : "Join"} with the other token.`);

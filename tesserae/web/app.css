@@ -269,3 +269,30 @@ code { overflow-wrap: anywhere; }
 .create-character label { display: grid; gap: 0.25rem; }
 .message .audience.creation { font-style: italic; }
 .confirm { margin-top: 0.75rem; }
+
+/* Campaign governance (docs/designs/governance_contract.md section 15). */
+.request-list,
+.revision-list,
+.host-characters,
+.requirements {
+  padding-left: 1.25rem;
+}
+.request-list li,
+.revision-list li,
+.host-characters li {
+  margin-block: 0.5rem;
+}
+.request-list input[type="text"] {
+  margin-inline-end: 0.5rem;
+}
+.shown-document pre,
+.host-admin pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.host-admin label,
+.host-admin textarea,
+.host-admin select {
+  display: block;
+  width: 100%;
+}
