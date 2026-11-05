@@ -41,7 +41,8 @@ browser newcomer, with a scripted referee.
 The next [delivery design draft](docs/designs/campaign_authority_design.md)
 proposes campaign hosts, configurable requirements, guest approval requests
 and host sheet/world administration (M2-4). It separates that public framework
-work from later private campaign integration; it is not implemented yet.
+work from later private campaign integration; it is not implemented yet. Its
+exact rules are in the [governance contract](docs/designs/governance_contract.md).
 
 ## First executable slice
 
