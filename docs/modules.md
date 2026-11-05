@@ -84,6 +84,7 @@ dice operation and no `roll` command.
 | `referee_commands` | Optional `Command`s that run only in the host's `referee` context, which no player can authenticate as: their executors see `participant_id == "referee"`, and a player's command path never includes them. Names must not repeat the module's other commands |
 | `characters` | Optional `CharacterRules`: every game of the module is then a character game ([Characters](#characters)). Such a module checks seeds with `characters.validate_seed`, and must leave `validate_seed` unset |
 | `settings` | Optional `CampaignSettings`: the settings a campaign's settings document may configure, and what a character needs ([Campaign settings](#campaign-settings)) |
+| `administration` | Optional `Administration`: the campaign host's inspection and operations ([Host administration](#host-administration)) |
 
 A module definition is immutable and holds no game state, connection, or
 random source. One definition serves every game.
@@ -188,6 +189,27 @@ providers or installs a module.
 A module may add settings under its current version only if a game with no
 settings document behaves exactly as before; Trailhead does (see
 [trailhead.md](trailhead.md#campaign-settings)).
+
+### Host administration
+
+A module may give the campaign host broad administration (governance
+contract sections 6 and 8) by supplying `Administration`:
+
+| Field | Meaning |
+|---|---|
+| `version` | 1; any other is refused when the module is resolved |
+| `inspect(state)` | Pure: everything the host may see of the state: every character's data (drafts too), NPCs, the world, the referee's preparation. Without it the host sees `referee_context` and every sheet |
+| `operations` | Host-only `Command`s. Their names share the module's namespace and the catalog's checks. Each names its target in its own validated arguments (`character_id`, `npc_id`, …) |
+| `describe(state)` | Pure: the operations available now, each `{"command", "description", "target_kinds", "args"}`, where `args` describes each argument (name, type, allowed values or range, required). Guidance for clients and the referee, never a validator |
+| `target_state(state, target)` | Pure: what an operation or request on `target` (`{"kind", "id"}`) depends on; raises `ArgumentError` for an unknown target. The host hashes it as the target's digest. Without the capability, a character's digest is its sheet's |
+
+An operation runs only through `GameStore.execute_host_command`, for the
+campaign host: its executor sees `participant_id == "host:<player_id>"`,
+`policy` for a `character_id` argument's character (else the campaign's),
+and an empty `operations` mapping, so a correction never rolls. It checks
+state and raises `ActionRejected` like any command, and recomputes derived
+numbers through the module's own rules; there is no generic patch, raw SQL
+or script. No player or referee runtime includes these operations.
 
 ### Providers
 

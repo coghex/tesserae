@@ -386,6 +386,10 @@ _MIGRATIONS = {
 # The host's context for a module's referee-only commands. It is not a
 # participant ID (those are p_ and hex digits), so no token can map to it.
 REFEREE_PARTICIPANT = "referee"
+OPERATOR = "operator"
+HOST_SENDER_PREFIX = "host:"
+AUDIT_PAGE = 200
+AUDIT_PAGE_BYTES = 32 * 1024
 
 
 class StoreError(RuntimeError):
@@ -424,6 +428,36 @@ class ParticipantContext:
     @property
     def authenticated(self) -> bool:
         return self.credential_id is not None or self.link_id is not None
+
+
+@dataclass(frozen=True)
+class Decider:
+    """A campaign host's trusted authority (governance contract section 8):
+    its registry `host_id` and `player_id`, established by the lobby host
+    from an authenticated session under the registry guard, never from a
+    message; or the local operator (`OPERATOR_DECIDER`). `via` says how the
+    decision came: `client`, `referee` or `operator`. Its commands and replay
+    records use the sender `host:<player_id>`, which no participant or token
+    is."""
+
+    player_id: str
+    host_id: str | None = None
+    via: str = "client"
+    job_id: str | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.player_id, str) or not self.player_id:
+            raise ValueError("A decider has a player ID.")
+        if self.via not in ("client", "referee", "operator"):
+            raise ValueError("via is client, referee or operator.")
+
+    @property
+    def sender(self) -> str:
+        """The replay namespace: `host:<player_id>`."""
+        return HOST_SENDER_PREFIX + self.player_id
+
+
+OPERATOR_DECIDER = Decider(OPERATOR, None, "operator")
 
 
 @dataclass(frozen=True)
@@ -763,6 +797,171 @@ class GameStore:
                         (request.args["name"], actor.character_id),
                     )
         return record.to_message(), True
+
+    def execute_host_command(
+        self,
+        by: Decider,
+        raw: str | bytes,
+        *,
+        precondition: Callable[[], None] | None = None,
+    ) -> tuple[dict, bool]:
+        """Run one of the module's host operations for the campaign host
+        (governance contract section 8), like execute_command.
+
+        Only `Administration.operations` run here, under the sender
+        `host:<player_id>`, with the protocol's replay, conflict and revision
+        rules. A `character_id` argument must name a character of this game;
+        the operation gets that character's effective policy and no random
+        source. Refused with `referee_busy` while a referee job runs. The
+        command record, the new state, a touched draft's new revision and one
+        `host_audit` row commit together, or nothing does. `precondition()`
+        runs first in the transaction (the caller's authority).
+        """
+        if not isinstance(by, Decider) or by.player_id == OPERATOR:
+            raise ValueError("Host operations run for a campaign host.")
+        runtime = self._loaded_runtime()
+        host = runtime.for_host()
+        try:
+            request = parse_request(raw, host)
+        except ProtocolError as error:
+            return error.to_message(revision=self._current_revision()), False
+        content = request.content()
+        args = request.args
+        current = None
+        try:
+            with self._write():
+                if precondition is not None:
+                    precondition()
+                current = self._current_revision()
+                record = self._find(by.sender, request.request_id)
+                if record is not None:
+                    if record.content == content:
+                        return record.to_message(), False
+                    raise Refusal(
+                        "request_conflict",
+                        "This request_id was already used for a different command.",
+                    )
+                busy = self.busy_refusal()
+                if busy is not None:
+                    raise busy
+                if request.expected_revision != current:
+                    raise Refusal(
+                        "stale_revision",
+                        f"Expected revision {request.expected_revision}, "
+                        f"but the game is at revision {current}.",
+                    )
+                character = None
+                character_id = args.get("character_id")
+                if isinstance(character_id, str):
+                    character = self._character(character_id)
+                    if character is None:
+                        raise Refusal(
+                            "character_unavailable",
+                            "There is no such character in this game.",
+                        )
+                try:
+                    outcome = host.execute(
+                        self._state(),
+                        by.sender,
+                        request.command,
+                        args,
+                        policy=self._policy(
+                            runtime, None if character is None else character_id
+                        ),
+                    )
+                except ActionRejected as rejection:
+                    raise Refusal("action_rejected", rejection.message) from None
+                record = CommandRecord(
+                    revision=current + 1,
+                    participant_id=by.sender,
+                    request_id=request.request_id,
+                    content=content,
+                    result=outcome.result,
+                )
+                self._write_state(outcome.state)
+                self._insert_record(record)
+                self._advance_revision(record.revision)
+                if character is not None and character.phase == "draft":
+                    # A shown approval of the old draft is stale now.
+                    self._connection.execute(
+                        "UPDATE characters SET draft_revision = draft_revision + 1 "
+                        "WHERE character_id = ?",
+                        (character_id,),
+                    )
+                self.audit(
+                    by,
+                    "operation",
+                    {"command": request.command, "args": args,
+                     "request_id": request.request_id},
+                    target=_target_of(args),
+                )  # fmt: skip
+        except Refusal as refusal:
+            return refusal.message(request.request_id, current), False
+        return record.to_message(), True
+
+    def busy_refusal(self) -> "Refusal | None":
+        """`referee_busy` while a referee job runs (governance contract
+        section 8's busy rule), naming whom it answers; else None."""
+        row = self._connection.execute(
+            "SELECT p.name FROM referee_jobs AS j JOIN referee_inputs AS i "
+            "ON i.id = j.input_id LEFT JOIN participants AS p "
+            "ON p.participant_id = i.participant_id WHERE j.state = 'running'"
+        ).fetchone()
+        if row is None:
+            return None
+        name = row[0] or "someone"
+        return Refusal(
+            "referee_busy",
+            f"The referee is still answering {name}. Try again when it finishes.",
+            {"job": {"state": "running", "for": name}},
+        )
+
+    def audit(self, by: Decider, kind: str, detail: dict, *, target=None):
+        """One `host_audit` row, inside the caller's write transaction, at
+        the game revision then."""
+        self._connection.execute(
+            "INSERT INTO host_audit (kind, host_id, player_id, via, job_id, target, "
+            "detail, revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (kind, by.host_id, by.player_id, by.via, by.job_id, target,
+             json.dumps({k: v for k, v in detail.items() if v is not None},
+                        sort_keys=True),
+             self._current_revision(), _now()),
+        )  # fmt: skip
+
+    def host_audit(self, after: int) -> tuple[list[dict], int | None]:
+        """The audit records after ID `after`, oldest first, in pages of up to
+        AUDIT_PAGE records or AUDIT_PAGE_BYTES of JSON; and the `after` of the
+        next page, or None at the end."""
+        rows = self._connection.execute(
+            "SELECT id, kind, host_id, player_id, via, job_id, target, detail, "
+            "revision, created_at FROM host_audit WHERE id > ? ORDER BY id LIMIT ?",
+            (after, AUDIT_PAGE + 1),
+        ).fetchall()
+        keys = ("id", "kind", "host_id", "player_id", "via", "job_id", "target",
+                "detail", "revision", "created_at")  # fmt: skip
+        page, size = [], 0
+        for row in rows[:AUDIT_PAGE]:
+            entry = dict(zip(keys, row))
+            entry["detail"] = json.loads(entry["detail"])
+            size += len(json.dumps(entry).encode())
+            if page and size > AUDIT_PAGE_BYTES:
+                return page, page[-1]["id"]
+            page.append(entry)
+        return page, (page[-1]["id"] if len(rows) > AUDIT_PAGE else None)
+
+    def target_digest(self, target: dict) -> str:
+        """The SHA-256 of what `target` depends on (governance contract
+        section 6), as canonical JSON. A character target must name a
+        character of this game. Raises ArgumentError for an unknown target."""
+        runtime = self._loaded_runtime()
+        if (
+            isinstance(target, dict)
+            and target.get("kind") == "character"
+            and self.character(target.get("id")) is None
+        ):
+            raise ArgumentError("There is no such character in this game.")
+        found = runtime.target_state(self._state(), target)
+        return policies.digest(policies.canonical(found))
 
     def actor_problem(
         self, context: ParticipantContext, actor: Actor
@@ -1665,6 +1864,17 @@ def _busy() -> Refusal:
     return Refusal(
         "character_busy", "The referee is still answering for that character."
     )
+
+
+def _target_of(args: dict) -> str | None:
+    """The target an operation names in its own arguments, for the audit:
+    a `character_id`, else the first other `..._id` string argument."""
+    if isinstance(args.get("character_id"), str):
+        return args["character_id"]
+    for name in sorted(args):
+        if name.endswith("_id") and isinstance(args[name], str):
+            return args[name]
+    return None
 
 
 def _mode_of(phase: str) -> str:

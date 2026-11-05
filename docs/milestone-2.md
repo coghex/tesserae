@@ -99,6 +99,12 @@ replay and audit, and `tesserae game rules`), the optional module settings
 and requirements capability, the effective policy every character rule and
 the referee's context see, and Trailhead's starting stamina bonus with
 per-walker exceptions.
+GOV-4 ([#135](https://github.com/coghex/tesserae/issues/135)) delivers host
+administration through the protocol: a module's `Administration` capability,
+`host_command` on another player's character, NPCs and the scene with exact
+replay, stale-revision and busy-rule protection and an audit row, and the
+`host_operations` and `host_audit` reads; Trailhead demonstrates corrections,
+gear, descriptions, NPCs, the scene and referee-only preparation.
 The filed public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
 acceptance (#132–#139); the

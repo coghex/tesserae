@@ -82,6 +82,27 @@ Its requirements, the one description the referee and players see:
 
 There are no classes, levels or roles.
 
+## Host administration
+
+The campaign host (it needs no walker) can run these; nothing rolls, and each
+changes only its target:
+
+| Operation | `args` | Effect |
+|---|---|---|
+| `trailhead.set_stamina` | `{"character_id", "stamina"}` | A ready walker's stamina, 0 to its maximum |
+| `trailhead.set_trait` | `{"character_id", "trait"}` | A ready walker's trait; its maximum is recomputed (keen +1, the starting bonus kept) and its stamina kept, lowered only to fit |
+| `trailhead.set_gear` | `{"character_id", "gear"}` | A walker's gear: up to 8 items of 1 to 60 characters |
+| `trailhead.describe` | `{"character_id", "description"}` | A walker's description, up to 500 characters |
+| `trailhead.npc_set` | `{"npc_id", "name", "note", "visible"}` | Adds or updates an NPC (up to 50); players see it only when visible |
+| `trailhead.scene_set` | `{"description"}` | The scene's description, which everyone sees |
+| `trailhead.prep_set` | `{"note"}` | The referee's preparation, up to 2,000 characters; no player sees it |
+
+A draft's stamina and trait come from creation, so those corrections are
+refused on a draft; gear and description may be set on either, and change a
+draft's revision. The host's inspection shows every walker (drafts too),
+every NPC, the scene and the preparation. Targets for digests are a
+character, an NPC and the scene (`trailhead`).
+
 ## State
 
 ```json
@@ -90,12 +111,18 @@ There are no classes, levels or roles.
 ```
 
 `rolled` is the stamina roll; `stamina` and `max_stamina` are set at
-completion, with `bonus` (1 or 2) recorded only when a starting bonus applied. The owner's sheet shows `trait`, `stamina` (the roll, while a
-draft), `max_stamina` and `in_danger`. Each player's view is the shared scene
-and rules only; walkers reach their owners as sheets. The referee's context
-lists ready walkers only, never drafts.
+completion, with `bonus` (1 or 2) recorded only when a starting bonus
+applied, and `gear` and `description` only once the host set them. The
+state gains `npcs`, `scene` (`{"description"}`) and `prep` only once the host
+sets them; absent, the game is as before. The owner's sheet shows `trait`, `stamina` (the roll, while a
+draft), `max_stamina` and `in_danger`, and `gear` and `description` when set.
+Each player's view is the shared scene and rules, and the visible NPCs;
+walkers reach their owners as sheets. The referee's context lists ready
+walkers only, never drafts, and every NPC (with its visibility) and the
+preparation.
 
 A version 2 seed declares ready walkers and their owners; its state must hold
 exactly the declared walkers, each ready with a valid trait and stamina, and
-an optional `bonus` of 1 or 2 counted in its maximum (see
+an optional `bonus` of 1 or 2 counted in its maximum, `gear` and
+`description`; and may hold `npcs`, `scene` and `prep` (see
 [seeded creation](game_store.md#seeded-creation)).

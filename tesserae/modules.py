@@ -21,6 +21,7 @@ HOST_API_VERSION = 1
 # (docs/designs/governance_contract.md section 6).
 CHARACTER_RULES_VERSIONS = (1, 2)
 CAMPAIGN_SETTINGS_VERSION = 1
+ADMINISTRATION_VERSION = 1
 REQUIREMENT_KINDS = ("mechanical", "narrative", "optional")
 ACTION_REJECTED = "action_rejected"
 # Command names starting with this belong to the host (character.name).
@@ -195,6 +196,33 @@ class CampaignSettings:
 
 
 @dataclass(frozen=True)
+class Administration:
+    """A module's optional host administration
+    (docs/designs/governance_contract.md sections 6 and 8).
+
+    `inspect(state)` is pure: everything the campaign host may see of the
+    state (every character's data, NPCs, the world, the referee's
+    preparation). `operations` are commands only the campaign host runs,
+    each naming its target in its own validated arguments (`character_id`,
+    `npc_id`, ...); their executors see the host's sender, `host:<player_id>`,
+    as `participant_id`, get the effective policy of a `character_id`
+    argument's character (else the campaign's), and draw nothing: a
+    correction never implies a roll. `describe(state)` is pure: the
+    operations available now, each `{"command", "description",
+    "target_kinds", "args"}`, guidance for clients and the referee, never a
+    validator. `target_state(state, target)` is pure: the part of the state
+    an operation or request on `target` (`{"kind", "id"}`) depends on, or
+    ArgumentError for an unknown target.
+    """
+
+    version: int
+    inspect: Callable[[dict], dict]
+    operations: tuple[Command, ...]
+    describe: Callable[[dict], list]
+    target_state: Callable[[dict, dict], dict]
+
+
+@dataclass(frozen=True)
 class Module:
     """A trusted module definition. It holds no game state.
 
@@ -225,6 +253,9 @@ class Module:
 
     `settings`, if given, lets a campaign's settings document configure the
     module (CampaignSettings); without it a document holds no settings.
+    `administration`, if given, gives the campaign host its inspection and
+    operations (Administration); without it the host inspects the referee
+    context and every sheet, and runs nothing.
     """
 
     id: str
@@ -244,6 +275,7 @@ class Module:
     referee_commands: tuple[Command, ...] = ()
     characters: CharacterRules | None = None
     settings: CampaignSettings | None = None
+    administration: Administration | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +314,66 @@ class Runtime:
                 {command.name: command for command in self.module.referee_commands}
             ),
         )
+
+    def for_host(self) -> "Runtime":
+        """The same module and providers with only its host operations, for a
+        campaign host's context; player and referee runtimes never include
+        them. Their actions get no random source: host operations draw
+        nothing."""
+        operations = () if self.module.administration is None else (
+            self.module.administration.operations
+        )  # fmt: skip
+        return Runtime(
+            module=self.module,
+            providers=MappingProxyType({}),
+            _commands=MappingProxyType({c.name: c for c in operations}),
+        )
+
+    # Host administration (governance contract section 6).
+
+    @property
+    def administration(self) -> Administration | None:
+        return self.module.administration
+
+    def host_inspect(self, state: dict) -> dict | None:
+        """The module's host view of its state, or None without the hook."""
+        if self.module.administration is None:
+            return None
+        return _json_copy(
+            self.module.administration.inspect(_json_copy(state, "state")),
+            "host inspection",
+        )
+
+    def host_operations(self, state: dict) -> list:
+        """The host operations available now; [] without the capability."""
+        if self.module.administration is None:
+            return []
+        described = self.module.administration.describe(_json_copy(state, "state"))
+        described = _json_copy({"operations": described}, "host operations")
+        operations = described["operations"]
+        if not isinstance(operations, list) or not all(
+            isinstance(o, dict) and isinstance(o.get("command"), str)
+            for o in operations
+        ):
+            raise TypeError("Host operations are a list of objects with a command.")
+        return operations
+
+    def target_state(self, state: dict, target: dict) -> dict:
+        """What `target` depends on (Administration.target_state). Without
+        the capability only a character is a target: its sheet. Raises
+        ArgumentError for an unknown target."""
+        if not isinstance(target, dict) or set(target) != {"kind", "id"}:
+            raise ArgumentError('A target is exactly {"kind", "id"}.')
+        administration = self.module.administration
+        if administration is not None:
+            return _json_copy(
+                administration.target_state(_json_copy(state, "state"), dict(target)),
+                "target state",
+            )
+        if target["kind"] != "character" or self.module.characters is None:
+            raise ArgumentError("This module has no such kind of target.")
+        # The host checks that the character exists before asking.
+        return self.character_sheet(state, target["id"])
 
     def referee_context(self, state: dict) -> dict | None:
         """The module's referee context, or None if it has no hook."""
@@ -553,7 +645,12 @@ class Catalog:
         self._providers = _unique(providers, lambda p: p.id, "provider")
         for module in self._modules.values():
             steps = () if module.characters is None else module.characters.steps
-            commands = (*module.commands, *module.referee_commands, *steps)
+            operations = (
+                ()
+                if module.administration is None
+                else module.administration.operations
+            )
+            commands = (*module.commands, *module.referee_commands, *steps, *operations)
             _unique(commands, lambda c: c.name, f"{module.id} command")
             for command in commands:
                 if command.name.startswith(RESERVED_PREFIX):
@@ -624,6 +721,15 @@ class Catalog:
                 f"Module {module_id!r} has campaign settings version "
                 f"{module.settings.version}; this host supports "
                 f"{CAMPAIGN_SETTINGS_VERSION}."
+            )
+        if (
+            module.administration is not None
+            and module.administration.version != ADMINISTRATION_VERSION
+        ):
+            raise ModuleError(
+                f"Module {module_id!r} has administration version "
+                f"{module.administration.version}; this host supports "
+                f"{ADMINISTRATION_VERSION}."
             )
         if (
             module.characters is not None

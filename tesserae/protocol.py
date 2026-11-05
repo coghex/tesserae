@@ -110,6 +110,11 @@ _HOST_FIELDS = {
     "host_view": frozenset({"version", "type"}),
     "host_messages": frozenset({"version", "type", "after_seq"}),
     "campaign_host_transfer": frozenset({"version", "type", "request_id", "player_id"}),
+    "host_operations": frozenset({"version", "type"}),
+    "host_audit": frozenset({"version", "type", "after"}),
+    "host_command": frozenset(
+        {"version", "type", "request_id", "expected_revision", "command", "args"}
+    ),
 }
 # Campaign settings (governance contract sections 5 and 7); a field in
 # brackets is optional.
@@ -203,14 +208,18 @@ class CharacterRequest:
 @dataclass(frozen=True)
 class HostRequest:
     """A campaign host message (governance contract section 13):
-    `host_view`, `host_messages` or `campaign_host_transfer`, with
-    whichever of its fields that type has. Who may send it is the host's
-    to judge, never the message's."""
+    `host_view`, `host_messages`, `host_operations`, `host_audit`,
+    `host_command` or `campaign_host_transfer`, with whichever of its fields
+    that type has. Who may send it is the host's to judge, never the
+    message's. A `host_command` keeps its `raw` text, which the store parses
+    with the module's host operations."""
 
     kind: str
     request_id: str | None = None
     after_seq: int | None = None
     player_id: str | None = None
+    after: int | None = None
+    raw: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -456,6 +465,23 @@ def _parse_host(kind: str, data: dict) -> HostRequest:
                 "invalid_request", "'after_seq' must be a whole number, 0 or more."
             )
         return HostRequest(kind, after_seq=data["after_seq"])
+    if kind == "host_audit":
+        if not is_valid_revision(data["after"]):
+            raise ProtocolError(
+                "invalid_request", "'after' must be a whole number, 0 or more."
+            )
+        return HostRequest(kind, after=data["after"])
+    if kind == "host_command":
+        if request_id is None:
+            raise ProtocolError(
+                "invalid_request",
+                f"'request_id' must be a string of 1 to {MAX_REQUEST_ID_LENGTH} "
+                "characters without whitespace.",
+            )
+        # The operation and its arguments are the store's to check, with the
+        # module's host operations, exactly as a command's.
+        command = {**data, "type": "command"}
+        return HostRequest(kind, request_id, raw=json.dumps(command))
     if kind == "campaign_host_transfer":
         if request_id is None:
             raise ProtocolError(
@@ -808,6 +834,20 @@ def rules_list_message(policy_revision: int, revisions: list) -> dict:
     """The reply to `rules_list`: every revision's metadata, no content."""
     return {"version": PROTOCOL_VERSION, "type": "rules_list",
             "policy_revision": policy_revision, "revisions": list(revisions)}  # fmt: skip
+
+
+def host_operations_message(revision: int, operations: list) -> dict:
+    """The reply to `host_operations`: what the host may run now."""
+    _check_revision(revision)
+    return {"version": PROTOCOL_VERSION, "type": "host_operations",
+            "revision": revision, "operations": list(operations)}  # fmt: skip
+
+
+def host_audit_message(records: list, next_after: int | None) -> dict:
+    """The reply to `host_audit`: one page of audit records and the `after`
+    of the next page (None at the end)."""
+    return {"version": PROTOCOL_VERSION, "type": "host_audit",
+            "records": list(records), "next_after": next_after}  # fmt: skip
 
 
 def host_messages_message(messages: list, next_after_seq: int | None) -> dict:

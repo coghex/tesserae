@@ -85,9 +85,10 @@ class InspectionTests(CampaignHost):
             sorted(p["name"] for p in view["participants"]), ["Alice", "Bob"]
         )
         store = self.trail()
-        context = store.runtime().referee_context(store.inspect_state())
+        inspected = store.runtime().host_inspect(store.inspect_state())
         self.assertEqual(view["revision"], store.revision())
-        self.assertEqual(view["inspect"], context)
+        self.assertEqual(view["inspect"], inspected)  # Administration.inspect
+        self.assertIn(MARA, view["inspect"]["walkers"])
         self.assertEqual(
             (view["pending_choices"], view["rulings"], view["policy"]),
             ([], [], {"revision": 0, "document": None}),  # Trailhead has settings
