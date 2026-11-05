@@ -320,15 +320,54 @@ class GovernanceClientTests(unittest.TestCase):
         bob.type("/requests")  # its next request: then it is told
         bob.until("[role] You are now a guest")
         bob.type("/retry")
-        self.assertTrue(
-            bob.until("[retry]")[-1].startswith(
-                "[retry] Not resent: your campaign or role"
-            )
+        self.assertEqual(  # the retry ended with Bob's role
+            bob.until("[retry]")[-1], "[retry] There is no input to retry."
         )
         self.host.release.set()
         bob.until("[idle]")
         self.assertEqual(self.store().inspect_state()["scene"]["description"], "Fog.")
         self.assertEqual((alice.finish(), bob.finish()), (0, 0))
+
+    def test_a_retry_dies_with_the_role_it_was_made_under(self):
+        bob, alice = self.entered("bob"), self.entered("alice", "--character", MARA)
+        alice.type("hold")
+        alice.until("[busy]")
+        bob.type('/admin trailhead.scene_set {"description": "Old."}', "/admin confirm")
+        bob.until("[retry]")
+        # Host, then guest, then host again: the old edit is not resent.
+        for host, told in (("alice", "[role] You are now a guest"),
+                           ("bob", "[role] You are now this campaign's host")):  # fmt: skip
+            with HostRegistry(self.registry_path) as registry:
+                registry.set_host(self.campaign, self.players[host])
+            bob.type("/requests")
+            bob.until(told)
+        self.host.release.set()
+        bob.until("[idle]")
+        bob.type("/retry")
+        self.assertEqual(
+            bob.until("[retry]")[-1], "[retry] There is no input to retry."
+        )
+        self.assertNotIn("scene", self.store().inspect_state())
+        self.assertEqual((alice.finish(), bob.finish()), (0, 0))
+
+    def test_lost_access_leaves_nothing_of_the_campaign_behind(self):
+        bob = self.entered("bob")
+        with self.store() as store:  # Bob's participant link ends
+            with HostRegistry(self.registry_path) as registry:
+                store.unlink_host_player(registry.host_id, self.players["bob"])
+        bob.type("/inspect")
+        lines = bob.until("[lobby] You are back in the lobby")
+        self.assertIn("[error] That campaign is no longer available to you.", lines)
+        bob.type("/role")
+        self.assertEqual(bob.line(), "[lobby] Choose a campaign first: /campaigns "
+                                     "lists them, /join enters one.")  # fmt: skip
+        bob.type("/join Trail")  # admitted again, still the campaign host
+        bob.until("[joined] Trail")
+        bob.until("[status]")
+        bob.type("/role")
+        self.assertEqual(bob.until("[role]")[-1], "[role] You are this campaign's "
+                         "host. Its settings are at revision 0.")  # fmt: skip
+        self.assertEqual(bob.finish(), 0)
 
     def test_json_output_keeps_messages_on_stdout_and_notes_on_stderr(self):
         bob = Client(self, self.host.uri, self.files["bob"], "--lobby", "--json",

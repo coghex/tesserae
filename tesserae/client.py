@@ -738,7 +738,9 @@ class _Client:
 
     def _set_role(self, role):
         if role != self.role:
-            self.pending = None  # a confirmation was for the old role
+            # A confirmation or a retry was made under the old role, and is
+            # never sent under any later one, even if it is the same again.
+            self.pending, self.mutation_retry = None, None
         self.role = role
 
     def _saw_revision(self, revision: int):
@@ -788,6 +790,12 @@ class _Client:
         kind, sent_type = message.get("type"), _sent_type(sent)
         self._governance_reply(message, sent, sent_type)
         if sent_type in _GOVERNANCE_READS + _HOST_MUTATIONS:
+            if (
+                kind == "error"
+                and message["code"] == "campaign_unavailable"
+                and self.selection is not None
+            ):
+                self._back_in_lobby()  # its access is gone: nothing of it stays
             return
         if kind == "lobby":
             if sent_type == "leave":

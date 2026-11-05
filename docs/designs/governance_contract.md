@@ -856,7 +856,11 @@ confirmation waiting is forgotten when the role changes.
 Each mutation's `request_id` is made once per attempt. `/retry` resends the
 last one unchanged only after `referee_busy` or `internal_error` (nothing was
 stored), and never after the campaign, the participant session or the role
-has changed since; any other reply, or a new mutation or input, ends it.
+has changed since: any change of role ends it for good, even if the role
+later comes back. Any other reply, or a new mutation or input, also ends it.
+A reply saying the campaign is no longer available returns the client to
+the lobby, with nothing of the campaign kept (role, revisions, pending
+confirmations or retries).
 Requests, the role and the settings revision are read from the host again
 on every join or reconnect; nothing is kept locally. With `--json`, every
 message is one JSON line on stdout and the client's own notes go to
