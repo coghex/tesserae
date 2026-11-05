@@ -137,6 +137,13 @@ The replay key is (game, participant, `request_id`); the game is implicit in
 the store. Alice's `r1` and Bob's `r1` are unrelated requests. Each is
 attributed to its participant in the history.
 
+A campaign host's operations (`execute_host_command`, governance contract
+section 8) follow the same order under the sender `host:<player_id>`, which
+no participant or token is, so they are their own namespace and always
+identifiable in the history as administration. They are also refused with
+`referee_busy` while a referee job runs (a replay still answers), and each
+commits with one `host_audit` row.
+
 The order of `execute(context, raw)`:
 
 1. Validate the raw message with `parse_request`. Invalid input returns an

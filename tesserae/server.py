@@ -26,7 +26,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from .browser import RequestPolicy
-from .campaign_rules import CampaignRules, Decider, rules_message
+from .campaign_rules import CampaignRules, rules_message
 from .external import load_module_dir
 from .modules import ModuleError
 from .protocol import (
@@ -49,7 +49,9 @@ from .protocol import (
     conversation_message,
     encode_message,
     error_message,
+    host_audit_message,
     host_messages_message,
+    host_operations_message,
     host_view_message,
     messages_message,
     parse_client_message,
@@ -71,6 +73,7 @@ from .referee.store import REFEREE, RefereeError, RefereeStore
 from .store import (
     SETUP,
     Actor,
+    Decider,
     GameStore,
     ParticipantContext,
     Refusal,
@@ -638,12 +641,13 @@ class CampaignService:
         the campaign host. Host data is only ever this reply."""
         if request.kind == "campaign_host_transfer":
             return await self._transfer(session, request)
+        if request.kind == "host_command":
+            return await self._host_command(session, request)
         try:
             found = await self._call(
                 _host_read,
                 session.context,
-                request.kind,
-                request.after_seq,
+                request,
                 self.characters,
                 session=session,
                 role=True,
@@ -655,6 +659,31 @@ class CampaignService:
         if found is _NOT_HOST:
             return _not_host(None)
         return found
+
+    async def _host_command(self, session: "_Session", request: HostRequest) -> dict:
+        """One host operation (governance contract section 8), run in the
+        campaign host's context inside the registry guard. A commit is
+        announced to every connection, as any command's is."""
+        try:
+            found = await self._call(
+                _host_command,
+                session.context,
+                request.raw,
+                session=session,
+                role=True,
+                host=True,
+            )
+        except Exception:
+            return self._failure(request.request_id)
+        if found is None:
+            return session_error("session_revoked")
+        if found is _NOT_HOST:
+            return _not_host(request.request_id)
+        reply, committed = found
+        if committed:
+            self._publish(reply["revision"])
+            logger.info("Campaign host ran %s", reply.get("request_id"))
+        return reply
 
     async def _rules(self, session: "_Session", request: RulesRequest) -> dict:
         """A campaign settings message (governance contract sections 5 and
@@ -1357,10 +1386,10 @@ def _session_role(store: GameStore, context, *, role):
     return _REVOKED if store.session_revision(context) is None else role
 
 
-def _host_read(store: GameStore, context, kind: str, after_seq, characters: bool,
-               *, role):  # fmt: skip
-    """`host_view` or a `host_messages` page, from one committed state;
-    None if revoked, _NOT_HOST unless `role` is the campaign host's."""
+def _host_read(store: GameStore, context, request, characters: bool, *, role):
+    """`host_view`, a `host_messages` or `host_audit` page, or
+    `host_operations`, from one committed state; None if revoked, _NOT_HOST
+    unless `role` is the campaign host's."""
     with store.snapshot():
         if store.session_revision(context) is None:
             return None
@@ -1368,13 +1397,21 @@ def _host_read(store: GameStore, context, kind: str, after_seq, characters: bool
             return _NOT_HOST
         referee = RefereeStore(store)
         names = _names(store)
-        if kind == "host_messages":
-            page, next_after = referee.transcript(after_seq)
+        if request.kind == "host_messages":
+            page, next_after = referee.transcript(request.after_seq)
             return host_messages_message(
                 [_host_wire(m, names, characters) for m in page], next_after
             )
+        if request.kind == "host_audit":
+            return host_audit_message(*store.host_audit(request.after))
         runtime, state = store.runtime(), store.inspect_state()
-        inspect = runtime.referee_context(state)
+        if request.kind == "host_operations":
+            return host_operations_message(
+                store.revision(), runtime.host_operations(state)
+            )
+        inspect = runtime.host_inspect(state)
+        if inspect is None:
+            inspect = runtime.referee_context(state)
         participants = store.participants()
         if inspect is None:  # as the referee sees it: each participant's view
             inspect = {
@@ -1452,6 +1489,25 @@ def _rules_read(store: GameStore, context, request, *, role):
 
 class _Revoked(Exception):
     pass
+
+
+def _host_command(store: GameStore, context, raw: str, *, role, host):
+    """A host operation by the campaign host, whose session is rechecked
+    inside its transaction: (reply, committed); None if revoked, _NOT_HOST
+    for anyone else."""
+    if role != "host":
+        return None if store.session_revision(context) is None else _NOT_HOST
+
+    def check():
+        if store.session_revision(context) is None:
+            raise _Revoked
+
+    try:
+        return store.execute_host_command(
+            Decider(host[1], host[0]), raw, precondition=check
+        )
+    except _Revoked:
+        return None
 
 
 def _rules_change(store: GameStore, context, request, *, role, host):

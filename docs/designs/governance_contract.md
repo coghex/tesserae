@@ -17,7 +17,11 @@ delivers section 5, section 6's settings and policy-aware character rules,
 section 7's `rules_view` and `host_view` policy, the `rules_*` messages and
 the snapshot's `policy_revision`, the policy and requirements in the
 referee's context (section 10), and schema 8 without `host_requests`
-(section 12). Everything else here is not implemented yet.
+(section 12). GOV-4 ([#135](https://github.com/coghex/tesserae/issues/135))
+delivers section 6's `Administration`, section 7's `host_operations`,
+`host_audit` and `inspect`, section 8's `host_command` with its replay, busy
+rule and audit, and target digests (for GOV-5). Everything else here is not
+implemented yet.
 
 It extends the [lobby contract](lobby_contract.md), the
 [character contract](character_contract.md) and the
@@ -372,10 +376,16 @@ class Administration:
   Their names share the module's command namespace and the catalog's checks
   (no `character.` prefix, no duplicates). Each states its target in its own
   validated arguments (for example `{"character_id", …}` or `{"npc_id", …}`);
-  the host checks a `character_id` argument names a character of this game.
+  the host checks a `character_id` argument names a character of this game
+  (else `character_unavailable`), and an operation on a draft adds one to
+  its `draft_revision`, so a shown approval of it is stale.
   They receive the host context's sender (section 8) as
   `Action.participant_id`, never a player's participant, and may raise
-  `ActionRejected`, like any command.
+  `ActionRejected`, like any command. `Action.policy` is the effective
+  policy of a `character_id` argument's character, else the campaign's.
+  They get no random source (`Action.operations` is empty): a correction
+  never rolls. No player or referee runtime, and so no `act` or
+  `referee_act` of any job, includes them.
 - `describe(state)` lists, for each operation available now, `{"command",
   "description", "target_kinds", "args"}`, where `args` describes each
   argument (name, type, allowed values or range, required); like
@@ -425,8 +435,8 @@ All host reads are guarded (section 4) and refused to guests with
 |---|---|
 | `host_view` | `{"type": "host_view", "revision", "inspect", "characters": [every character with owner, phase, sheet], "participants", "pending_choices", "rulings", "policy": {"revision", "document"}}` |
 | `host_messages {after_seq}` | Every conversation message after `after_seq`, private and creation ones included, in the referee transcript's pages (up to 200 messages or 32 KiB), with `next_after_seq`. Each is a conversation message as its recipients saw it; a private one adds `to`, `[{"participant_id", "name"}]` |
-| `host_operations` | `Administration.describe(state)` with the game revision, so clients can offer each operation and its arguments (section 6) |
-| `host_audit {after}` | The audit records (section 8) after an ID, paged as above |
+| `host_operations` | `Administration.describe(state)` with the game revision, so clients can offer each operation and its arguments (section 6); `[]` without the capability |
+| `host_audit {after}` | `{"records", "next_after"}`: the audit records (section 8) after an ID, oldest first, each `{id, kind, host_id, player_id, via, job_id, target, detail, revision, created_at}`, in pages of up to 200 records or 32 KiB, with the `after` of the next page (null at the end) |
 
 - Until a settings document exists (GOV-3), `host_view`'s `policy` is null.
   Without `Administration` (GOV-4), `inspect` is `referee_context(state)`, or
@@ -444,16 +454,21 @@ All host reads are guarded (section 4) and refused to guests with
 
 **Running an operation.** `host_command {request_id, expected_revision,
 command, args}` from the campaign host runs one `Administration` operation
-through `GameStore.execute_command` in a host context: a new trusted
-`HostContext(host_id, player_id)` that only the lobby host builds, under the
-guard. Its commands are recorded with the sender `host:<player_id>` (like
+through `GameStore.execute_host_command` in a host context: a trusted
+`Decider(player_id, host_id)` that only the lobby host builds, from the
+session's authenticated player once the registry guard has found it the
+campaign host, and rechecked inside the command's transaction. Its commands are recorded with the sender `host:<player_id>` (like
 the referee's `referee`, no participant or token is that ID), so each host
 player has its own replay namespace, separate from its own participant's.
 Replay, conflict and revision rules are the protocol's: an exact retry
 returns the recorded result; a used ID with other content is
 `request_conflict`; a moved revision is `stale_revision`. The game revision
 covers every character, NPC and scene, so a stale editor cannot overwrite
-intervening play or another host edit.
+intervening play or another host edit. A commit is announced to every
+connection with the usual `revision` notice. Its `host_audit` row (kind
+`operation`, the command and arguments in `detail`, and as `target` its
+`character_id` argument, else its first other `…_id` argument) commits with
+the command, or neither does.
 
 **Replay.** Every mutation in this contract has an identity and an exact
 retry:
@@ -743,15 +758,18 @@ Single-game hosts have no host messages: each is refused with
 
 ## 14. Illustrative module
 
-Trailhead, still version 1 under section 6's rule (GOV-3/GOV-4 decide the
-fixture): a setting
+Trailhead, still version 1 under section 6's rule: a setting
 `starting_stamina_bonus` (0 to 2, default 0) added at completion;
-`requirements` listing `name` (narrative), `trait` (mechanical, choose),
-`stamina` (mechanical, roll) and `home` (optional); and administration
-operations such as `trailhead.set_stamina {character_id, stamina}`,
+`requirements` listing `character.name` (the host's), `trait` (mechanical,
+choose), `stamina` (mechanical, roll), `background` (narrative) and `home`
+(optional); and administration operations `trailhead.set_stamina
+{character_id, stamina}`, `trailhead.set_trait {character_id, trait}` (the
+maximum recomputed by the module's rule), `trailhead.set_gear {character_id,
+gear}`, `trailhead.describe {character_id, description}`,
 `trailhead.npc_set {npc_id, name, note, visible}`, `trailhead.scene_set
 {description}` and `trailhead.prep_set {note}` (referee-only preparation),
-with `inspect` returning every walker, NPC, the scene and the preparation.
+with `inspect` returning every walker, NPC, the scene and the preparation
+(see [trailhead.md](../trailhead.md)).
 
 A guest's referee proposes `exception {starting_stamina_bonus: 1}` for their
 draft and ends the job; the host's `request_decide approve` makes revision 2

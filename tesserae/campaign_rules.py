@@ -9,32 +9,13 @@ establish (the lobby's guard for a campaign host, the local operator for the
 """
 
 import json
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from . import policy as policies
 from .protocol import PROTOCOL_VERSION
-from .store import GameStore, Refusal
+from .store import OPERATOR, OPERATOR_DECIDER, Decider, GameStore, Refusal
 
-OPERATOR = "operator"
-
-
-@dataclass(frozen=True)
-class Decider:
-    """Who changes a campaign's settings: its campaign host (`host_id` and
-    `player_id`, by a client) or the local operator."""
-
-    player_id: str
-    host_id: str | None = None
-    via: str = "client"
-
-    @property
-    def sender(self) -> str:
-        """The replay namespace: `host:<player_id>`."""
-        return f"host:{self.player_id}"
-
-
-OPERATOR_DECIDER = Decider(OPERATOR, None, "operator")
+__all__ = ["OPERATOR", "OPERATOR_DECIDER", "CampaignRules", "Decider"]
 
 
 class CampaignRules:
@@ -173,7 +154,9 @@ class CampaignRules:
                     f"{expected_policy_revision}; review them again.",
                     {"policy_revision": current},
                 )
-            self._refuse_while_busy(db)
+            busy = self.store.busy_refusal()
+            if busy is not None:
+                raise busy
             runtime = self.store.runtime()
             document = json.loads(row[0])
             problems = policies.check_against(
@@ -275,33 +258,13 @@ class CampaignRules:
             )
         return row
 
-    def _refuse_while_busy(self, db):
-        row = db.execute(
-            "SELECT p.name FROM referee_jobs AS j JOIN referee_inputs AS i "
-            "ON i.id = j.input_id LEFT JOIN participants AS p "
-            "ON p.participant_id = i.participant_id WHERE j.state = 'running'"
-        ).fetchone()
-        if row is not None:
-            name = row[0] or "someone"
-            raise Refusal(
-                "referee_busy",
-                f"The referee is still answering {name}. Try again when it finishes.",
-                {"job": {"state": "running", "for": name}},
-            )
-
     def _character_ids(self) -> frozenset:
         return frozenset(
             row[0] for row in self.store.query("SELECT character_id FROM characters")
         )
 
     def _audit(self, db, by: Decider, kind: str, detail: dict):
-        db.execute(
-            "INSERT INTO host_audit (kind, host_id, player_id, via, detail, revision, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (kind, by.host_id, by.player_id, by.via,
-             json.dumps({k: v for k, v in detail.items() if v is not None}),
-             self.store.revision(), _now()),
-        )  # fmt: skip
+        self.store.audit(by, kind, detail)
 
 
 def requirements(store: GameStore, runtime, policy, state, character_id) -> list | None:
