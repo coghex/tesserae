@@ -19,6 +19,7 @@ import signal
 import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from websockets.exceptions import ConnectionClosed
 from .browser import RequestPolicy
 from .campaign_rules import CampaignRules, rules_message
 from .external import load_module_dir
+from .host_requests import HostRequests, proposal_message, requests_message
 from .modules import ModuleError
 from .protocol import (
     JOIN_TIMEOUT_SECONDS,
@@ -35,6 +37,7 @@ from .protocol import (
     HostRequest,
     JoinRequest,
     MessagesRequest,
+    ProposalRequest,
     ProtocolError,
     RefereeStatusRequest,
     RulesRequest,
@@ -70,6 +73,7 @@ from .referee.orchestrator import CodexReferee, RefereeJobFailed
 from .referee.runner import DEFAULT_DIR as DEFAULT_REFEREE_DIR
 from .referee.runner import DEFAULT_TIMEOUT, RefereeDir, RunnerError
 from .referee.store import REFEREE, RefereeError, RefereeStore
+from .referee.tools import NotCampaignHost
 from .store import (
     SETUP,
     Actor,
@@ -215,8 +219,14 @@ class CampaignService:
         )
         self._deliveries = None
         self._recovery = None
-        self._notices: set[asyncio.Task] = set()  # actor and role notices
+        self._notices: set[asyncio.Task] = set()  # actor, role and proposal notices
         self._host_transfer = host_transfer
+        # Jobs accepted from a session of the campaign host, in memory only
+        # (governance contract section 10): job ID to that session.
+        self._job_hosts: dict[str, "_Session"] = {}
+        self._loop = None
+        if self._referee is not None:
+            self._referee.tools.host_authority = self._host_authority
 
     def _check_serving(self):
         """A subclass's own refusals, before any referee is set up."""
@@ -247,8 +257,10 @@ class CampaignService:
         self._outbox = asyncio.Queue()
         self._lifecycle = asyncio.Lock()
         self._deliveries = asyncio.create_task(self._deliver_outbox())
+        self._loop = asyncio.get_running_loop()
         if self._referee is not None:
             loop = asyncio.get_running_loop()
+            self._referee.tools.on_proposal = self.proposal_changed
             self._referee.open(
                 self._host_run,
                 self._open,
@@ -301,6 +313,94 @@ class CampaignService:
             if outcome != "waiting":
                 return
             await asyncio.sleep(self._referee.lock_retry)
+
+    # --- Governance hooks for the referee's bridge (section 10) ------------
+
+    def bridge_hooks(self) -> dict:
+        """The BridgeTools options this host gives a job's tools: the job's
+        campaign host authority and the proposal notifier. Its own Codex
+        referee has them already; a test's executor passes them on."""
+        return {
+            "host_authority": self._host_authority,
+            "on_proposal": self.proposal_changed,
+        }
+
+    @contextmanager
+    def _host_authority(self, job):
+        """On a bridge thread: the registry guard for the session this job's
+        input came from, held for one tool call, yielding the campaign host's
+        Decider (via the referee) while that player is the campaign host.
+        Raises NotCampaignHost otherwise: a guest's job, a job from before a
+        transfer, or a revoked credential."""
+        session = self._job_hosts.get(job.job_id)
+        if session is None or session.guard is None:
+            raise NotCampaignHost
+        checked = session.guard()
+        with checked as allowed:
+            if not allowed or checked.role != "host":
+                raise NotCampaignHost
+            host_id, player_id = checked.host_player
+            yield Decider(player_id, host_id, "referee", job.job_id, session.context)
+
+    def proposal_changed(self, proposal_id: str):
+        """From any thread: tell the people involved in a proposal its state
+        now (section 9's `proposal` notice)."""
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._notify_proposal, proposal_id)
+
+    def _notify_proposal(self, proposal_id: str):
+        for session in list(self._sessions):
+            task = asyncio.create_task(self._proposal_notice(session, proposal_id))
+            self._notices.add(task)
+            task.add_done_callback(self._notices.discard)
+
+    async def _proposal_notice(self, session: "_Session", proposal_id: str):
+        """Under `session`'s send lock: the proposal's state, if this
+        connection is its requester's or the campaign host's, and only while
+        its access holds; decided when sent."""
+
+        async def decide():
+            if not session.active:
+                return None
+            try:
+                found = await self._call(
+                    _proposal_seen, session.context, proposal_id,
+                    session=session, role=True,
+                )  # fmt: skip
+            except Exception:
+                logger.exception("Could not check a session for a proposal notice")
+                return None
+            return None if found is None else proposal_message(found)
+
+        try:
+            await session.send_decided(decide)
+        except (ConnectionClosed, _SlowConsumer):
+            pass
+
+    async def _proposals(self, session: "_Session", request: ProposalRequest) -> dict:
+        """`requests`, `request_decide` or `request_cancel` (governance
+        contract section 9), inside the registry guard."""
+        kind = request.kind
+        try:
+            found = await self._call(
+                {"requests": _requests_read, "request_decide": _request_decide,
+                 "request_cancel": _request_cancel}[kind],
+                session.context, request, session=session, role=True,
+                host=kind == "request_decide",
+            )  # fmt: skip
+        except Exception:
+            return self._failure(request.request_id)
+        if found is None:
+            return session_error("session_revoked")
+        if found is _NOT_HOST:
+            return _not_host(request.request_id)
+        reply, changed = found
+        if changed:
+            self._notify_proposal(request.proposal_id)
+            revision = (reply.get("effect") or {}).get("revision")
+            if revision is not None:
+                self._publish(revision)
+        return reply
 
     async def _snapshot(self, session: "_Session") -> dict | None:
         """The recipient's snapshot, or None if revoked: the one place that
@@ -433,6 +533,8 @@ class CampaignService:
             return await self._host(session, parsed)
         elif isinstance(parsed, RulesRequest):
             return await self._rules(session, parsed)
+        elif isinstance(parsed, ProposalRequest):
+            return await self._proposals(session, parsed)
         elif isinstance(parsed, CharacterRequest) and self.characters:
             return await self._character(session, parsed)
         elif isinstance(parsed, CharacterRequest) or (
@@ -519,13 +621,14 @@ class CampaignService:
                         request_id=request.request_id,
                     )
                 try:
-                    outcome = await self._call(
-                        _submit,
+                    outcome, role = await self._call(
+                        _submit_as,
                         session.context,
                         request,
                         self._host_run,
                         session.character_id if self.characters else _NO_ACTOR,
                         session=session,
+                        role=True,
                     )
                 except Exception:
                     return self._failure(request.request_id)
@@ -542,6 +645,8 @@ class CampaignService:
                     return error_message(code, text, request_id=request.request_id)
                 submission, said, names = outcome[1:]
                 if kind == "accepted":
+                    if role == "host":  # a host job: its tools are checked per call
+                        self._job_hosts[submission.job.job_id] = session
                     self._outbox.put_nowait(("conversation", ([said], names)))
                     self._outbox.put_nowait(("state", referee_state_message("busy")))
                     job = asyncio.create_task(self._run_job(submission.job))
@@ -837,10 +942,17 @@ class CampaignService:
         except Exception:
             logger.exception("A referee job failed")
             state, error = "failed", "runner_failed"
+        host_sender = None
+        if reply is not None and job.job_id in self._job_hosts:
+            # Only the campaign host's job may narrate host results.
+            host_sender = await asyncio.get_running_loop().run_in_executor(
+                self._executor, self._host_sender, job
+            )
+        self._job_hosts.pop(job.job_id, None)
         async with self._lifecycle:  # no new job is accepted until this is queued
             try:
                 stored, names = await self._call(
-                    _settle, job.job_id, reply, state, error
+                    _settle, job.job_id, reply, state, error, host_sender
                 )
             except Exception:
                 logger.exception("Could not record how a referee job ended")
@@ -848,6 +960,17 @@ class CampaignService:
             if stored:
                 self._outbox.put_nowait(("conversation", (list(stored), names)))
             self._outbox.put_nowait(("state", referee_state_message("idle")))
+
+    def _host_sender(self, job) -> str | None:
+        """The host sender whose results this job may narrate: its sender's,
+        while that player is the campaign host and still in this game."""
+        try:
+            with self._host_authority(job) as by, self._open() as store:
+                if store.session_revision(by.participant) is None:
+                    return None
+                return by.sender
+        except NotCampaignHost:
+            return None
 
     async def _referee_read(self, session: "_Session", request) -> dict:
         """`referee_status` or `messages`, for the caller only."""
@@ -1247,6 +1370,78 @@ def _submit(store: GameStore, context, request: SayRequest, host_run: str,
     return (submission.outcome, submission, said, _names(store))
 
 
+def _submit_as(store: GameStore, *args, role):
+    """_submit, and the session's campaign role read by its guard."""
+    return _submit(store, *args), role
+
+
+def _proposal_seen(store: GameStore, context, proposal_id: str, *, role):
+    """For a proposal notice: `{"proposal_id", "state"}` if this session is
+    its requester's or the campaign host's and still has access; else None."""
+    with store.snapshot():
+        if store.session_revision(context) is None:
+            return None
+        requests = HostRequests(store)
+        requester = requests.requester_of(proposal_id)
+        if requester is None or (
+            role != "host" and requester != context.participant_id
+        ):
+            return None
+        view = requests._view(proposal_id)
+        return {"proposal_id": proposal_id, "state": view["state"]}
+
+
+def _requests_read(store: GameStore, context, request, *, role, host=None):
+    """`requests`: every proposal for the campaign host, a guest's own."""
+    with store.snapshot():
+        if store.session_revision(context) is None:
+            return None
+        requests = HostRequests(store)
+        listed = requests.listing(None if role == "host" else context.participant_id)
+        return requests_message(listed), False
+
+
+def _request_decide(store: GameStore, context, request, *, role, host):
+    """The campaign host's decision, its session rechecked in the
+    decision's transaction: (reply, changed); None if revoked."""
+    if role != "host":
+        return None if store.session_revision(context) is None else _NOT_HOST
+
+    def check():
+        if store.session_revision(context) is None:
+            raise _Revoked
+
+    try:
+        result, applied = HostRequests(store).decide(
+            Decider(host[1], host[0]), request.request_id, request.proposal_id,
+            request.decision, request.note, check=check,
+        )  # fmt: skip
+    except _Revoked:
+        return None
+    except Refusal as refusal:
+        return refusal.message(request.request_id, None), False
+    return proposal_message(result, request.request_id), applied
+
+
+def _request_cancel(store: GameStore, context, request, *, role, host=None):
+    """The requester withdraws its own proposal: (reply, changed)."""
+
+    def check():
+        if store.session_revision(context) is None:
+            raise _Revoked
+
+    try:
+        result, applied = HostRequests(store).cancel(
+            context.participant_id, request.request_id, request.proposal_id,
+            check=check,
+        )  # fmt: skip
+    except _Revoked:
+        return None
+    except Refusal as refusal:
+        return refusal.message(request.request_id, None), False
+    return proposal_message(result, request.request_id), applied
+
+
 def _end_unfinished(store: GameStore, host_run: str):
     referee = RefereeStore(store)
     job = referee.running_job()
@@ -1254,12 +1449,13 @@ def _end_unfinished(store: GameStore, host_run: str):
         referee.finish(job.job_id, "interrupted", "shutdown")
 
 
-def _settle(store: GameStore, job_id: str, reply, state, error) -> tuple:
+def _settle(store: GameStore, job_id: str, reply, state, error,
+            host_sender=None) -> tuple:  # fmt: skip
     """Publish a job's reply, or record why it ended without one."""
     referee = RefereeStore(store)
     if reply is not None:
         try:
-            return referee.publish_reply(job_id, reply), _names(store)
+            return referee.publish_reply(job_id, reply, host_sender), _names(store)
         except RefereeError as refused:  # nothing from it is published
             state, error = "failed", refused.code
     referee.finish(job_id, state, error)

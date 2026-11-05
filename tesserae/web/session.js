@@ -3,11 +3,13 @@
 // sections 3 and 10). Protocol only: no page access. The host answers each
 // message with exactly one reply, in order, so replies pair first-in,
 // first-out with requests; `revision`, `message`, `referee`, `left`,
-// `actor` and a `role` without a `request_id` are unsolicited and never
-// pair. In a campaign with characters (docs/designs/character_contract.md
+// `actor`, and a `role` or `proposal` without a `request_id` are
+// unsolicited and never pair. In a campaign with characters (docs/designs/character_contract.md
 // section 9) the character messages below are requests like any other.
 
-const UNSOLICITED = new Set(["revision", "message", "referee", "left", "actor", "role"]);
+const UNSOLICITED = new Set(["revision", "message", "referee", "left", "actor", "role", "proposal"]);
+// These are replies when they carry a request ID (governance contract section 13).
+const PAIRED_WITH_ID = new Set(["role", "proposal"]);
 
 export class SessionClosed extends Error {
   constructor(code, reason, error) {
@@ -159,7 +161,7 @@ export class Session {
     }
     // A campaign host transfer's reply is a `role` with its request ID
     // (docs/designs/governance_contract.md section 13).
-    if (UNSOLICITED.has(message.type) && !(message.type === "role" && "request_id" in message)) {
+    if (UNSOLICITED.has(message.type) && !(PAIRED_WITH_ID.has(message.type) && "request_id" in message)) {
       this.onEvent(message);
       return;
     }

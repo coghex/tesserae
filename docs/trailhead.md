@@ -37,6 +37,7 @@ character's ID.
 | `character.name` | Exactly `{"name": NAME}` | The host's step: the walker's label. |
 | `trailhead.trait` | Exactly `{"trait": "steady"}`, `"quick"` or `"keen"` | Sets the trait; can be changed until approval. |
 | `trailhead.stamina` | Exactly `{}` | Rolls `1d3+1` once. A second roll is refused: the result stands. |
+| `trailhead.fact` | Exactly `{"fact": "background"` or `"home", "text", "provenance"}` | Records one agreed narrative fact (up to 300 characters) with where it came from: `chosen` by the player, `assumed` and accepted, `corrected`, or explicitly `unspecified` (with empty text). It changes no numbers; the sheet shows it. |
 
 A draft can be completed once it has a name, a trait and stamina. Completing
 it is deterministic: a keen walker gets one more maximum stamina, so does
@@ -77,8 +78,8 @@ Its requirements, the one description the referee and players see:
 | `character.name` | mechanical | The host's: a name (any text) |
 | `trait` | mechanical | Choose steady, quick or keen |
 | `stamina` | mechanical | Roll `1d3+1` once; says the bonus approval will add |
-| `background` | narrative | Who the walker is, agreed with the referee; changes no numbers |
-| `home` | optional | Where the walker comes from; not recorded by the module yet (`support`) |
+| `background` | narrative | Who the walker is, agreed with the player and recorded with `trailhead.fact`; changes no numbers, and approval does not need it |
+| `home` | optional | Where the walker comes from, only if the player says; never invented |
 
 There are no classes, levels or roles.
 

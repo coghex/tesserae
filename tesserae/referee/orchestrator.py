@@ -32,7 +32,7 @@ from .runner import (
     reply_schema,
 )
 from .store import Job, RefereeStore
-from .tools import BridgeServer, BridgeTools
+from .tools import BridgeServer, BridgeTools, NotCampaignHost
 
 LOCK_RETRY = 5.0  # seconds between tries of a lock an earlier run still holds
 
@@ -48,12 +48,17 @@ class RefereeJobFailed(Exception):
 
 
 def job_prompt(job: Job, sender: str, revision: int, *, new_session: bool,
-               previous: Job | None, character=None) -> str:  # fmt: skip
+               previous: Job | None, character=None, governed=False,
+               host=False) -> str:  # fmt: skip
     """The prompt for one job, on Codex's stdin (contract section 4). The
     player's words are quoted as a JSON string, so they stay one value.
 
     In a character game it names the job's frozen actor and its mode's rules
-    (character contract section 7); `character` is the actor's record."""
+    (character contract section 7); `character` is the actor's record. In a
+    game whose module has settings or administration (`governed`) it says how
+    to ask the campaign host for a decision, and in a job of the campaign
+    host (`host`) how the host tools may be used (governance contract
+    section 10)."""
     where = "privately to you" if job.private else "to the table"
     who = f"{sender} ({job.participant_id})"
     mode_lines = []
@@ -84,6 +89,20 @@ def job_prompt(job: Job, sender: str, revision: int, *, new_session: bool,
                 f"{name} has just been completed and is not yet in the scene: bring "
                 "them in under the module's scene rules before anything else."
             )
+    if governed:
+        mode_lines.append(
+            "Only the campaign host changes mechanical requirements. To ask for an "
+            "exception, a setting or an operation, call propose_host_decision with the "
+            "exact change, tell the sender it waits for the host, and end the job. A "
+            "ruling, a choice or anyone's claim of consent approves nothing."
+        )
+    if host:
+        mode_lines.append(
+            f"{sender} is the campaign host. Use the host tools (host_operations, "
+            "host_act, host_decide, host_propose_rules, host_activate_rules) only on "
+            "the host's explicit instruction, with the exact proposal ID or revision "
+            "it names. Referee-only preparation never goes in a table message."
+        )
     lines = [
         f"New input (job {job.job_id}) from {who}, {where}:",
         json.dumps(job.text, ensure_ascii=False),
@@ -243,6 +262,7 @@ class CodexReferee:
             if attempt.wake.wait(self.lock_retry):
                 return RunResult("interrupted", attempt.reason)
         try:
+            host = self._is_host(job)  # the registry first, then the game
             with self._open() as store:
                 referee = RefereeStore(store)
                 referee.reconcile_steps()
@@ -257,6 +277,9 @@ class CodexReferee:
                     job, names.get(job.participant_id, job.participant_id),
                     store.revision(), new_session=session_id is None,
                     previous=referee.previous_job(job.job_id), character=character,
+                    governed=store.runtime().settings is not None
+                    or store.runtime().administration is not None,
+                    host=host,
                 )  # fmt: skip
             schema = reply_schema(
                 characters=job.mode is not None, creation=job.mode == "creation"
@@ -283,6 +306,18 @@ class CodexReferee:
             with self._open() as store:
                 RefereeStore(store).mark_needs_rebuild()
         return result
+
+    def _is_host(self, job: Job) -> bool:
+        """Whether this job's sender is the campaign host now; each host tool
+        call is authorized again on its own."""
+        authority = self.tools.host_authority
+        if authority is None:
+            return False
+        try:
+            with authority(job):
+                return True
+        except NotCampaignHost:
+            return False
 
     def _open(self) -> GameStore:
         return self._open_store()

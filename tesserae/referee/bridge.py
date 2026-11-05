@@ -90,6 +90,82 @@ TOOLS = [
             {"text": {"type": "string"}, "scope": {"type": "string"}}
         ),
     },
+    # Governance (docs/designs/governance_contract.md section 10).
+    {
+        "name": "propose_host_decision",
+        "description": (
+            "Ask the campaign host to decide one exact change the sender wants: an exception "
+            "to a setting for one of the sender's characters (target null: this job's), a "
+            "campaign-wide setting (scope campaign), or a host operation. The host decides "
+            "later; reply and end the job. Nothing changes until the host approves."
+        ),
+        "inputSchema": _schema(
+            {
+                "step_id": _STEP["properties"]["step_id"],
+                "kind": {"enum": ["exception", "campaign_setting", "operation"]},
+                "scope": {"enum": ["target", "campaign"]},
+                "target": {"type": ["object", "null"]},
+                "payload": {"type": "object"},
+                "explanation": {"type": "string"},
+            }
+        ),  # fmt: skip
+    },
+    {
+        "name": "host_operations",
+        "description": "Campaign host's job only: the host operations available now.",
+        "inputSchema": _schema({}),
+        "annotations": {"readOnlyHint": True},
+    },
+    {
+        "name": "host_act",
+        "description": (
+            "Campaign host's job only, on the host's explicit instruction: run one host "
+            "operation exactly as asked."
+        ),
+        "inputSchema": _STEP,
+    },
+    {
+        "name": "host_decide",
+        "description": (
+            "Campaign host's job only, on the host's explicit instruction naming the exact "
+            "proposal: approve or deny it."
+        ),
+        "inputSchema": _schema(
+            {
+                "step_id": _STEP["properties"]["step_id"],
+                "proposal_id": {"type": "string"},
+                "decision": {"enum": ["approve", "deny"]},
+                "note": {"type": ["string", "null"]},
+            }
+        ),  # fmt: skip
+    },
+    {
+        "name": "host_propose_rules",
+        "description": (
+            "Campaign host's job only: store a settings document as a candidate. It is not "
+            "active until host_activate_rules."
+        ),
+        "inputSchema": _schema(
+            {
+                "step_id": _STEP["properties"]["step_id"],
+                "content": {"type": "object"},
+            }
+        ),  # fmt: skip
+    },
+    {
+        "name": "host_activate_rules",
+        "description": (
+            "Campaign host's job only, when the host explicitly asks: activate a candidate "
+            "revision against the current policy revision."
+        ),
+        "inputSchema": _schema(
+            {
+                "step_id": _STEP["properties"]["step_id"],
+                "revision": {"type": "integer", "minimum": 1},
+                "expected_policy_revision": {"type": "integer", "minimum": 0},
+            }
+        ),  # fmt: skip
+    },
 ]
 _TOOL_NAMES = {tool["name"] for tool in TOOLS}
 

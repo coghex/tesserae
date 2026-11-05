@@ -23,6 +23,7 @@ _MODULE_FIELDS = ("id", "version", "state_version")
 # identifier, never mixed case, so a pasted token is not echoed.
 _SHOWN = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 _CHARACTER_ID = re.compile(r"c_[0-9a-f]{16}")
+PROPOSAL_ID = re.compile(r"hp-[0-9a-f]{12}")
 
 
 class DocumentError(ValueError):
@@ -142,7 +143,14 @@ def _exceptions(exceptions: list, supported: frozenset) -> list[str]:
         if not isinstance(exception, dict):
             problems.append(f"{label} is not an object.")
             continue
-        missing = _fields(exception, _EXCEPTION_FIELDS, label)
+        # An approved request's exception names its proposal (section 9).
+        shown = {k: v for k, v in exception.items() if k != "proposal_id"}
+        missing = _fields(shown, _EXCEPTION_FIELDS, label)
+        proposal = exception.get("proposal_id")
+        if "proposal_id" in exception and not (
+            isinstance(proposal, str) and PROPOSAL_ID.fullmatch(proposal)
+        ):
+            missing.append(f"{label}: 'proposal_id' is a proposal ID.")
         if missing:
             problems += missing
             continue

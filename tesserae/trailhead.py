@@ -71,7 +71,12 @@ CREATION_RULES = {
 _WALKER_FIELDS = {"trait", "rolled", "stamina", "max_stamina", "ready", "in_danger"}
 # Recorded at completion only when a starting bonus applied (absent reads 0),
 # and by the host's corrections only once made (absent reads empty).
-_OPTIONAL_WALKER_FIELDS = {"bonus", "gear", "description"}
+_OPTIONAL_WALKER_FIELDS = {"bonus", "gear", "description", "facts"}
+# Narrative facts agreed in creation (governance contract section 11), each
+# with where it came from; an optional one is simply absent until agreed.
+FACTS = ("background", "home")
+PROVENANCE = ("chosen", "assumed", "corrected", "unspecified")
+MAX_FACT = 300
 # Optional state the host's administration adds; absent reads as before.
 _OPTIONAL_STATE = {"npcs", "scene", "prep"}
 MAX_GEAR = 8
@@ -173,7 +178,7 @@ def _sheet(state: dict, character_id: str) -> dict:
         "max_stamina": walker["max_stamina"],
         "in_danger": walker["in_danger"],
     }
-    for optional in ("gear", "description"):  # only once the host set them
+    for optional in ("gear", "description", "facts"):  # only once set
         if optional in walker:
             sheet[optional] = walker[optional]
     return sheet
@@ -260,6 +265,8 @@ def _validate_seed(state: dict, participant_ids: frozenset, owners) -> None:
             raise SeedError(f"Walker {character_id} has an invalid starting bonus.")
         if "gear" in walker and _gear_problem(walker["gear"]) is not None:
             raise SeedError(f"Walker {character_id} has invalid gear.")
+        if "facts" in walker and _facts_problem(walker["facts"]) is not None:
+            raise SeedError(f"Walker {character_id} has invalid facts.")
         if "description" in walker and not _text(
             walker["description"], MAX_DESCRIPTION
         ):
@@ -306,6 +313,8 @@ def _requirements(policy: dict, state: dict, character_id: str | None) -> list:
     def met(value):
         return {} if walker is None else {"met": value}
 
+    facts = {} if walker is None else walker.get("facts", {})
+
     return [
         {"id": "trait", "kind": "mechanical", "method": "choose",
          "values": list(TRAITS),
@@ -314,14 +323,55 @@ def _requirements(policy: dict, state: dict, character_id: str | None) -> list:
         {"id": "stamina", "kind": "mechanical", "method": "roll", "die": STAMINA_DIE,
          "description": CREATION_RULES["trailhead.stamina"] + approval, **met(
              walker is not None and walker["rolled"] is not None)},
-        {"id": "background", "kind": "narrative",
+        {"id": "background", "kind": "narrative", "method": "trailhead.fact",
          "description": "Who the walker is and why they are climbing; agree it "
-         "with the referee. It changes no numbers.", **met(None)},
-        {"id": "home", "kind": "optional",
-         "description": "Where the walker comes from, if the player wants to say.",
-         "support": "Not recorded by this module yet; mention it in conversation.",
-         **met(None)},
+         "with the player and record it with trailhead.fact. It changes no numbers "
+         "and approval does not need it.", **met("background" in facts)},
+        {"id": "home", "kind": "optional", "method": "trailhead.fact",
+         "description": "Where the walker comes from, only if the player wants to "
+         "say; never invent it.", **met(True if "home" in facts else None)},
     ]  # fmt: skip
+
+
+def _facts_problem(facts) -> str | None:
+    if not isinstance(facts, dict) or not set(facts) <= set(FACTS):
+        return f"Facts are {', '.join(FACTS)}."
+    for fact in facts.values():
+        if (
+            not isinstance(fact, dict)
+            or set(fact) != {"text", "provenance"}
+            or fact["provenance"] not in PROVENANCE
+            or not _text(fact["text"], MAX_FACT)
+            or (fact["provenance"] == "unspecified") != (fact["text"] == "")
+        ):
+            return (
+                f'A fact is {{"text", "provenance"}}: up to {MAX_FACT} characters, '
+                "and provenance chosen, assumed or corrected; unspecified has no text."
+            )
+    return None
+
+
+def _validate_fact(args: dict):
+    exact_fields(args, {"fact", "text", "provenance"}, "Fact args")
+    if args["fact"] not in FACTS:
+        raise ArgumentError("'fact' is background or home.")
+    problem = _facts_problem({args["fact"]: {"text": args["text"],
+                                             "provenance": args["provenance"]}})  # fmt: skip
+    if problem is not None:
+        raise ArgumentError(problem)
+
+
+def _fact(action) -> Outcome:
+    """Record one narrative fact the player agreed to, with its provenance:
+    `chosen` by the player, `assumed` and accepted, a `corrected` one, or
+    explicitly `unspecified`. It is the draft's own data, seen by its owner,
+    the campaign host and the referee."""
+    state = action.state
+    walker = _walker(state, action.character_id)
+    facts = walker.setdefault("facts", {})
+    facts[action.args["fact"]] = {"text": action.args["text"],
+                                  "provenance": action.args["provenance"]}  # fmt: skip
+    return Outcome(state, {"fact": action.args["fact"], **facts[action.args["fact"]]})
 
 
 # --- play ----------------------------------------------------------------------
@@ -660,6 +710,15 @@ def _host_operations(state: dict) -> list:
     return operations
 
 
+def _operation_target(command: str, args: dict) -> dict:
+    """What each host operation changes: a walker, an NPC, or the scene."""
+    if "character_id" in args:
+        return {"kind": "character", "id": args["character_id"]}
+    if command == "trailhead.npc_set":
+        return {"kind": "npc", "id": args["npc_id"]}
+    return {"kind": "scene", "id": SCENE["id"]}  # scene_set and prep_set
+
+
 def _target_state(state: dict, target: dict) -> dict:
     kind, target_id = target["kind"], target["id"]
     if kind == "character":
@@ -694,6 +753,7 @@ TRAILHEAD_MODULE = Module(
         steps=(
             Command("trailhead.trait", _validate_trait, _trait),
             Command("trailhead.stamina", _validate_no_args, _stamina),
+            Command("trailhead.fact", _validate_fact, _fact),
         ),
         problems=_problems,
         complete=_complete,
@@ -717,6 +777,7 @@ TRAILHEAD_MODULE = Module(
         ),
         describe=_host_operations,
         target_state=_target_state,
+        target=_operation_target,
     ),
     settings=CampaignSettings(
         version=1,

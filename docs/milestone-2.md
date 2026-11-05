@@ -105,6 +105,13 @@ administration through the protocol: a module's `Administration` capability,
 replay, stale-revision and busy-rule protection and an audit row, and the
 `host_operations` and `host_audit` reads; Trailhead demonstrates corrections,
 gear, descriptions, NPCs, the scene and referee-only preparation.
+GOV-5 ([#136](https://github.com/coghex/tesserae/issues/136)) delivers guest
+requests for host decisions: a referee job proposes an exact exception,
+campaign setting or host operation and ends; the requester and the host are
+told; only the current campaign host approves or denies it, exactly once and
+against the state it was proposed for; the host's own jobs get host tools
+checked again at every call; and Trailhead records agreed narrative facts
+with their provenance. The host's client controls come with GOV-6 and GOV-7.
 The filed public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
 acceptance (#132–#139); the

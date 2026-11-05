@@ -20,8 +20,11 @@ referee's context (section 10), and schema 8 without `host_requests`
 (section 12). GOV-4 ([#135](https://github.com/coghex/tesserae/issues/135))
 delivers section 6's `Administration`, section 7's `host_operations`,
 `host_audit` and `inspect`, section 8's `host_command` with its replay, busy
-rule and audit, and target digests (for GOV-5). Everything else here is not
-implemented yet.
+rule and audit, and target digests (for GOV-5). GOV-5
+([#136](https://github.com/coghex/tesserae/issues/136)) delivers sections 9,
+10 and 11 and schema 9: proposals and host decisions, the referee's
+proposal and host tools, and narrative facts in the original module.
+Sections 15's client controls (GOV-6 and GOV-7) are not implemented yet.
 
 It extends the [lobby contract](lobby_contract.md), the
 [character contract](character_contract.md) and the
@@ -242,8 +245,8 @@ sent first.
 - Every field is required (`guidance` may be null). An exception is exactly
   `{exception_id, character_id, settings, reason}`: a lowercase
   `exception_id`, a character of this game, at least one setting, and a
-  reason of up to 1,000 characters; one exception per character. GOV-5 adds
-  `proposal_id` for an approved request's exception. A document is at most
+  reason of up to 1,000 characters; one exception per character. An
+  approved request's exception also carries its `proposal_id` (section 9). A document is at most
   256 KiB as canonical JSON.
 - Values compare as JSON, never by a language's equality: `false` is not
   `0`, nor `1.0` `1`, for the binding or for a draft's effective settings.
@@ -367,6 +370,8 @@ class Administration:
     describe: Callable[[dict], list]
     # Pure: (state, target) -> the module data an operation on that target depends on.
     target_state: Callable[[dict, dict], dict]
+    # Optional, pure: (command, args) -> the target {"kind", "id"} that operation changes.
+    target: Callable[[str, dict], dict] | None = None
 ```
 
 - `inspect(state)` is the host's view of module state: every character's
@@ -398,6 +403,11 @@ class Administration:
   target. The host hashes it (canonical JSON, SHA-256) as the target's
   **digest** (section 9). A module without `Administration` has the digest of
   `CharacterRules.sheet` for a character, and no other target kinds.
+- `target(command, args)` names what an operation changes, from its
+  validated arguments. A request for an operation must name exactly that
+  target, so its digest guards what the approval will change. Without it,
+  only an operation with a `character_id` argument (that character) can be
+  requested.
 
 `HOST_API_VERSION` stays 1; unknown capability versions are refused when the
 module is resolved, as for `CharacterRules`.
@@ -562,6 +572,7 @@ CREATE TABLE host_requests (
     -- The target's digest (section 6) when proposed, else null.
     target_digest TEXT,
     state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'denied', 'cancelled', 'superseded', 'stale')),
+    created_at TEXT NOT NULL,
     decided_by TEXT,
     decided_at TEXT,
     decision_note TEXT,
@@ -572,7 +583,10 @@ CREATE TABLE host_requests (
 - **Proposing.** The referee calls `propose_host_decision` (section 10) in
   any job; the requester is the job's sender, and the target defaults to the
   job's character. A campaign-wide request must say so (`"scope":
-  "campaign"`). The payload is validated now, as it will be at decision time
+  "campaign"`; any other is `"scope": "target"`). An exception is for one of
+  the sender's own unarchived characters only; an operation names its
+  target, which must be exactly what the operation changes by the module's
+  `target` rule (section 6), else `invalid_request`. The explanation is 1 to 1,000 characters. The payload is validated now, as it will be at decision time
   (`validate` for settings; the operation's own `validate` for an
   operation); an unsupported request is refused to the referee, not stored.
   The request records the policy revision, a draft target's draft revision
@@ -596,7 +610,19 @@ CREATE TABLE host_requests (
   `request_id`, is `proposal_decided`.
 - **Cancelling.** The requester's `request_cancel {request_id, proposal_id}`
   (a guest's only control) or the host's denial. A target archived, or a
-  requester whose link ended, makes a pending proposal `cancelled`.
+  requester whose link ended, makes a pending proposal `cancelled`, in the
+  same transaction as the archive or the unlink. A decision or a cancel of an
+  unknown, foreign, cancelled, superseded or stale proposal is
+  `proposal_unavailable`.
+- **The effect.** An approved exception is merged into the character's
+  exception (its settings key by key, the request's explanation as its
+  reason, and its `proposal_id`); an approved campaign setting into the
+  document's `settings`. The new revision is checked whole, like any
+  activation, and the reply's `effect` is `{"policy_revision", "drafts"}`.
+  An approved operation runs under the request ID of its proposal in the
+  host's namespace, and its `effect` is `{"revision", "result"}`. The
+  decision's audit row (kind `decision`) records the outcome and effect; an
+  operation also writes its own.
 - **Transfer.** Pending proposals stay; only the current campaign host can
   decide them.
 - **No standing grant.** An approval applies its exact effect once. It never
@@ -608,10 +634,14 @@ CREATE TABLE host_requests (
 
 `propose_host_decision` does not wait: the job replies and ends, as every job
 does, and the proposal stays pending in the store. The requester's referee
-projection gains `requests`, its own proposals with their state; the
-`requests` read (section 7) and an unsolicited `proposal` notice
-(`{"type": "proposal", "proposal_id", "state"}`, to the host and the
-requester, under the usual notice rules) tell the people involved. Other
+projection gains `requests`, once it has made any: its pending proposals and
+its ten most recently decided, each `{proposal_id, kind, target, payload,
+explanation, state, policy_revision, requester: {participant_id, name},
+created_at, decided_at, decision_note, effect}`. The `requests` read
+(section 7) and an unsolicited `proposal` notice (`{"type": "proposal",
+"proposal_id", "state"}`, to the connections of the host and of the
+requester only, decided when it is sent, while their access holds) tell the
+people involved. A proposal, a decision and a cancel each send one. Other
 players keep playing; the referee is busy only while a job actually runs.
 
 ## 10. The referee
@@ -621,10 +651,13 @@ document, `get_context` adds `policy` (the revision, the effective settings
 for the job's character, `{}` without the capability, and the campaign's
 `guidance`, which reaches the referee either way), `requirements` for the
 job's character (section 6; a setup job's are any new character's; null
-without the capability) and, from GOV-5, the requester's pending and
-recent proposals. `list_actions` describes creation and play under the same
-policy. A job of the campaign host adds
-`host: true` and the campaign's pending proposals.
+without the capability) and, once the sender has made any, its pending and
+recent proposals as `requests` (section 9's projection). `list_actions`
+describes creation and play under the same policy. A job of the campaign
+host adds `host: true` and the campaign's pending proposals as
+`pending_requests`. In a game whose module has settings or administration,
+every job's prompt says how to ask the host (`propose_host_decision`, then
+end the job) and that a ruling, a choice or a claim approves nothing.
 
 **New tools.**
 
@@ -669,10 +702,21 @@ policy. A job of the campaign host adds
   only such a job's reply may list it in `narrated`. A guest's job (setup,
   creation or play) never sees it and may not narrate it
   (`malformed_reply`), so a preparation edit or an inspection-derived result
-  never reaches a guest through recovery. A transfer ends every unnarrated
-  host result: the new host sees them in `host_audit`, not as results to
-  narrate. A `propose` step is the requester's own result, under the usual
-  rules (a creation job's proposal is a creation result of its draft).
+  never reaches a guest through recovery. A host result is listed only to
+  later jobs of the same player while it is the campaign host (it ran as
+  `host:<player_id>`), so a transfer ends every unnarrated host result: the
+  new host sees them in `host_audit`, not as results to narrate.
+- **Proposals stay with their requester.** A `propose` step is the
+  requester's own result: it is listed to, and may be narrated by, only a
+  later job of its requester (under the usual mode rules: a creation job's
+  proposal is a creation result of its draft). Any other job, the host's
+  included, could tell it only to the table, so it never sees it as a
+  result; the host reads requests through `pending_requests`.
+- **The host's own session.** Each host tool also checks, inside its own
+  transaction, that the host's participant session in this game still holds
+  (its link, and the game in its file), as any guarded operation does; a
+  host unlinked mid-job has no host tools and its `get_context` is a
+  guest's.
 - **What cannot authorize anything:** a ruling (`record_ruling`), a choice
   (`choices.ask`/`resolve`), a reply's text, a player's claim of consent, or
   a guest job's call. Only a decision recorded through `request_decide` or
@@ -708,8 +752,7 @@ fit must raise a scoped public paging requirement; this contract adds none.
   `host_mutations` and `host_audit` (section 8). Nothing else is rewritten.
 - **Campaign schema 9** (GOV-5): `host_requests` (section 9), and
   `referee_steps.kind` gains `propose` and `host` (the table is rebuilt to
-  widen its check, rows copied). They wait for the slice that uses them, so
-  a schema is never released with a table whose rules are still open.
+  widen its check, every row copied).
 - A campaign without host data behaves exactly as at schema 7.
 
 ## 13. Messages
@@ -732,8 +775,8 @@ for a read without one (paired by order, as every reply is).
 | `rules_import` | `request_id`, `content` | Host | `rules {revision, state, request_id}` |
 | `rules_activate` | `request_id`, `revision`, `expected_policy_revision` | Host | `rules {revision, state, request_id}`; `stale_policy` carries `policy_revision` |
 | `rules_reject` | `request_id`, `revision` | Host | `rules {revision, state, request_id}` |
-| `request_decide` | `request_id`, `proposal_id`, `decision`, `note` | Host | `proposal {proposal_id, state, effect}` |
-| `request_cancel` | `request_id`, `proposal_id` | The requester | `proposal {proposal_id, state}` |
+| `request_decide` | `request_id`, `proposal_id`, `decision`, `note` (null or up to 1,000 characters) | Host | `proposal {proposal_id, state, effect, request_id}`; `state` is `approved`, `denied` or `stale` |
+| `request_cancel` | `request_id`, `proposal_id` | The requester | `proposal {proposal_id, state, request_id}` |
 | `campaign_host_transfer` | `request_id`, `player_id` | Host | `role {role: "guest", request_id}` for the old host; `invalid_request` if the player is the host already or lacks an active grant or token |
 
 Every mutation replays exactly (section 8, "Replay"). The snapshot of a

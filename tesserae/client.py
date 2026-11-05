@@ -52,6 +52,8 @@ JOIN_REPLY_TIMEOUT_SECONDS = 10.0
 EXIT_OK = 0  # stdin ended and every request was answered
 EXIT_FAILED = 1  # could not start, or the host ended the session
 EXIT_UNCERTAIN = 3  # some requests were never answered; resend them unchanged
+# A request for a host decision (docs/designs/governance_contract.md section 9).
+PROPOSAL_STATES = ("pending", "approved", "denied", "cancelled", "superseded", "stale")
 EXIT_INTERRUPTED = 130  # Ctrl-C
 
 
@@ -382,6 +384,15 @@ class _Client:
                     self._show(message)
                     if self.selection is not None:
                         self.role = message["role"]
+                    continue
+                if message.get("type") == "proposal" and "request_id" not in message:
+                    if not (
+                        message.get("version") == 1
+                        and isinstance(message.get("proposal_id"), str)
+                        and message.get("state") in PROPOSAL_STATES
+                    ):
+                        raise _Failure("the host sent a malformed proposal notice")
+                    self._show(message)
                     continue
                 if message.get("type") == "actor" and self.actor is not None:
                     if not (
@@ -893,6 +904,8 @@ def _readable(message: dict) -> list[str]:
         return [f"[character] Your character was {why} on another connection."]
     if kind == "left":
         return ["[left] That campaign is no longer available to you."]
+    if kind == "proposal":
+        return [f"[request] {message['proposal_id']} is now {message['state']}."]
     if kind == "role":
         if message["role"] == "host":
             return ["[role] You are now this campaign's host."]

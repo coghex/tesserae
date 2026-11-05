@@ -336,6 +336,7 @@ These are the only tools, and the only way Codex sees or changes the game.
 | `act` | `step_id`, `command`, `args` | Runs a player command **as the job's sender** (never anyone else), through the normal store path, at the current revision |
 | `referee_act` | `step_id`, `command`, `args` | Runs one of the module's referee-only commands in the `referee` context (section 9) |
 | `record_ruling` | `text`, `scope` | Stores an adopted ruling; it changes no mechanics |
+| `propose_host_decision` and the host tools | see the governance contract | A request for a campaign host's decision, and the campaign host's own tools in its jobs ([governance contract](governance_contract.md#10-the-referee) section 10) |
 
 - **Socket protocol.** One JSON object per line each way. Request:
   `{"token": "...", "tool": "act", "args": {...}}`. Response:

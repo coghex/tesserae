@@ -43,7 +43,7 @@ from .protocol import (
 )
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DEFAULT_BUSY_TIMEOUT = 5.0
 PARTICIPANT_ID_PREFIX = "p_"
 _PARTICIPANT_ID = re.compile(r"p_[0-9a-f]{16}")
@@ -134,6 +134,16 @@ _COLUMNS[8] = {
     "host_audit": [
         "id", "kind", "host_id", "player_id", "via", "job_id", "target", "detail",
         "revision", "created_at",
+    ],
+}  # fmt: skip
+
+_COLUMNS[9] = {
+    **_COLUMNS[8],
+    "host_requests": [
+        "proposal_id", "job_id", "step_request_id", "requester_participant",
+        "requester_player", "target", "kind", "payload", "explanation",
+        "policy_revision", "target_revision", "target_digest", "state",
+        "created_at", "decided_by", "decided_at", "decision_note", "effect",
     ],
 }  # fmt: skip
 
@@ -380,6 +390,54 @@ _MIGRATIONS = {
             created_at TEXT NOT NULL
         )""",
     ],
+    # Guest requests for host decisions, and the referee's proposal and host
+    # tool steps (GOV-5, #136); see docs/designs/governance_contract.md
+    # sections 9 and 10. The steps table is rebuilt to widen its kinds, every
+    # row copied as it was.
+    9: [
+        """CREATE TABLE host_requests (
+            proposal_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            step_request_id TEXT NOT NULL UNIQUE,
+            requester_participant TEXT NOT NULL,
+            requester_player TEXT,
+            target TEXT,
+            kind TEXT NOT NULL
+                CHECK (kind IN ('exception', 'campaign_setting', 'operation')),
+            payload TEXT NOT NULL,
+            explanation TEXT NOT NULL,
+            policy_revision INTEGER NOT NULL,
+            target_revision INTEGER,
+            target_digest TEXT,
+            state TEXT NOT NULL CHECK (state IN
+                ('pending', 'approved', 'denied', 'cancelled', 'superseded', 'stale')),
+            created_at TEXT NOT NULL,
+            decided_by TEXT,
+            decided_at TEXT,
+            decision_note TEXT,
+            effect TEXT
+        )""",
+        """CREATE TABLE referee_steps_9 (
+            job_id TEXT NOT NULL REFERENCES referee_jobs (job_id),
+            step_id TEXT NOT NULL,
+            kind TEXT NOT NULL
+                CHECK (kind IN ('act', 'referee_act', 'propose', 'host')),
+            context TEXT NOT NULL,
+            command TEXT NOT NULL,
+            args TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN ('intended', 'committed', 'refused', 'not_committed')),
+            result TEXT,
+            narrated INTEGER NOT NULL DEFAULT 0 CHECK (narrated IN (0, 1)),
+            character_id TEXT,
+            PRIMARY KEY (job_id, step_id)
+        )""",
+        """INSERT INTO referee_steps_9 SELECT job_id, step_id, kind, context, command,
+            args, request_id, status, result, narrated, character_id FROM referee_steps""",
+        "DROP TABLE referee_steps",
+        "ALTER TABLE referee_steps_9 RENAME TO referee_steps",
+    ],
 }
 
 
@@ -438,12 +496,15 @@ class Decider:
     message; or the local operator (`OPERATOR_DECIDER`). `via` says how the
     decision came: `client`, `referee` or `operator`. Its commands and replay
     records use the sender `host:<player_id>`, which no participant or token
-    is."""
+    is. Via the referee, `participant` is the host's own session in this game,
+    whose access each privileged operation checks again inside its own
+    transaction."""
 
     player_id: str
     host_id: str | None = None
     via: str = "client"
     job_id: str | None = None
+    participant: ParticipantContext | None = None
 
     def __post_init__(self):
         if not isinstance(self.player_id, str) or not self.player_id:
@@ -831,8 +892,6 @@ class GameStore:
                 if precondition is not None:
                     precondition()
                 return error.to_message(revision=self._current_revision()), False
-        content = request.content()
-        args = request.args
         current = None
         try:
             with self._write():
@@ -841,13 +900,13 @@ class GameStore:
                 current = self._current_revision()
                 record = self._find(by.sender, request.request_id)
                 if record is not None:
-                    if record.content == content:
+                    if record.content == request.content():
                         return record.to_message(), False
                     raise Refusal(
                         "request_conflict",
                         "This request_id was already used for a different command.",
                     )
-                busy = self.busy_refusal()
+                busy = self.busy_refusal(by.job_id)
                 if busy is not None:
                     raise busy
                 if request.expected_revision != current:
@@ -856,64 +915,79 @@ class GameStore:
                         f"Expected revision {request.expected_revision}, "
                         f"but the game is at revision {current}.",
                     )
-                character = None
-                character_id = args.get("character_id")
-                if isinstance(character_id, str):
-                    character = self._character(character_id)
-                    if character is None:
-                        raise Refusal(
-                            "character_unavailable",
-                            "There is no such character in this game.",
-                        )
-                try:
-                    outcome = host.execute(
-                        self._state(),
-                        by.sender,
-                        request.command,
-                        args,
-                        policy=self._policy(
-                            runtime, None if character is None else character_id
-                        ),
-                    )
-                except ActionRejected as rejection:
-                    raise Refusal("action_rejected", rejection.message) from None
-                record = CommandRecord(
-                    revision=current + 1,
-                    participant_id=by.sender,
-                    request_id=request.request_id,
-                    content=content,
-                    result=outcome.result,
-                )
-                self._write_state(outcome.state)
-                self._insert_record(record)
-                self._advance_revision(record.revision)
-                if character is not None and character.phase == "draft":
-                    # A shown approval of the old draft is stale now.
-                    self._connection.execute(
-                        "UPDATE characters SET draft_revision = draft_revision + 1 "
-                        "WHERE character_id = ?",
-                        (character_id,),
-                    )
-                self.audit(
-                    by,
-                    "operation",
-                    {"command": request.command, "args": args,
-                     "request_id": request.request_id},
-                    target=_target_of(args),
-                )  # fmt: skip
+                record = self.run_host_operation(by, request)
         except Refusal as refusal:
             return refusal.message(request.request_id, current), False
         return record.to_message(), True
 
-    def busy_refusal(self) -> "Refusal | None":
+    def run_host_operation(self, by: Decider, request) -> "CommandRecord":
+        """Inside the caller's write transaction, with replay, the busy rule
+        and the revision already settled: run one parsed host operation at
+        the current revision and record it, its new state, a touched draft's
+        new revision and its audit row. Raises Refusal with nothing done
+        (the caller rolls back). An approved request reuses it (section 9)."""
+        runtime = self._loaded_runtime()
+        host = runtime.for_host()
+        current = self._current_revision()
+        args = request.args
+        character = None
+        character_id = args.get("character_id")
+        if isinstance(character_id, str):
+            character = self._character(character_id)
+            if character is None:
+                raise Refusal(
+                    "character_unavailable",
+                    "There is no such character in this game.",
+                )
+        try:
+            outcome = host.execute(
+                self._state(),
+                by.sender,
+                request.command,
+                args,
+                policy=self._policy(
+                    runtime, None if character is None else character_id
+                ),
+            )
+        except ActionRejected as rejection:
+            raise Refusal("action_rejected", rejection.message) from None
+        record = CommandRecord(
+            revision=current + 1,
+            participant_id=by.sender,
+            request_id=request.request_id,
+            content=request.content(),
+            result=outcome.result,
+        )
+        self._write_state(outcome.state)
+        self._insert_record(record)
+        self._advance_revision(record.revision)
+        if character is not None and character.phase == "draft":
+            # A shown approval of the old draft is stale now.
+            self._connection.execute(
+                "UPDATE characters SET draft_revision = draft_revision + 1 "
+                "WHERE character_id = ?",
+                (character_id,),
+            )
+        self.audit(
+            by,
+            "operation",
+            {"command": request.command, "args": args,
+             "request_id": request.request_id},
+            target=_target_of(args),
+        )  # fmt: skip
+        return record
+
+    def busy_refusal(self, own_job: str | None = None) -> "Refusal | None":
         """`referee_busy` while a referee job runs (governance contract
-        section 8's busy rule), naming whom it answers; else None."""
+        section 8's busy rule), naming whom it answers; else None. The
+        campaign host's own running job (`own_job`, its host tools) is the
+        running work, so it is not refused."""
         row = self._connection.execute(
-            "SELECT p.name FROM referee_jobs AS j JOIN referee_inputs AS i "
+            "SELECT p.name, j.job_id FROM referee_jobs AS j JOIN referee_inputs AS i "
             "ON i.id = j.input_id LEFT JOIN participants AS p "
             "ON p.participant_id = i.participant_id WHERE j.state = 'running'"
         ).fetchone()
-        if row is None:
+        if row is None or (own_job is not None and row[1] == own_job):
             return None
         name = row[0] or "someone"
         return Refusal(
@@ -1285,6 +1359,11 @@ class GameStore:
                 (now, character_id),
             )
             self._end_creation(character_id)
+            # Requests about it end with it (governance contract section 9).
+            self.cancel_requests(
+                "target = ?",
+                (policies.canonical({"kind": "character", "id": character_id}),),
+            )
             return None, {"character": self._character(character_id).summary()}
 
         content = _lifecycle_content("character_archive", character_id=character_id)
@@ -1567,14 +1646,29 @@ class GameStore:
         participant and its history stay."""
         _check_host_identity(host_id, player_id)
         with self._write():
-            return (
-                self._connection.execute(
-                    "UPDATE host_links SET unlinked_at = ? WHERE host_id = ? "
-                    "AND player_id = ? AND unlinked_at IS NULL",
-                    (_now(), host_id, player_id),
-                ).rowcount
-                > 0
+            link = self._active_link(host_id, player_id)
+            if link is None:
+                return False
+            self._connection.execute(
+                "UPDATE host_links SET unlinked_at = ? WHERE id = ?", (_now(), link[0])
             )
+            # The requester's pending requests end with its link (section 9).
+            self.cancel_requests("requester_participant = ?", (link[1],))
+            return True
+
+    def cancel_requests(self, where: str, parameters: tuple) -> list[str]:
+        """Inside the caller's write transaction: make the matching pending
+        host requests `cancelled`; their proposal IDs."""
+        rows = self._connection.execute(
+            f"SELECT proposal_id FROM host_requests WHERE state = 'pending' AND {where}",
+            parameters,
+        ).fetchall()
+        self._connection.executemany(
+            "UPDATE host_requests SET state = 'cancelled', decided_at = ? "
+            "WHERE proposal_id = ?",
+            [(_now(), row[0]) for row in rows],
+        )
+        return [row[0] for row in rows]
 
     def host_links(self) -> list[HostLink]:
         rows = self._connection.execute(

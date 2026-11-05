@@ -202,6 +202,7 @@ contract sections 6 and 8) by supplying `Administration`:
 | `operations` | Host-only `Command`s. Their names share the module's namespace and the catalog's checks. Each names its target in its own validated arguments (`character_id`, `npc_id`, …) |
 | `describe(state)` | Pure: the operations available now, each `{"command", "description", "target_kinds", "args"}`, where `args` describes each argument (name, type, allowed values or range, required). Guidance for clients and the referee, never a validator |
 | `target_state(state, target)` | Pure: what an operation or request on `target` (`{"kind", "id"}`) depends on; raises `ArgumentError` for an unknown target. The host hashes it as the target's digest. Without the capability, a character's digest is its sheet's |
+| `target(command, args)` | Optional, pure: the target (`{"kind", "id"}`) an operation changes. A guest's request for an operation must name exactly it, so a stale approval is caught; without it only an operation with a `character_id` argument can be requested |
 
 An operation runs only through `GameStore.execute_host_command`, for the
 campaign host: its executor sees `participant_id == "host:<player_id>"`,

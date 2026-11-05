@@ -107,7 +107,9 @@ class Trail(Lobby):
         return await self.reply(connection)
 
     async def reply(self, connection) -> dict:
-        while (received := await self.next(connection))["type"] in UNSOLICITED:
+        while (received := await self.next(connection))["type"] in UNSOLICITED or (
+            received["type"] == "proposal" and "request_id" not in received
+        ):  # a proposal notice (governance contract section 9)
             pass
         return received
 

@@ -449,6 +449,47 @@ class CampaignHostTests(LobbyCase):
         self.assertEqual(self.errors, [])
 
 
+class ProposalNoticeTests(LobbyCase):
+    def test_a_proposal_notice_awaiting_a_reply_is_not_taken_for_it(self):
+        # A request's state changes while the page waits for the reply to
+        # what Alice said (governance contract section 9): the unsolicited
+        # notice is not that reply. Showing requests is GOV-7.
+        page, held, released = self.open(), [], []
+
+        def route(socket):
+            server = socket.connect_to_server()
+
+            def from_host(message):
+                kind = json.loads(message)["type"]
+                if not released and (held or kind == "accepted"):
+                    held.append(message)  # the reply and all after it
+                else:
+                    socket.send(message)
+
+            server.on_message(from_host)
+            socket.on_message(server.send)
+            self.page_socket = socket
+
+        page.route_web_socket(f"{self.host.uri}**", route)
+        self.logged_in("alice", page)
+        self.enter(page, "Harbor")
+        self.say(page, "Still waiting?")
+        while not held:
+            page.wait_for_timeout(20)
+        self.page_socket.send(json.dumps({
+            "version": 1, "type": "proposal", "proposal_id": "hp-0123456789ab",
+            "state": "approved"}))  # fmt: skip
+        page.wait_for_timeout(50)
+        released.append(True)
+        for message in held:
+            self.page_socket.send(message)
+        self.expect_answered(page, "Heard in Harbor: Still waiting?")
+        expect(page.locator("#console-last-text")).to_contain_text("Still waiting?")
+        expect(page.locator("#composer-text")).to_have_value("")
+        expect(page.locator("#composer-note")).to_have_text("")
+        self.assertEqual(self.errors, [])
+
+
 class ReconnectTests(LobbyCase):
     def test_reconnect_enters_the_same_campaign_and_never_another_participant(self):
         page = self.logged_in("alice")
