@@ -197,6 +197,39 @@ def main(argv: list[str] | None = None) -> int:
         help="Start from this seed file's state and participants instead "
         "(see docs/game_store.md). Then issue tokens with 'participant rotate'.",
     )
+    rules = game_actions.add_parser(
+        "rules",
+        help="A campaign's settings documents (see docs/designs/governance_contract.md).",
+        description="Operator commands for a game's settings documents. An "
+        "imported file is a candidate; only 'activate' changes live settings.",
+    )
+    rules_actions = rules.add_subparsers(dest="rules_action", required=True)
+    rules_import = rules_actions.add_parser(
+        "import", help="Check a JSON document and store it as a candidate."
+    )
+    rules_import.add_argument("--file", required=True, help="The JSON document.")
+    rules_actions.add_parser(
+        "list", help="Every revision: number, state, origin, SHA-256, dates."
+    )
+    rules_export = rules_actions.add_parser(
+        "export", help="Write one revision's document (default: the active one)."
+    )
+    rules_export.add_argument("--revision", type=int)
+    rules_export.add_argument(
+        "--file", required=True, help="New file to write; must not exist yet."
+    )
+    rules_activate = rules_actions.add_parser(
+        "activate", help="Make candidate N the active settings, after checking it."
+    )
+    rules_activate.add_argument("revision", type=int)
+    for action in rules_actions.choices.values():
+        action.add_argument(
+            "--database", required=True, help="The game's SQLite store."
+        )
+        action.add_argument(
+            "--module-dir",
+            help="The trusted package of the game's module, if it is not bundled.",
+        )
     participant = commands.add_parser(
         "participant",
         help="Manage this game's participants and their join tokens (local only).",

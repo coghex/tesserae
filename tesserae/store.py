@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from . import policy as policies
 from .builtin import CATALOG, DICE_RUNTIME
 from .credentials import token_digest
 from .modules import (
@@ -42,7 +43,7 @@ from .protocol import (
 )
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 DEFAULT_BUSY_TIMEOUT = 5.0
 PARTICIPANT_ID_PREFIX = "p_"
 _PARTICIPANT_ID = re.compile(r"p_[0-9a-f]{16}")
@@ -118,6 +119,21 @@ _COLUMNS[7] = {
     "referee_messages": [*_COLUMNS[6]["referee_messages"], "character_id", "creation"],
     "referee_choices": [
         "participant_id", "character_id", "question", "asked_in_job", "asked_at",
+    ],
+}  # fmt: skip
+
+_COLUMNS[8] = {
+    **_COLUMNS[7],
+    "campaign_documents": [
+        "revision", "content", "sha256", "origin", "state", "created_at",
+        "activated_at", "activated_by",
+    ],
+    "host_mutations": [
+        "sender", "request_id", "kind", "content", "result", "created_at",
+    ],
+    "host_audit": [
+        "id", "kind", "host_id", "player_id", "via", "job_id", "target", "detail",
+        "revision", "created_at",
     ],
 }  # fmt: skip
 
@@ -322,6 +338,47 @@ _MIGRATIONS = {
         "ALTER TABLE referee_choices_7 RENAME TO referee_choices",
         """CREATE UNIQUE INDEX one_choice_per_scope
             ON referee_choices (participant_id, ifnull(character_id, ''))""",
+    ],
+    # The campaign settings document, host mutations' replay records and the
+    # host audit (GOV-3, #134); see docs/designs/governance_contract.md
+    # sections 5 and 8. Empty in every game nobody has configured.
+    8: [
+        """CREATE TABLE campaign_documents (
+            revision INTEGER PRIMARY KEY CHECK (revision >= 1),
+            content TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            origin TEXT NOT NULL
+                CHECK (origin IN ('import', 'referee', 'request', 'host')),
+            state TEXT NOT NULL
+                CHECK (state IN ('candidate', 'active', 'superseded', 'rejected')),
+            created_at TEXT NOT NULL,
+            activated_at TEXT,
+            activated_by TEXT
+        )""",
+        """CREATE UNIQUE INDEX one_active_document ON campaign_documents (state)
+            WHERE state = 'active'""",
+        """CREATE TABLE host_mutations (
+            sender TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            content TEXT NOT NULL,
+            result TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (sender, request_id)
+        )""",
+        """CREATE TABLE host_audit (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN
+                ('operation', 'import', 'activation', 'rejection', 'decision')),
+            host_id TEXT,
+            player_id TEXT NOT NULL,
+            via TEXT NOT NULL CHECK (via IN ('client', 'referee', 'operator')),
+            job_id TEXT,
+            target TEXT,
+            detail TEXT NOT NULL,
+            revision INTEGER,
+            created_at TEXT NOT NULL
+        )""",
     ],
 }
 
@@ -665,6 +722,7 @@ class GameStore:
                     revision=current,
                 ), False
             # Only now, with replay and staleness settled, do the rules run.
+            character_id = actor.character_id if acting else None
             try:
                 outcome = runtime.execute(
                     self._state(),
@@ -672,7 +730,8 @@ class GameStore:
                     request.command,
                     request.args,
                     randint=self._randint,
-                    character_id=actor.character_id if acting else None,
+                    character_id=character_id,
+                    policy=self._policy(runtime, character_id),
                 )
             except ActionRejected as rejection:
                 return error_message(
@@ -753,6 +812,35 @@ class GameStore:
 
     def revision(self) -> int:
         return self._current_revision()
+
+    # The campaign settings document (governance contract section 5). Its
+    # operations are tesserae.campaign_rules'; these reads give every hook
+    # the effective policy, inside the caller's transaction.
+
+    def policy_revision(self) -> int:
+        """The active document's revision, or 0 with none."""
+        row = self._connection.execute(
+            "SELECT revision FROM campaign_documents WHERE state = 'active'"
+        ).fetchone()
+        return 0 if row is None else row[0]
+
+    def active_document(self) -> tuple[int, dict | None]:
+        """(policy revision, the active document or None)."""
+        row = self._connection.execute(
+            "SELECT revision, content FROM campaign_documents WHERE state = 'active'"
+        ).fetchone()
+        return (0, None) if row is None else (row[0], json.loads(row[1]))
+
+    def effective_policy(self, character_id: str | None = None) -> dict | None:
+        """The trusted effective policy for one character, or the campaign's
+        with None; None if the game's module has no campaign settings."""
+        return self._policy(self._loaded_runtime(), character_id)
+
+    def _policy(self, runtime: Runtime, character_id: str | None) -> dict | None:
+        if runtime.settings is None:
+            return None
+        revision, document = self.active_document()
+        return policies.effective(runtime, revision, document, character_id)
 
     def session_revision(self, context: ParticipantContext) -> int | None:
         """The revision, as a participant-facing read: None if revoked.
@@ -887,7 +975,11 @@ class GameStore:
         def create(runtime, state, now):
             character_id = CHARACTER_ID_PREFIX + secrets.token_hex(8)
             outcome = runtime.start_character(
-                state, context.participant_id, character_id, randint=self._randint
+                state,
+                context.participant_id,
+                character_id,
+                randint=self._randint,
+                policy=self._policy(runtime, character_id),
             )
             self._connection.execute(
                 "INSERT INTO characters (character_id, participant_id, name, phase, "
@@ -933,15 +1025,18 @@ class GameStore:
                 )
             if self._acting_job(character_id):
                 raise _busy()
+            # Judged under the policy in force now, in this transaction: an
+            # activation since the draft was seen has moved its revision.
+            policy = self._policy(runtime, character_id)
             problems = [] if character.name else ["Give the character a name."]
-            problems += runtime.character_problems(state, character_id)
+            problems += runtime.character_problems(state, character_id, policy)
             if problems:
                 raise Refusal(
                     "character_incomplete",
                     "That character is not finished yet.",
                     {"problems": problems},
                 )
-            state = runtime.complete_character(state, character_id)
+            state = runtime.complete_character(state, character_id, policy)
             self._connection.execute(
                 "UPDATE characters SET phase = 'ready', completed_at = ? "
                 "WHERE character_id = ?",

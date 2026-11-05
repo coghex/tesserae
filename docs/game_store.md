@@ -54,9 +54,11 @@ version. Upgrading from version 1 adds the participant and credential
 tables. Upgrading to version 3 adds the module binding, binding the game to
 `dice` with state `{}`. Upgrading to version 4 adds the empty `seed` table, and
 to version 5 the empty referee tables, to version 6 the empty `host_links`
-table, and to version 7 the empty `characters` table, with null actor columns
+table, to version 7 the empty `characters` table, with null actor columns
 on the referee tables and each pending choice kept as its participant's own
-(character contract section 12). The game ID, revision, every command and its result,
+(character contract section 12), and to version 8 the empty
+`campaign_documents`, `host_mutations` and `host_audit` tables (governance
+contract section 12). The game ID, revision, every command and its result,
 participants, credentials, and the `local-development` attribution of
 earlier history are untouched. A store
 whose schema is newer than this Tesserae understands is refused unchanged, with
@@ -378,7 +380,7 @@ lookups and the module's synchronous rules.
 ## Storage
 
 SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
-"TESS"). The schema version is SQLite's `user_version`, currently 7.
+"TESS"). The schema version is SQLite's `user_version`, currently 8.
 
 | Table | Since | Contents |
 |---|---|---|
@@ -391,6 +393,9 @@ SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
 | `referee`, `referee_sessions`, `referee_inputs`, `referee_jobs`, `referee_steps`, `referee_choices`, `referee_messages`, `referee_rulings` | 5 | The AI referee's mode, Codex sessions, accepted input, jobs (at most one `running`, enforced by a unique index), journaled tool steps, pending choices, conversation and rulings; empty until `tesserae referee enable`. See [referee_contract.md](designs/referee_contract.md#5-store) and `tesserae/referee/store.py`. Version 7 adds each input's, step's and message's character (and an input's mode, a message's creation flag), and scopes pending choices by character |
 | `host_links` | 6 | Host players admitted by a lobby host, each linked to one participant ([lobby contract](designs/lobby_contract.md#5-admission-and-participant-links)) |
 | `characters` | 7 | `character_id`, owning `participant_id`, `name`, `phase`, `draft_revision`, and when it was created, completed, introduced and archived; empty in a game without characters |
+| `campaign_documents` | 8 | Each settings document `revision`: canonical `content`, its `sha256`, `origin`, `state` (`candidate`, `active`, `superseded` or `rejected`; at most one `active`), when it was created and activated, and by whom ([governance contract](designs/governance_contract.md#5-the-campaign-settings-document)) |
+| `host_mutations` | 8 | Each campaign host mutation's replay record: `sender` (`host:<player_id>`), `request_id`, `kind`, canonical `content` and recorded `result` |
+| `host_audit` | 8 | One row per host mutation: its `kind`, the deciding `host_id` and `player_id` (`operator` and no host for the local operator), `via`, an optional job and target, a `detail` JSON, the game revision then, and when |
 
 The `commands` table is the history. It is not an event-sourcing log, and
 SQLite is the only live authority. `local-development` appears in `commands`

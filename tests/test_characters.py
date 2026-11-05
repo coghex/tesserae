@@ -41,9 +41,20 @@ def command(request_id: str, name: str, args: dict, revision: int) -> str:
     })  # fmt: skip
 
 
+def as_schema_7(path):
+    """Turn a current store back into schema 7: no settings documents, host
+    mutations or host audit (governance contract section 12)."""
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executescript(
+            "DROP TABLE campaign_documents; DROP TABLE host_mutations;"
+            "DROP TABLE host_audit; PRAGMA user_version = 7;"
+        )
+
+
 def as_schema_6(path):
-    """Turn a current store back into the schema 6 one the previous release
+    """Turn a current store back into the schema 6 one an earlier release
     left: no characters table, no actor columns, participant-keyed choices."""
+    as_schema_7(path)
     choices = next(
         statement
         for statement in store_module._MIGRATIONS[5]
@@ -368,7 +379,7 @@ class LifecycleTests(CharacterCase):
         )
 
     def test_a_failure_inside_an_operation_rolls_everything_back(self):
-        def broken_complete(state, character_id):
+        def broken_complete(state, character_id, policy):
             raise RuntimeError("module bug")
 
         rules = replace(TRAILHEAD_MODULE.characters, complete=broken_complete)
@@ -644,8 +655,8 @@ class CatalogTests(unittest.TestCase):
                 self.catalog(**changes)
 
     def test_an_unknown_rules_version_is_refused_when_resolved(self):
-        catalog = self.catalog(rules={"version": 2})
-        with self.assertRaisesRegex(ModuleError, "character rules version 2"):
+        catalog = self.catalog(rules={"version": 3})
+        with self.assertRaisesRegex(ModuleError, "character rules version 3"):
             catalog.resolve("trailhead")
 
 
@@ -784,13 +795,17 @@ class TrailheadTests(CharacterCase):
         ash = self.draft(trait=None, roll=False)
         steps = [
             a["command"]
-            for a in TRAILHEAD.creation_actions(self.store.inspect_state(), ash)
+            for a in TRAILHEAD.creation_actions(
+                self.store.inspect_state(), ash, self.store.effective_policy(ash)
+            )
         ]
         self.assertEqual(
             steps, ["character.name", "trailhead.trait", "trailhead.stamina"]
         )
         wren = self.ready(name="Wren")
-        actions = TRAILHEAD.character_actions(self.store.inspect_state(), wren)
+        actions = TRAILHEAD.character_actions(
+            self.store.inspect_state(), wren, self.store.effective_policy(wren)
+        )
         self.assertEqual([a["command"] for a in actions], ["trailhead.push"])
 
     def test_a_raising_start_creates_nothing(self):

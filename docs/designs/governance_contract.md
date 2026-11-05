@@ -12,7 +12,12 @@ them.
 
 Implemented so far: GOV-2 ([#133](https://github.com/coghex/tesserae/issues/133))
 delivers sections 3 and 4, the snapshot's `role`, and section 7's `host_view`
-and `host_messages`. Everything else here is not implemented yet.
+and `host_messages`. GOV-3 ([#134](https://github.com/coghex/tesserae/issues/134))
+delivers section 5, section 6's settings and policy-aware character rules,
+section 7's `rules_view` and `host_view` policy, the `rules_*` messages and
+the snapshot's `policy_revision`, the policy and requirements in the
+referee's context (section 10), and schema 8 without `host_requests`
+(section 12). Everything else here is not implemented yet.
 
 It extends the [lobby contract](lobby_contract.md), the
 [character contract](character_contract.md) and the
@@ -230,6 +235,17 @@ sent first.
   changes a mechanical check.
 - `module` must equal the game's binding exactly. Nothing in a document loads
   code, changes providers or installs a module.
+- Every field is required (`guidance` may be null). An exception is exactly
+  `{exception_id, character_id, settings, reason}`: a lowercase
+  `exception_id`, a character of this game, at least one setting, and a
+  reason of up to 1,000 characters; one exception per character. GOV-5 adds
+  `proposal_id` for an approved request's exception. A document is at most
+  256 KiB as canonical JSON.
+- A document is checked whole, against the module and the game's state, when
+  it is imported and again when it is activated; a refusal
+  (`invalid_document`, with its `problems`) stores and changes nothing.
+  Problems show client input only as a lowercase identifier, so a pasted
+  token is never echoed.
 
 ### Storage
 
@@ -267,15 +283,20 @@ campaign is its active revision number (0 with none).
 Every host mutation carries a `request_id` and replays exactly (section 8,
 "Replay"): a lost `rules_import` reply retried returns the same candidate,
 never a second one, and a retried activation that succeeded returns its
-success, not `stale_policy`. The operator commands run with the host
-stopped, as `referee rebuild` does, and need no replay.
+success, not `stale_policy`. The operator commands need no replay. Each is
+one transaction, so they are safe beside a running host, and activation
+obeys the busy rule like the host's; `--module-dir` names the package of a
+game whose module is not bundled.
 
 An activation that changes any draft's effective settings adds one to that
 draft's `draft_revision` in the same transaction, so a displayed approval of
 the old revision is `stale_draft` (character contract section 9). It never
 changes a completed character's sheet, rerolls anything or refreshes a
 resource; changing an existing sheet is a separate host operation
-(section 8).
+(section 8). It does not advance the game revision, and sends no notice:
+connections see the new `policy_revision` in their next snapshot, and a
+draft's new revision when they next read it. Completion judges a draft
+under the policy in force in its own transaction.
 
 ## 6. Module capabilities
 
@@ -301,14 +322,17 @@ class CampaignSettings:
   character's exception, merged key by key) and returns player-safe problems;
   empty means valid. It is called for every candidate before activation, for
   each exception it carries, and for every request's proposed settings.
-- `requirements(policy, state, character_id)` returns JSON describing what a
-  character needs: entries with a stable `id`, a `kind` of `mechanical`,
-  `narrative` or `optional`, a description, allowed values or methods
-  (`choose`, `roll`) where they apply, whether it is met, and a `support`
-  note where an option needs further development. It is the one source for
-  both the referee's context and the player's view; modules must not keep a
-  second prose copy. Declaring an option does not prove every mechanic it
-  touches in play is implemented.
+- `requirements(policy, state, character_id)` returns a JSON list describing
+  what a character needs (or any new character, with None): entries with a
+  stable `id`, a `kind` of `mechanical`, `narrative` or `optional`, a
+  `description`, allowed values or methods (`choose`, `roll`) where they
+  apply, whether it is `met` (true, false, or null when the module does not
+  record it; omitted with no character), and a `support` note where an option
+  needs further development. It is the one source for both the referee's
+  context and the player's view; modules must not keep a second prose copy.
+  In a character game the host lists its own `character.name` requirement
+  first. Declaring an option does not prove every mechanic it touches in
+  play is implemented.
 
 The **effective policy** for a character is the dictionary
 `{"revision", "settings"}` the host computes and passes to hooks; it never
@@ -383,7 +407,7 @@ guarded like every lobby operation and change nothing.
 
 | Message | Reply |
 |---|---|
-| `rules_view {character_id?}` | `{"type": "rules_view", "policy_revision", "settings", "guidance", "requirements"}`: the campaign's settings and guidance, and for `character_id` (one of the sender's own characters; the host may name any) its effective settings, including its exception, and `requirements` (section 6). Never another character's exception or reason |
+| `rules_view {character_id?}` | `{"type": "rules_view", "policy_revision", "settings", "guidance", "requirements"}`: the campaign's settings and guidance, and for `character_id` (one of the sender's own unarchived characters, else `character_unavailable`; the host may name any) its effective settings, `character_id` and its own `exception` (`{exception_id, settings, reason}` or null), and `requirements` (section 6). Never another character's exception or reason. Without the module capability, `settings` is `{}` and `requirements` null |
 | `requests` | `{"type": "requests", "requests": [...]}`: a guest's own proposals (section 9), any state, with their target, payload, explanation, state and decision note. The host gets every proposal |
 
 A guest's referee context and snapshot show the same projection for the
@@ -478,7 +502,7 @@ its effect:
 CREATE TABLE host_audit (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('operation', 'import', 'activation', 'rejection', 'decision')),
-    host_id TEXT NOT NULL, player_id TEXT NOT NULL,     -- the deciding campaign host
+    host_id TEXT, player_id TEXT NOT NULL,     -- the deciding campaign host; null and "operator" for the operator
     via TEXT NOT NULL CHECK (via IN ('client', 'referee', 'operator')),
     job_id TEXT,                                        -- when via the referee
     target TEXT,                                        -- a character, NPC or other ID the module named
@@ -577,8 +601,10 @@ players keep playing; the referee is busy only while a job actually runs.
 
 **Context.** In a game with settings, `get_context` adds `policy` (the
 revision, the effective settings for the job's character and the campaign's
-`guidance`), `requirements` for the job's character (section 6) and the
-requester's pending and recent proposals. A job of the campaign host adds
+`guidance`), `requirements` for the job's character (section 6; a setup
+job's are any new character's) and, from GOV-5, the requester's pending and
+recent proposals. `list_actions` describes creation and play under the same
+policy. A job of the campaign host adds
 `host: true` and the campaign's pending proposals.
 
 **New tools.**
@@ -659,10 +685,12 @@ fit must raise a scoped public paging requirement; this contract adds none.
 ## 12. Storage
 
 - **Registry schema 2:** section 3.
-- **Campaign schema 8:** `campaign_documents` (section 5), `host_mutations`
-  and `host_audit` (section 8), `host_requests` (section 9), and
+- **Campaign schema 8** (GOV-3): `campaign_documents` (section 5),
+  `host_mutations` and `host_audit` (section 8). Nothing else is rewritten.
+- **Campaign schema 9** (GOV-5): `host_requests` (section 9), and
   `referee_steps.kind` gains `propose` and `host` (the table is rebuilt to
-  widen its check, rows copied). Nothing else is rewritten.
+  widen its check, rows copied). They wait for the slice that uses them, so
+  a schema is never released with a table whose rules are still open.
 - A campaign without host data behaves exactly as at schema 7.
 
 ## 13. Messages
@@ -680,18 +708,19 @@ for a read without one (paired by order, as every reply is).
 | `host_audit` | `after` | Host | `host_audit` |
 | `host_operations` | | Host | `host_operations {revision, operations}` |
 | `host_command` | `request_id`, `expected_revision`, `command`, `args` | Host | `result` or an error |
-| `rules_list` | | Host | `rules_list {revisions}` |
+| `rules_list` | | Host | `rules_list {policy_revision, revisions}` |
 | `rules_export` | `revision` (optional) | Host | `rules {revision, state, content}` |
-| `rules_import` | `request_id`, `content` | Host | `rules {revision, state}` |
-| `rules_activate` | `request_id`, `revision`, `expected_policy_revision` | Host | `rules {revision, state}` |
-| `rules_reject` | `request_id`, `revision` | Host | `rules {revision, state}` |
+| `rules_import` | `request_id`, `content` | Host | `rules {revision, state, request_id}` |
+| `rules_activate` | `request_id`, `revision`, `expected_policy_revision` | Host | `rules {revision, state, request_id}`; `stale_policy` carries `policy_revision` |
+| `rules_reject` | `request_id`, `revision` | Host | `rules {revision, state, request_id}` |
 | `request_decide` | `request_id`, `proposal_id`, `decision`, `note` | Host | `proposal {proposal_id, state, effect}` |
 | `request_cancel` | `request_id`, `proposal_id` | The requester | `proposal {proposal_id, state}` |
 | `campaign_host_transfer` | `request_id`, `player_id` | Host | `role {role: "guest", request_id}` for the old host; `invalid_request` if the player is the host already or lacks an active grant or token |
 
 Every mutation replays exactly (section 8, "Replay"). The snapshot of a
 campaign with a designated host gains `role` (`host` or `guest`) and, from
-GOV-3, `policy_revision`; its referee projection gains `requests` (section 9).
+GOV-3, `policy_revision` (in any game whose module has campaign settings);
+its referee projection gains `requests` (section 9).
 Unsolicited: `role` (section 4) and `proposal` (section 9).
 
 New errors (a host mutation during a job reuses `referee_busy`; a reused

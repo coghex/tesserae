@@ -19,7 +19,7 @@ store runs every operation below (see the
 
 | | |
 |---|---|
-| Module | `trailhead`, version `1`, state version 1, host API 1, character rules version 1 |
+| Module | `trailhead`, version `1`, state version 1, host API 1, character rules version 2, campaign settings version 1 |
 | Requires | `dice.roll.v1`, selected explicitly as `builtin.dice` version `1` |
 | Tags | `demo`, `original`, `dice`, `characters` (descriptive only) |
 | Participants | Authenticated participants only |
@@ -39,8 +39,9 @@ character's ID.
 | `trailhead.stamina` | Exactly `{}` | Rolls `1d3+1` once. A second roll is refused: the result stands. |
 
 A draft can be completed once it has a name, a trait and stamina. Completing
-it is deterministic: a keen walker gets one more maximum stamina, and every
-walker starts at its maximum. Nothing is rolled at completion, so the player
+it is deterministic: a keen walker gets one more maximum stamina, so does
+every walker by its starting stamina bonus ([below](#campaign-settings)), and
+every walker starts at its maximum. Nothing is rolled at completion, so the player
 approves every roll.
 
 **Play** (as a ready walker):
@@ -53,6 +54,34 @@ approves every roll.
 A walker in danger cannot be archived. Switching characters changes nothing:
 stamina and danger stay with each walker.
 
+## Campaign settings
+
+A campaign's settings document may set one thing:
+
+| Setting | Values | Default | Effect |
+|---|---|---|---|
+| `starting_stamina_bonus` | 0, 1 or 2 | 0 | Added to a walker's maximum stamina when it is approved |
+
+A campaign-wide value goes in the document's `settings`; one walker's
+exception (`{"exception_id", "character_id", "settings", "reason"}`) raises
+or lowers it for that walker alone. With no document, every walker is made
+exactly as before settings existed. A change of settings never touches a
+walker already approved: its stamina is not recalculated, refreshed or
+rerolled. A draft whose bonus changes gets a new draft revision, so an
+approval shown before the change is refused as stale.
+
+Its requirements, the one description the referee and players see:
+
+| `id` | Kind | |
+|---|---|---|
+| `character.name` | mechanical | The host's: a name (any text) |
+| `trait` | mechanical | Choose steady, quick or keen |
+| `stamina` | mechanical | Roll `1d3+1` once; says the bonus approval will add |
+| `background` | narrative | Who the walker is, agreed with the referee; changes no numbers |
+| `home` | optional | Where the walker comes from; not recorded by the module yet (`support`) |
+
+There are no classes, levels or roles.
+
 ## State
 
 ```json
@@ -61,11 +90,12 @@ stamina and danger stay with each walker.
 ```
 
 `rolled` is the stamina roll; `stamina` and `max_stamina` are set at
-completion. The owner's sheet shows `trait`, `stamina` (the roll, while a
+completion, with `bonus` (1 or 2) recorded only when a starting bonus applied. The owner's sheet shows `trait`, `stamina` (the roll, while a
 draft), `max_stamina` and `in_danger`. Each player's view is the shared scene
 and rules only; walkers reach their owners as sheets. The referee's context
 lists ready walkers only, never drafts.
 
 A version 2 seed declares ready walkers and their owners; its state must hold
-exactly the declared walkers, each ready with a valid trait and stamina (see
+exactly the declared walkers, each ready with a valid trait and stamina, and
+an optional `bonus` of 1 or 2 counted in its maximum (see
 [seeded creation](game_store.md#seeded-creation)).

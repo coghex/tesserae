@@ -89,7 +89,8 @@ class InspectionTests(CampaignHost):
         self.assertEqual(view["revision"], store.revision())
         self.assertEqual(view["inspect"], context)
         self.assertEqual(
-            (view["pending_choices"], view["rulings"], view["policy"]), ([], [], None)
+            (view["pending_choices"], view["rulings"], view["policy"]),
+            ([], [], {"revision": 0, "document": None}),  # Trailhead has settings
         )
         # Every message, private ones included, and to whom they went.
         history = await self.ask(bob, "host_messages", after_seq=0)

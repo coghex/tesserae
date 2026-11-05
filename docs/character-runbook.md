@@ -119,6 +119,27 @@ can also read it (and every sheet); the clients say so while you create.
 - **Enter play:** your character is ready; on your first words in play the
   referee brings them into the scene, at the table.
 
+**Campaign settings.** A module may let the campaign configure creation
+(Trailhead's starting stamina bonus, for example) through a settings
+document, which the campaign host or the operator approves; nothing a player
+says changes it. The operator's commands, each one transaction:
+
+```sh
+tesserae game rules import --database trail.sqlite3 --file rules.json   # a candidate only
+tesserae game rules list --database trail.sqlite3
+tesserae game rules activate --database trail.sqlite3 1                 # now live
+tesserae game rules export --database trail.sqlite3 --file active.json
+```
+
+Activation is refused while the referee is answering, and when the document
+does not suit the module or the game; it never changes an approved
+character. A draft whose settings change gets a new revision, so an approval
+shown before is refused and the new sheet shown instead. The referee sees
+the settings and the module's requirements for the character it is helping.
+The campaign host can do the same over the protocol (`rules_*` messages in
+the [governance contract](designs/governance_contract.md#13-messages)); the
+client controls for it come later.
+
 ## 6. Recovery
 
 - **A dropped CLI client.** Run it again with `--campaign ID --character ID`.
