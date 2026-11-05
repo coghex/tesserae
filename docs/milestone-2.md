@@ -111,7 +111,10 @@ campaign setting or host operation and ends; the requester and the host are
 told; only the current campaign host approves or denies it, exactly once and
 against the state it was proposed for; the host's own jobs get host tools
 checked again at every call; and Trailhead records agreed narrative facts
-with their provenance. The host's client controls come with GOV-6 and GOV-7.
+with their provenance. GOV-6 ([#137](https://github.com/coghex/tesserae/issues/137))
+delivers them in the CLI: roles, rules and requirements, requests and exact
+decisions, host inspection, confirmed administration and transfer, with
+stale, busy and privilege-loss refusals; the browser's come with GOV-7.
 The filed public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
 acceptance (#132–#139); the

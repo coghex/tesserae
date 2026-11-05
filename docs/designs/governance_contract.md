@@ -24,7 +24,8 @@ rule and audit, and target digests (for GOV-5). GOV-5
 ([#136](https://github.com/coghex/tesserae/issues/136)) delivers sections 9,
 10 and 11 and schema 9: proposals and host decisions, the referee's
 proposal and host tools, and narrative facts in the original module.
-Sections 15's client controls (GOV-6 and GOV-7) are not implemented yet.
+GOV-6 ([#137](https://github.com/coghex/tesserae/issues/137)) delivers
+section 15's CLI; its browser controls (GOV-7) are not implemented yet.
 
 It extends the [lobby contract](lobby_contract.md), the
 [character contract](character_contract.md) and the
@@ -820,7 +821,7 @@ active with that exception and bumps the draft's revision; the guest's next
 look at the sheet shows the new revision, and approval completes with the
 bonus. A denial leaves revision 1 and the draft unchanged.
 
-## 15. Clients (proposed for GOV-6 and GOV-7)
+## 15. Clients (the CLI delivered by GOV-6; the browser proposed for GOV-7)
 
 **CLI** (`connect --lobby`, inside a campaign):
 
@@ -828,20 +829,42 @@ bonus. A denial leaves revision 1 and the draft unchanged.
 /role              your role here: host or guest                 (snapshot)
 /rules             the rules and your character's requirements   (rules_view)
 /rules list        host: every revision, candidates included     (rules_list)
+/rules show [N]    host: revision N's document, or the active one (rules_export)
 /rules import F    host: import a file as a candidate            (rules_import)
 /rules activate N  host: activate candidate N (asks to confirm)  (rules_activate)
+/rules reject N    host: reject candidate N                      (rules_reject)
 /requests          guest: yours; host: all, with IDs             (requests)
 /decide ID approve|deny [NOTE]   host                            (request_decide)
 /cancel ID         guest: withdraw your pending request          (request_cancel)
 /inspect [TARGET]  host: the host view, or one character's       (host_view)
-/history-all       host: every message, private ones included    (host_messages)
+/history-all [N]   host: every message, private ones included    (host_messages)
+/audit [N]         host: the audit records after N               (host_audit)
 /admin             host: the operations available now            (host_operations)
 /admin COMMAND ARGS-JSON   host: run one (asks to confirm)       (host_command)
 /transfer PLAYER   host: hand the campaign over (asks to confirm) (campaign_host_transfer)
 ```
 
-Each mutation's `request_id` is made once per attempt and reused by
-`/retry` after a lost reply, never for a different command.
+The client checks nothing about authority: every command is sent, and the
+host refuses what the sender may not do (`not_campaign_host`, with a hint).
+A confirmation repeats the command with `confirm` (`/admin confirm`,
+`/rules activate N confirm`, `/transfer PLAYER confirm`) and sends exactly
+what was shown: `/admin` the game revision the prompt named, and `/rules
+activate` the settings revision last seen, so a change made meanwhile is
+refused as `stale_revision` or `stale_policy`, never applied over it. A
+confirmation waiting is forgotten when the role changes.
+
+Each mutation's `request_id` is made once per attempt. `/retry` resends the
+last one unchanged only after `referee_busy` or `internal_error` (nothing was
+stored), and never after the campaign, the participant session or the role
+has changed since: any change of role ends it for good, even if the role
+later comes back. Any other reply, or a new mutation or input, also ends it.
+A reply saying the campaign is no longer available returns the client to
+the lobby, with nothing of the campaign kept (role, revisions, pending
+confirmations or retries).
+Requests, the role and the settings revision are read from the host again
+on every join or reconnect; nothing is kept locally. With `--json`, every
+message is one JSON line on stdout and the client's own notes go to
+stderr.
 
 **Browser:** Settings gains the campaign role and the rules and requirements
 (`rules_view`), and, for the host, Rules (`rules_list`, the active document,

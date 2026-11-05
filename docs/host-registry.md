@@ -133,7 +133,7 @@ tesserae host campaign set-host --registry host.sqlite3 CAMPAIGN_ID PLAYER_ID
   every change is recorded with who made it.
 - **Transfer:** the campaign host can hand the campaign to another player
   with access and an active token, with the protocol's
-  `campaign_host_transfer` (client controls are GOV-6 and GOV-7). Like any
+  `campaign_host_transfer` (`/transfer` in the CLI; the browser's is GOV-7). Like any
   campaign request, it needs the sender's own session to hold: its
   participant link, and the registered file still holding this campaign.
 - The campaign host can read everything in its campaign, but nothing of any

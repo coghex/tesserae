@@ -35,6 +35,7 @@ import stat
 import sys
 import threading
 from collections import deque
+from pathlib import Path
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import (
@@ -137,6 +138,15 @@ class _Client:
         self.confirming = None
         self.created = None  # a draft just created, to select next
         self.refreshes = set()  # characters or sync requests the client sent itself
+        # Governance (docs/designs/governance_contract.md section 15): the
+        # game and settings revisions this client last saw, a host change
+        # waiting for its confirmation, the one to resend with /retry after a
+        # busy or failed host, and /inspect's character filters, in order.
+        self.revision = None
+        self.policy_revision = None
+        self.pending = None
+        self.mutation_retry = None
+        self.inspecting = deque()
         self.send_lock = asyncio.Lock()  # one line at a time, in deque order
 
     async def main(self) -> int:
@@ -362,6 +372,7 @@ class _Client:
                 if message.get("type") == "revision":
                     if not _is_revision(message.get("revision")):
                         raise _Failure("the host sent a malformed notification")
+                    self._saw_revision(message["revision"])
                     self._show(message)
                     continue
                 if message.get("type") in ("message", "referee"):
@@ -383,7 +394,7 @@ class _Client:
                         raise _Failure("the host sent a malformed role notice")
                     self._show(message)
                     if self.selection is not None:
-                        self.role = message["role"]
+                        self._set_role(message["role"])
                     continue
                 if message.get("type") == "proposal" and "request_id" not in message:
                     if not (
@@ -438,6 +449,10 @@ class _Client:
             return json.dumps({"version": 1, "type": "leave"})
         if command == "/help":
             self._note(_LOBBY_HELP)
+            if self.selection is not None:
+                self._note(_GOVERNANCE_HELP)
+                if self.role == "host":
+                    self._note(_HOST_HELP)
             if self.actor is not None:
                 self._note(_CHARACTER_HELP)
             if self.selection is not None and self.referee:
@@ -447,6 +462,10 @@ class _Client:
             return self._note(
                 "[lobby] Choose a campaign first: /campaigns lists them, /join enters one."
             )
+        if command in _GOVERNANCE_COMMANDS:
+            return self._governance_line(command, rest)
+        if command == "/retry" and self.mutation_retry is not None:
+            return self._retry_mutation()
         if command in _CHARACTER_COMMANDS:
             if self.actor is None:
                 return self._note(
@@ -518,6 +537,216 @@ class _Client:
         return json.dumps({"version": 1, "type": "character_archive",
                            "request_id": _new_id("k"), "character_id": found})  # fmt: skip
 
+    # --- governance (docs/designs/governance_contract.md section 15) -----------
+
+    def _governance_line(self, command: str, rest: str) -> str | None:
+        """One governance command as its message, or None after a note. The
+        host decides who may do what; the client only asks for exact
+        confirmation before a consequential change."""
+        if command == "/role":
+            return self._note(_role_line(self.role, self.policy_revision))
+        if command == "/requests":
+            return _message("requests")
+        if command == "/cancel":
+            if not rest:
+                return self._note("[request] Type /cancel and a request's ID.")
+            return self._mutation("request_cancel", proposal_id=rest)
+        if command == "/decide":
+            proposal_id, _, more = rest.partition(" ")
+            decision, _, note = more.strip().partition(" ")
+            if not proposal_id or decision not in ("approve", "deny"):
+                return self._note(
+                    "[request] Type /decide ID approve or /decide ID deny, and an "
+                    "optional note."
+                )
+            return self._mutation("request_decide", proposal_id=proposal_id,
+                                  decision=decision, note=note.strip() or None)  # fmt: skip
+        if command == "/rules":
+            return self._rules_line(rest)
+        if command == "/inspect":
+            self.inspecting.append(rest or None)
+            return _message("host_view")
+        if command == "/history-all":
+            after = rest or "0"
+            if not after.isdigit():
+                return self._note("[history] Type /history-all or /history-all N.")
+            return _message("host_messages", after_seq=int(after))
+        if command == "/audit":
+            after = rest or "0"
+            if not after.isdigit():
+                return self._note("[audit] Type /audit or /audit N.")
+            return _message("host_audit", after=int(after))
+        if command == "/admin":
+            return self._admin_line(rest)
+        # /transfer PLAYER, then /transfer PLAYER confirm
+        player, _, confirm = rest.partition(" ")
+        if not player:
+            return self._note("[role] Type /transfer and the player's ID (u_...).")
+        if confirm != "confirm" or self.pending != ("transfer", player):
+            self.pending = ("transfer", player)
+            return self._note(
+                f"[role] Hand this campaign to {player}? You become a guest at once. "
+                f"Type /transfer {player} confirm to do it."
+            )
+        self.pending = None
+        return self._mutation("campaign_host_transfer", player_id=player)
+
+    def _rules_line(self, rest: str) -> str | None:
+        action, _, argument = rest.partition(" ")
+        argument = argument.strip()
+        if not action:
+            character = None if self.actor is None else self.actor["character"]
+            fields = {} if character is None else {
+                "character_id": character["character_id"]}  # fmt: skip
+            return _message("rules_view", **fields)
+        if action == "list":
+            return _message("rules_list")
+        if action == "show":
+            if argument and not argument.isdigit():
+                return self._note("[rules] Type /rules show or /rules show N.")
+            return _message(
+                "rules_export", **({"revision": int(argument)} if argument else {})
+            )
+        if action == "import":
+            if not argument:
+                return self._note("[rules] Type /rules import and a JSON file.")
+            try:
+                with open(Path(argument).expanduser(), encoding="utf-8") as stream:
+                    content = json.load(stream)
+            except (OSError, ValueError) as error:
+                return self._note(f"[rules] Cannot read {argument}: {_reason(error)}")
+            if not isinstance(content, dict):
+                return self._note(f"[rules] {argument} is not a JSON object.")
+            return self._mutation("rules_import", content=content)
+        if action in ("activate", "reject"):
+            number, _, confirm = argument.partition(" ")
+            if not number.isdigit():
+                return self._note(
+                    f"[rules] Type /rules {action} and a revision number."
+                )
+            if action == "reject":
+                return self._mutation("rules_reject", revision=int(number))
+            seen = self.policy_revision
+            if seen is None:
+                return self._note(
+                    "[rules] Look at the rules first (/rules list); activation names "
+                    "the settings revision you saw."
+                )
+            if confirm != "confirm" or self.pending != ("activate", int(number), seen):
+                self.pending = ("activate", int(number), seen)
+                return self._note(
+                    f"[rules] Make revision {number} the campaign's settings, replacing "
+                    f"revision {seen}? Drafts it changes must be approved again. Type "
+                    f"/rules activate {number} confirm to do it."
+                )
+            self.pending = None
+            return self._mutation("rules_activate", revision=int(number),
+                                  expected_policy_revision=seen)  # fmt: skip
+        return self._note(
+            "[rules] /rules, /rules list, /rules show [N], /rules import FILE, "
+            "/rules activate N, /rules reject N."
+        )
+
+    def _admin_line(self, rest: str) -> str | None:
+        """/admin lists what the host may run; /admin COMMAND ARGS-JSON asks
+        to confirm running it at the game revision seen now; /admin confirm
+        runs exactly that."""
+        if not rest:
+            return _message("host_operations")
+        if rest == "confirm":
+            if self.pending is None or self.pending[0] != "admin":
+                return self._note("[admin] There is nothing to confirm; type /admin "
+                                  "COMMAND ARGS-JSON first.")  # fmt: skip
+            _, command, args, revision = self.pending
+            self.pending = None
+            return self._mutation("host_command", expected_revision=revision,
+                                  command=command, args=args)  # fmt: skip
+        command, _, raw = rest.partition(" ")
+        try:
+            args = json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            return self._note("[admin] The arguments must be one JSON object.")
+        if not isinstance(args, dict):
+            return self._note("[admin] The arguments must be one JSON object.")
+        if self.revision is None:
+            return self._note("[admin] Look at the game first (/sync or /inspect).")
+        self.pending = ("admin", command, args, self.revision)
+        shown = json.dumps(args, separators=(", ", ": "))
+        return self._note(
+            f"[admin] Run {command} {shown} at revision {self.revision}? If the game "
+            "moves on first, it is refused. Type /admin confirm to run it."
+        )
+
+    def _mutation(self, kind: str, **fields) -> str:
+        """A host change or a request change, with its own request ID: once
+        per attempt, reused only by /retry after a busy or failed host."""
+        return json.dumps({"version": 1, "type": kind, "request_id": _new_id("h"),
+                           **fields})  # fmt: skip
+
+    def _retry_mutation(self) -> str | None:
+        line, authority = self.mutation_retry
+        if authority != self._authority():
+            self.mutation_retry = None
+            return self._note(
+                "[retry] Not resent: your campaign or role has changed since. Look "
+                "again and make the change anew if it is still yours to make."
+            )
+        return line
+
+    def _authority(self) -> tuple:
+        """Where a host change was made, and as whom: it is never resent in
+        another campaign, session or role."""
+        if self.selection is None:
+            return (None,)
+        return (self.selection["campaign_id"], self.session[1], self.role)
+
+    def _governance_reply(self, message: dict, sent: str, sent_type):
+        """Keep the governance state the reply tells of, and show it."""
+        kind = message.get("type")
+        if kind == "snapshot":
+            self._saw_revision(message["revision"])
+            if _is_revision(message.get("policy_revision")):
+                self.policy_revision = message["policy_revision"]
+        if kind in ("rules_view", "rules_list"):
+            self.policy_revision = message["policy_revision"]
+        if kind in ("host_view", "host_operations", "result") and _is_revision(
+            message.get("revision")
+        ):
+            self._saw_revision(message["revision"])
+        if kind == "role" and "request_id" in message:
+            self._set_role(message["role"])
+        if sent_type in _HOST_MUTATIONS:
+            retryable = kind == "error" and message["code"] in _RETRYABLE
+            self.mutation_retry = (sent, self._authority()) if retryable else None
+        if sent_type == "host_view":
+            wanted = self.inspecting.popleft() if self.inspecting else None
+            if kind == "host_view" and not self.json_output:
+                for line in _inspect_lines(message, wanted):
+                    print(line, flush=True)
+                return
+        if sent_type not in _GOVERNANCE_READS + _HOST_MUTATIONS:
+            return
+        if self.json_output:
+            _print(message)
+            return
+        for line in _readable(message):  # readable here, whatever the campaign
+            print(line, flush=True)
+        if kind == "error":
+            hint = _HINTS.get(message["code"])
+            if hint is not None:
+                self._note(hint)
+
+    def _set_role(self, role):
+        if role != self.role:
+            # A confirmation or a retry was made under the old role, and is
+            # never sent under any later one, even if it is the same again.
+            self.pending, self.mutation_retry = None, None
+        self.role = role
+
+    def _saw_revision(self, revision: int):
+        if self.revision is None or revision > self.revision:
+            self.revision = revision
+
     def _character_id(self, wanted: str) -> str | None:
         """The character the player meant: a number from /characters, a name
         (if only one has it) or an ID; None after saying why not."""
@@ -559,6 +788,15 @@ class _Client:
     def _after_reply(self, message: dict, sent: str):
         """Show a reply in lobby mode and follow any change of selection."""
         kind, sent_type = message.get("type"), _sent_type(sent)
+        self._governance_reply(message, sent, sent_type)
+        if sent_type in _GOVERNANCE_READS + _HOST_MUTATIONS:
+            if (
+                kind == "error"
+                and message["code"] == "campaign_unavailable"
+                and self.selection is not None
+            ):
+                self._back_in_lobby()  # its access is gone: nothing of it stays
+            return
         if kind == "lobby":
             if sent_type == "leave":
                 self._back_in_lobby(quiet=True)
@@ -566,7 +804,7 @@ class _Client:
         elif sent_type == "select" and kind == "snapshot":
             self._enter(message)
         elif kind == "snapshot" and self.actor is not None:
-            self.role = message.get("role")
+            self._set_role(message.get("role"))
             self._show(message)
             self._set_actor(message["actor"])
             if message["actor"]["mode"] == "creation":
@@ -637,6 +875,9 @@ class _Client:
         self.referee = isinstance(snapshot.get("referee"), dict)
         self.actor = snapshot.get("actor")  # None: a campaign without characters
         self.role = snapshot.get("role")
+        self.revision = snapshot["revision"]
+        self.policy_revision = snapshot.get("policy_revision")
+        self.pending, self.mutation_retry = None, None
         self.roster, self.shown_revision, self.confirming = [], None, None
         self.sending, self.last_say, self.reported_input = self.saved.pop(
             self._retry_key(), ({}, None, None)
@@ -676,7 +917,8 @@ class _Client:
         )
         self.sending, self.last_say, self.reported_input = {}, None, None
         self.selection, self.referee, self.actor = None, False, None
-        self.role = None
+        self.role, self.revision, self.policy_revision = None, None, None
+        self.pending, self.mutation_retry = None, None
         self.roster, self.shown_revision, self.confirming = [], None, None
         if not quiet:
             self._note(
@@ -705,6 +947,8 @@ class _Client:
             return json.dumps({"version": 1, "type": "sync"})
         if command == "history":
             return json.dumps({"version": 1, "type": "messages", "after_seq": 0})
+        if command == "retry" and self.mutation_retry is not None:
+            return self._retry_mutation()
         if command == "retry":
             target = self.last_say or self.reported_input
             if self.sending:  # one still unanswered is the one to retry
@@ -728,6 +972,7 @@ class _Client:
                 "mode": self.actor["mode"],
             }
         self.sending[said["request_id"]] = said
+        self.mutation_retry = None  # /retry now means this input
         return json.dumps({"version": 1, "type": "say", **said})
 
     def _remember(self, message: dict, sent: str):
@@ -878,6 +1123,23 @@ _CHARACTER_HELP = """\
 [help] /approve       complete the draft at the revision /sheet last showed
 [help] /archive N     archive character N, after you confirm"""
 
+_GOVERNANCE_HELP = """\
+[help] /role          your role here: campaign host or guest
+[help] /rules         the campaign's settings, and your character's requirements
+[help] /requests      your requests for the host's decision (the host sees all)
+[help] /cancel ID     withdraw your own pending request"""
+
+_HOST_HELP = """\
+[help] Campaign host:
+[help] /inspect [CHARACTER]  every sheet, the module's view and preparation
+[help] /history-all [N]      every message, private ones included, after N
+[help] /decide ID approve|deny [NOTE]  decide a request exactly as made
+[help] /rules list | show [N] | import FILE | activate N | reject N
+[help] /admin                the operations you can run now
+[help] /admin COMMAND ARGS   run one, after you confirm (/admin confirm)
+[help] /audit [N]            what hosts have changed
+[help] /transfer PLAYER      hand the campaign over, after you confirm"""
+
 _HELP = """\
 [help] Type to talk to the referee; everyone at the table sees it.
 [help] /private TEXT  say something to the referee only
@@ -905,7 +1167,30 @@ def _readable(message: dict) -> list[str]:
     if kind == "left":
         return ["[left] That campaign is no longer available to you."]
     if kind == "proposal":
-        return [f"[request] {message['proposal_id']} is now {message['state']}."]
+        line = f"[request] {message['proposal_id']} is now {message['state']}."
+        effect = message.get("effect")
+        if effect:
+            line += " Effect: " + json.dumps(effect, separators=(", ", ": "))
+        return [line]
+    if kind == "requests":
+        return _request_lines(message["requests"])
+    if kind == "rules_view":
+        return _rules_view_lines(message)
+    if kind == "rules_list":
+        return _rules_list_lines(message)
+    if kind == "rules":
+        return _rules_lines(message)
+    if kind == "host_messages":
+        return _host_message_lines(message)
+    if kind == "host_operations":
+        return _operation_lines(message)
+    if kind == "host_audit":
+        return _audit_lines(message)
+    if kind == "result":  # a host operation's
+        return [f"[admin] Done at revision {message['revision']}: "
+                + json.dumps(message["result"], separators=(", ", ": "))]  # fmt: skip
+    if kind == "role" and "request_id" in message:
+        return ["[role] You handed the campaign over; you are a guest here now."]
     if kind == "role":
         if message["role"] == "host":
             return ["[role] You are now this campaign's host."]
@@ -965,6 +1250,151 @@ def _readable(message: dict) -> list[str]:
             )
         return lines
     return []  # accepted (its words arrive as a message) and revisions
+
+
+def _role_line(role, policy_revision) -> str:
+    if role == "host":
+        who = "You are this campaign's host."
+    elif role == "guest":
+        who = "You are a guest in this campaign."
+    else:
+        who = "This campaign has no campaign host."
+    if policy_revision is not None:
+        who += f" Its settings are at revision {policy_revision}."
+    return f"[role] {who}"
+
+
+def _compact(value) -> str:
+    return json.dumps(value, separators=(", ", ": "), ensure_ascii=False)
+
+
+def _request_lines(requests: list) -> list[str]:
+    if not requests:
+        return ["[request] No requests."]
+    lines = []
+    for request in requests:
+        target = request["target"]
+        on = "the campaign" if target is None else f"{target['kind']} {target['id']}"
+        who = request["requester"]["name"] or request["requester"]["participant_id"]
+        lines.append(
+            f"[request] {request['proposal_id']} {request['state']}: {who} asks for "
+            f"{request['kind']} {_compact(request['payload'])} on {on}: "
+            f"{_compact(request['explanation'])}"
+        )
+        if request.get("decision_note"):
+            lines.append(f"[request]   note: {_compact(request['decision_note'])}")
+    return lines
+
+
+def _rules_view_lines(message: dict) -> list[str]:
+    lines = [f"[rules] Settings revision {message['policy_revision']}: "
+             + _compact(message["settings"])]  # fmt: skip
+    if message.get("exception"):
+        lines.append(f"[rules] Your exception: {_compact(message['exception'])}")
+    if message.get("guidance"):
+        lines.append(f"[rules] Guidance: {message['guidance']}")
+    for entry in message.get("requirements") or []:
+        state = ""
+        if entry.get("met") is True:
+            state = " (done)"
+        elif entry.get("met") is False:
+            state = " (to do)"
+        lines.append(
+            f"[requirement] {entry['id']}, {entry['kind']}{state}: {entry['description']}"
+        )
+    return lines
+
+
+def _rules_list_lines(message: dict) -> list[str]:
+    lines = [f"[rules] Active settings revision: {message['policy_revision']}"]
+    for revision in message["revisions"]:
+        lines.append(
+            f"[rules] {revision['revision']} {revision['state']} ({revision['origin']}) "
+            f"{revision['sha256'][:12]}"
+        )
+    return lines
+
+
+def _rules_lines(message: dict) -> list[str]:
+    if "content" in message:
+        return [f"[rules] Revision {message['revision']} ({message['state']}): "
+                + _compact(message["content"])]  # fmt: skip
+    return [f"[rules] Revision {message['revision']} is {message['state']}."]
+
+
+def _inspect_lines(message: dict, wanted: str | None) -> list[str]:
+    """The host view as lines, or one character's (by ID or unique name)."""
+    names = {p["participant_id"]: p["name"] for p in message["participants"]}
+    characters = message["characters"]
+    if wanted is not None:
+        characters = [c for c in characters if c["character_id"] == wanted
+                      or (c["name"] or "").casefold() == wanted.casefold()]  # fmt: skip
+        if len(characters) != 1:
+            return [f"[inspect] No single character {wanted}; /inspect lists them all."]
+    lines = []
+    if wanted is None:
+        policy = message.get("policy")
+        settings = "no settings" if policy is None else (
+            f"settings revision {policy['revision']}")  # fmt: skip
+        lines.append(
+            f"[inspect] Revision {message['revision']}; {settings}; "
+            f"{len(message['participants'])} participants"
+        )
+    for character in characters:
+        owner = names.get(character["participant_id"], character["participant_id"])
+        lines.append(
+            f"[inspect] {_label(character)} ({character['phase']}, {owner}): "
+            + _compact(character["sheet"])
+        )
+    if wanted is None:
+        lines.append(f"[inspect] Module: {_compact(message['inspect'])}")
+        for choice in message["pending_choices"]:
+            lines.append(f"[inspect] Waiting: {_compact(choice)}")
+    return lines
+
+
+def _host_message_lines(message: dict) -> list[str]:
+    lines = []
+    for item in message["messages"]:
+        line = _line(item)
+        if item.get("to"):
+            line += " (to " + ", ".join(t["name"] or t["participant_id"]
+                                        for t in item["to"]) + ")"  # fmt: skip
+        lines.append(line)
+    if not lines:
+        lines.append("[history] Nothing yet.")
+    if message["next_after_seq"] is not None:
+        lines.append(f"[history] More: /history-all {message['next_after_seq']}")
+    return lines
+
+
+def _operation_lines(message: dict) -> list[str]:
+    lines = [f"[admin] At revision {message['revision']} you can run:"]
+    for operation in message["operations"]:
+        args = ", ".join(a.get("name", "?") for a in operation.get("args", [])
+                         if isinstance(a, dict))  # fmt: skip
+        lines.append(
+            f"[admin] {operation['command']} ({args}): "
+            f"{operation.get('description', '')}"
+        )
+    if len(lines) == 1:
+        lines.append("[admin] Nothing in this campaign.")
+    return lines
+
+
+def _audit_lines(message: dict) -> list[str]:
+    lines = []
+    for record in message["records"]:
+        on = "" if record["target"] is None else f" on {record['target']}"
+        lines.append(
+            f"[audit] {record['id']} {record['kind']} by {record['player_id']} "
+            f"({record['via']}){on}: {_compact(record['detail'])}"
+        )
+    if not lines:
+        lines.append("[audit] Nothing yet.")
+    if message["next_after"] is not None:
+        lines.append(f"[audit] More: /audit {message['next_after']}")
+    return lines
 
 
 def _lobby_lines(message: dict) -> list[str]:
@@ -1172,6 +1602,15 @@ def _check_reply(message: dict, sent: str, session: tuple):
             and all(_is_conversation(m) for m in message["messages"])
         ):
             raise _Failure("the host sent malformed messages")
+    elif (
+        kind in _GOVERNANCE_REPLIES and message.get("type") == _GOVERNANCE_REPLIES[kind]
+    ):
+        if kind in _HOST_MUTATIONS and message.get("request_id") != line.get(
+            "request_id"
+        ):
+            raise _Failure("the host sent a reply that does not answer the request")
+        if not _GOVERNANCE_SHAPES[message["type"]](message):
+            raise _Failure(f"the host sent a malformed {message['type']} reply")
     else:
         raise _Failure(
             f"the host answered a {kind or 'malformed'} line with a "
@@ -1229,7 +1668,92 @@ _BOUNDARIES = ("select", "leave", "character_select", *_LIFECYCLE)
 _CHARACTER_COMMANDS = (
     "/characters", "/character", "/create", "/sheet", "/approve", "/archive",
 )  # fmt: skip
-_LOBBY_READABLE = ("lobby", "left", "characters", "character", "actor")
+_LOBBY_READABLE = ("lobby", "left", "characters", "character", "actor", "proposal")
+# Governance (docs/designs/governance_contract.md section 15).
+_GOVERNANCE_COMMANDS = (
+    "/role", "/rules", "/requests", "/cancel", "/decide", "/inspect",
+    "/history-all", "/audit", "/admin", "/transfer",
+)  # fmt: skip
+_GOVERNANCE_READS = ("requests", "rules_view", "rules_list", "rules_export",
+                     "host_view", "host_messages", "host_operations", "host_audit")  # fmt: skip
+_HOST_MUTATIONS = ("rules_import", "rules_activate", "rules_reject", "request_decide",
+                   "request_cancel", "host_command", "campaign_host_transfer")  # fmt: skip
+# Nothing was stored: the same request may be resent unchanged.
+_RETRYABLE = ("referee_busy", "internal_error")
+_HINTS = {
+    "not_campaign_host": "[role] Only the campaign host can do that here; /role "
+    "says what you are.",
+    "stale_revision": "[admin] The game moved on since you looked; check it "
+    "(/inspect) and type the change again.",
+    "stale_policy": "[rules] The settings changed since you looked; check them "
+    "(/rules list) and try again.",
+    "referee_busy": "[retry] Nothing changed; /retry sends exactly the same "
+    "request once the referee is free.",
+    "internal_error": "[retry] Nothing changed; /retry sends exactly the same request.",
+}
+
+
+# What each governance message is answered by, besides an error.
+_GOVERNANCE_REPLIES = {
+    "requests": "requests", "rules_view": "rules_view", "rules_list": "rules_list",
+    "rules_export": "rules", "host_view": "host_view", "host_messages": "host_messages",
+    "host_operations": "host_operations", "host_audit": "host_audit",
+    "rules_import": "rules", "rules_activate": "rules", "rules_reject": "rules",
+    "request_decide": "proposal", "request_cancel": "proposal", "host_command": "result",
+    "campaign_host_transfer": "role",
+}  # fmt: skip
+
+
+def _is_request(value) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("proposal_id"), str)
+        and value.get("state") in PROPOSAL_STATES
+        and isinstance(value.get("kind"), str)
+        and (value.get("target") is None or isinstance(value["target"], dict))
+        and isinstance(value.get("requester"), dict)
+        and isinstance(value.get("explanation"), str)
+    )
+
+
+def _all(items, check) -> bool:
+    return isinstance(items, list) and all(check(item) for item in items)
+
+
+def _dicts(items) -> bool:
+    return _all(items, lambda item: isinstance(item, dict))
+
+
+# The shape each governance reply must have before it is shown.
+_GOVERNANCE_SHAPES = {
+    "requests": lambda m: _all(m.get("requests"), _is_request),
+    "rules_view": lambda m: _is_revision(m.get("policy_revision"))
+    and isinstance(m.get("settings"), dict)
+    and (m.get("requirements") is None or _dicts(m["requirements"])),
+    "rules_list": lambda m: _is_revision(m.get("policy_revision"))
+    and _all(m.get("revisions"), lambda r: isinstance(r, dict)
+             and _is_revision(r.get("revision")) and isinstance(r.get("sha256"), str)),
+    "rules": lambda m: _is_revision(m.get("revision")) and isinstance(m.get("state"), str),
+    "host_view": lambda m: _is_revision(m.get("revision"))
+    and _all(m.get("characters"), _is_character)
+    and _dicts(m.get("participants")) and _dicts(m.get("pending_choices")),
+    "host_messages": lambda m: _all(m.get("messages"), _is_conversation)
+    and (m.get("next_after_seq") is None or _is_revision(m["next_after_seq"])),
+    "host_operations": lambda m: _is_revision(m.get("revision"))
+    and _all(m.get("operations"), lambda o: isinstance(o, dict)
+             and isinstance(o.get("command"), str)),
+    "host_audit": lambda m: _all(m.get("records"), lambda r: isinstance(r, dict)
+                                 and isinstance(r.get("kind"), str))
+    and (m.get("next_after") is None or _is_revision(m["next_after"])),
+    "proposal": lambda m: isinstance(m.get("proposal_id"), str)
+    and m.get("state") in PROPOSAL_STATES,
+    "result": lambda m: _is_revision(m.get("revision")) and isinstance(m.get("result"), dict),
+    "role": lambda m: m.get("role") in ("host", "guest"),
+}  # fmt: skip
+
+
+def _message(kind: str, **fields) -> str:
+    return json.dumps({"version": 1, "type": kind, **fields})
 
 
 def _is_error(message: dict) -> bool:

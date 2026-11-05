@@ -145,6 +145,29 @@ draft with the referee, privately (every line while creating is private),
 N` archives a character after `/archive N confirm`. `--character ID` selects
 one right after `--campaign`. `/help` lists them all.
 
+In a campaign with a [campaign host](host-registry.md#the-campaign-host),
+everyone has `/role`, `/rules` (the settings and your character's
+requirements), `/requests` (your requests for the host's decision, with
+their state) and `/cancel ID`. The campaign host, with or without characters
+of its own, also has:
+
+```text
+/inspect [CHARACTER]   every sheet, the module's view and the referee's preparation
+/history-all [N]       every message, private and creation ones included
+/requests, /decide ID approve|deny [NOTE]   decide a request exactly as it was made
+/rules list | show [N] | import FILE | activate N | reject N
+/admin                 what you can change now
+/admin COMMAND ARGS    one change, after /admin confirm
+/audit [N]             what hosts have changed
+/transfer PLAYER       hand the campaign over, after confirming
+```
+
+A confirmed change applies only to the game you were shown: if anything
+moved meanwhile it is refused, and you look again. A change refused because
+the referee was answering is resent unchanged by `/retry`, but never after
+your role or campaign has changed. Guests who type a host command are told
+it is the host's; the host decides that, not the client.
+
 **Browser** (on the host computer): open the `Browser:` address, paste the
 token or choose the token file, and log in. Choose a campaign from the list;
 **Leave campaign**, beside the status line or in Settings, returns to the
@@ -224,6 +247,11 @@ Characters (tracker [#110](https://github.com/coghex/tesserae/issues/110)):
 choosing, creating, approving and archiving characters in a campaign whose
 module has them, including joining an ongoing scene as a new character; see
 the [character runbook](character-runbook.md).
+
+Campaign governance (tracker [#131](https://github.com/coghex/tesserae/issues/131)):
+one campaign host per campaign, its settings and inspection, administration,
+and guests' requests for its decisions, from the CLI; the browser's controls
+come with GOV-7.
 
 Not yet: the private campaign continuation, browser access from other
 computers, TLS for the lobby, remembered logins, and registry migration or
