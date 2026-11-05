@@ -83,6 +83,7 @@ dice operation and no `roll` command.
 | `referee_actions(state, participant_id)` | Optional. The commands that participant may use now, as a list of JSON objects with their arguments and stakes. Without it, the referee gets the command names |
 | `referee_commands` | Optional `Command`s that run only in the host's `referee` context, which no player can authenticate as: their executors see `participant_id == "referee"`, and a player's command path never includes them. Names must not repeat the module's other commands |
 | `characters` | Optional `CharacterRules`: every game of the module is then a character game ([Characters](#characters)). Such a module checks seeds with `characters.validate_seed`, and must leave `validate_seed` unset |
+| `settings` | Optional `CampaignSettings`: the settings a campaign's settings document may configure, and what a character needs ([Campaign settings](#campaign-settings)) |
 
 A module definition is immutable and holds no game state, connection, or
 random source. One definition serves every game.
@@ -143,7 +144,7 @@ ID in its own state.
 
 | Field | Meaning |
 |---|---|
-| `version` | 1; any other is refused when the module is resolved |
+| `version` | 1 or 2; any other is refused when the module is resolved. Version 2, only with `settings`, passes the character's effective policy as a third argument to `problems`, `complete`, `actions` and `creation_actions` |
 | `start(action)` | A new draft's module data. Runs like a command (`action.character_id` is the new ID, `args` is `{}`); may draw; raises `ActionRejected` before any draw to refuse |
 | `steps` | Creation `Command`s, run only on the caller's selected draft. The host adds `character.name {"name"}` to every character game |
 | `problems(state, character_id)` | Pure: player-safe reasons the draft cannot be completed yet; an empty list means it can |
@@ -161,6 +162,32 @@ allows runs: creation steps on a draft, gameplay commands as a ready
 character, nothing without one (see the
 [game store](game_store.md#characters)). `referee_context` must leave drafts
 out: the host gives a creation job its own draft.
+
+### Campaign settings
+
+A module may let each campaign configure it through a settings document
+(governance contract sections 5 and 6), by supplying `CampaignSettings`:
+
+| Field | Meaning |
+|---|---|
+| `version` | 1; any other is refused when the module is resolved |
+| `defaults()` | Every supported setting with its default. No other key is accepted in a document, and the defaults must reproduce the module's rules from before it had settings |
+| `validate(settings, state)` | Pure: player-safe problems with one character's or the campaign's effective settings (defaults, then the document's settings, then the character's exception, key by key); an empty list means valid |
+| `requirements(policy, state, character_id)` | Pure: what a character needs (or any new character, with None), as a list of entries with a stable `id`, a `kind` of `mechanical`, `narrative` or `optional`, a `description`, `met` (true, false, or null when the module does not record it; omitted with no character) and anything else the module describes, such as `values`, a `method` (`choose`, `roll`) or a `support` note |
+
+The **effective policy**, `{"revision", "settings"}`, is the host's: it
+merges the active document for the character, and passes it to version 2
+character hooks and as `Action.policy` to every command and creation step in
+a game whose module has settings (None in any other). A client or a tool
+argument never supplies it. `requirements` is the one description of a
+requirement: the referee's context and the players' `rules_view` both show
+it, after the host's own `character.name` entry in a character game, so a
+module keeps no second prose copy. Nothing in a document loads code, changes
+providers or installs a module.
+
+A module may add settings under its current version only if a game with no
+settings document behaves exactly as before; Trailhead does (see
+[trailhead.md](trailhead.md#campaign-settings)).
 
 ### Providers
 
@@ -190,7 +217,8 @@ Its view is None, so its snapshots stay metadata-only. `tesserae roll` and
 `builtin.dice` 1, and authenticated participants. See [relay.md](relay.md).
 
 `trailhead` version 1 is the original module with characters: walkers with a
-trait and stamina, created in steps, who push on or recover. It requires
+trait and stamina, created in steps, who push on or recover, and a campaign
+setting for their starting stamina. It requires
 `dice.roll.v1` from `builtin.dice` 1, and authenticated participants. See
 [trailhead.md](trailhead.md).
 

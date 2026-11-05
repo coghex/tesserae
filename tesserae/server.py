@@ -26,6 +26,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from .browser import RequestPolicy
+from .campaign_rules import CampaignRules, Decider, rules_message
 from .external import load_module_dir
 from .modules import ModuleError
 from .protocol import (
@@ -36,6 +37,7 @@ from .protocol import (
     MessagesRequest,
     ProtocolError,
     RefereeStatusRequest,
+    RulesRequest,
     SayRequest,
     SyncRequest,
     accepted_message,
@@ -56,6 +58,8 @@ from .protocol import (
     referee_status_message,
     revision_message,
     role_message,
+    rules_list_message,
+    rules_view_message,
     session_error,
     snapshot_message,
     welcome_message,
@@ -69,6 +73,7 @@ from .store import (
     Actor,
     GameStore,
     ParticipantContext,
+    Refusal,
     StoreBusy,
     StoreError,
 )
@@ -316,7 +321,7 @@ class CampaignService:
         )
         if found is None:
             return None
-        current, view, referee, lost, role = found
+        current, view, referee, lost, role, policy_revision = found
         session.role = role  # what this connection is told, sent under its lock
         if lost:  # the selection is no longer the caller's: back in setup
             session.character_id = None
@@ -333,6 +338,7 @@ class CampaignService:
             None if actor is None else actor_object(actor.mode, summary),
             sheet,
             role,
+            policy_revision,
         )
 
     async def _actor(self, session: "_Session", *, keep_lost: bool = True):
@@ -422,6 +428,8 @@ class CampaignService:
             return await self._sync(session)
         elif isinstance(parsed, HostRequest):
             return await self._host(session, parsed)
+        elif isinstance(parsed, RulesRequest):
+            return await self._rules(session, parsed)
         elif isinstance(parsed, CharacterRequest) and self.characters:
             return await self._character(session, parsed)
         elif isinstance(parsed, CharacterRequest) or (
@@ -646,6 +654,28 @@ class CampaignService:
             return session_error("session_revoked")
         if found is _NOT_HOST:
             return _not_host(None)
+        return found
+
+    async def _rules(self, session: "_Session", request: RulesRequest) -> dict:
+        """A campaign settings message (governance contract sections 5 and
+        7), checked and done inside the registry guard: `rules_view` for any
+        admitted player, the rest for the campaign host only."""
+        mutation = request.kind in ("rules_import", "rules_activate", "rules_reject")
+        try:
+            found = await self._call(
+                _rules_change if mutation else _rules_read,
+                session.context,
+                request,
+                session=session,
+                role=True,
+                host=mutation,
+            )
+        except Exception:
+            return self._failure(request.request_id)
+        if found is None:
+            return session_error("session_revoked")
+        if found is _NOT_HOST:
+            return _not_host(request.request_id)
         return found
 
     async def _transfer(self, session: "_Session", request: HostRequest) -> dict:
@@ -903,7 +933,12 @@ class CampaignService:
         return error_message("internal_error", message, request_id=request_id)
 
     async def _call(
-        self, method, *args, session: "_Session | None" = None, role: bool = False
+        self,
+        method,
+        *args,
+        session: "_Session | None" = None,
+        role: bool = False,
+        host: bool = False,
     ):
         """`method(store, *args)` on a worker thread, with a fresh store.
 
@@ -913,9 +948,13 @@ class CampaignService:
         session, and the session records why. With `role`, `method` is also
         given `role=`: the session's campaign role read by that guard ("host",
         "guest", or None with no campaign host, as on a single-game host).
+        With `host`, it is also given `host=`: the campaign host's
+        (host_id, player_id) when that role is "host", else None.
         """
         guard = None if session is None else session.guard
         extra = {"role": None} if role else {}
+        if host:
+            extra["host"] = None
 
         def work():
             if guard is None:
@@ -928,6 +967,8 @@ class CampaignService:
                     return self._in_store(method, args_, extra=extra), _UNSEEN
                 if role:
                     extra["role"] = checked.role
+                if host and checked.role == "host":
+                    extra["host"] = checked.host_player
                 return self._in_store(method, args, session, extra), checked.role
 
         loop = asyncio.get_running_loop()
@@ -1305,7 +1346,10 @@ def _snapshot_parts(store: GameStore, context, character_id, characters: bool,
             referee = _referee_projection(store, context, actor)
             if referee is None:
                 return None
-        return current, view, referee, lost, role
+        policy_revision = None
+        if store.runtime().settings is not None:
+            policy_revision = store.policy_revision()
+        return current, view, referee, lost, role, policy_revision
 
 
 def _session_role(store: GameStore, context, *, role):
@@ -1361,9 +1405,90 @@ def _host_read(store: GameStore, context, kind: str, after_seq, characters: bool
                 ],
                 "pending_choices": referee.all_choices(every=True),
                 "rulings": referee.rulings(),
-                "policy": None,  # the settings document (GOV-3)
+                "policy": _host_policy(store, runtime),
             }
         )
+
+
+def _host_policy(store: GameStore, runtime) -> dict | None:
+    """`host_view`'s policy: the active document and its revision (0 and
+    null with none), or null if the module has no campaign settings."""
+    if runtime.settings is None:
+        return None
+    revision, document = store.active_document()
+    return {"revision": revision, "document": document}
+
+
+def _rules_read(store: GameStore, context, request, *, role):
+    """`rules_view`, `rules_list` or `rules_export`, from one committed
+    state; None if revoked, _NOT_HOST for a host read by anyone else."""
+    with store.snapshot():
+        if store.session_revision(context) is None:
+            return None
+        rules = CampaignRules(store)
+        if request.kind == "rules_view":
+            character_id = request.character_id
+            if character_id is not None:
+                character = store.character(character_id)
+                visible = character is not None and (
+                    role == "host"
+                    or (
+                        character.participant_id == context.participant_id
+                        and character.phase != "archived"
+                    )
+                )
+                if not visible:
+                    return _unavailable(None)
+            return rules_view_message(rules.projection(character_id))
+        if role != "host":
+            return _NOT_HOST
+        if request.kind == "rules_list":
+            return rules_list_message(store.policy_revision(), rules.revisions())
+        try:
+            return rules_message(rules.document(request.revision))
+        except Refusal as refusal:
+            return refusal.message(None, None)
+
+
+class _Revoked(Exception):
+    pass
+
+
+def _rules_change(store: GameStore, context, request, *, role, host):
+    """`rules_import`, `rules_activate` or `rules_reject` by the campaign
+    host, whose session is rechecked inside the change's transaction; None
+    if revoked, _NOT_HOST for anyone else."""
+    if role != "host":
+        return None if store.session_revision(context) is None else _NOT_HOST
+
+    def check():
+        if store.session_revision(context) is None:
+            raise _Revoked
+
+    rules = CampaignRules(store)
+    by = Decider(host[1], host[0])
+    try:
+        if request.kind == "rules_import":
+            result, _ = rules.import_document(
+                request.content, by, request_id=request.request_id, check=check
+            )
+        elif request.kind == "rules_activate":
+            result, _ = rules.activate(
+                request.revision,
+                request.expected_policy_revision,
+                by,
+                request_id=request.request_id,
+                check=check,
+            )
+        else:
+            result, _ = rules.reject(
+                request.revision, by, request_id=request.request_id, check=check
+            )
+    except _Revoked:
+        return None
+    except Refusal as refusal:
+        return refusal.message(request.request_id, None)
+    return rules_message(result, request.request_id)
 
 
 def _host_wire(message: dict, names: dict, characters: bool) -> dict:

@@ -26,6 +26,7 @@ import socketserver
 import threading
 from pathlib import Path
 
+from ..campaign_rules import requirements
 from ..protocol import PROTOCOL_VERSION
 from ..store import GameStore, ParticipantContext
 from .store import REFEREE, Job, RefereeError, RefereeStore, Step
@@ -189,6 +190,7 @@ class BridgeTools:
         if job.mode is not None:
             result.update(_character_context(store, runtime, state, job))
             result["input"]["actor"] = _actor(store, job)
+        result.update(_policy_context(store, runtime, state, job))
         return result
 
     def _get_view(self, store, referee, job, args) -> dict:
@@ -325,19 +327,43 @@ def _character_context(store: GameStore, runtime, state: dict, job: Job) -> dict
     return {"characters": ready, "sheet": sheet}
 
 
+def _policy_context(store: GameStore, runtime, state: dict, job: Job) -> dict:
+    """What campaign settings add to `get_context` (governance contract
+    section 10): the job's character's effective settings with the
+    campaign's guidance, and what that character needs. Computed by the
+    host; never another character's exception. Guidance reaches the referee
+    whether or not the module has settings; a game with neither settings
+    nor a document gets nothing here, as before."""
+    revision, document = store.active_document()
+    if runtime.settings is None and document is None:
+        return {}
+    policy = store.effective_policy(job.character_id)
+    if policy is None:  # guidance only: the module has no settings
+        policy = {"revision": revision, "settings": {}}
+    return {
+        "policy": {
+            "revision": policy["revision"],
+            "settings": policy["settings"],
+            "guidance": None if document is None else document["guidance"],
+        },
+        "requirements": requirements(store, runtime, policy, state, job.character_id),
+    }
+
+
 def _character_actions(store: GameStore, runtime, job: Job) -> dict:
     """`list_actions` in a character game: what the job's mode allows."""
     state = store.inspect_state()
+    policy = store.effective_policy(job.character_id)
     referee_commands = []
     if job.mode == "setup":
         actions = []
     elif job.mode == "creation":
-        actions = runtime.creation_actions(state, job.character_id)
+        actions = runtime.creation_actions(state, job.character_id, policy)
         if actions is None:
             steps = [c.name for c in runtime.characters.steps]
             actions = [{"command": name} for name in ("character.name", *steps)]
     else:
-        actions = runtime.character_actions(state, job.character_id)
+        actions = runtime.character_actions(state, job.character_id, policy)
         if actions is None:
             actions = [{"command": c.name} for c in runtime.module.commands]
         referee_commands = [c.name for c in runtime.module.referee_commands]

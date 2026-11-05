@@ -17,7 +17,11 @@ from types import MappingProxyType
 from typing import Callable, Iterable, Mapping
 
 HOST_API_VERSION = 1
-CHARACTER_RULES_VERSION = 1
+# Version 2 judges drafts under the campaign's effective policy
+# (docs/designs/governance_contract.md section 6).
+CHARACTER_RULES_VERSIONS = (1, 2)
+CAMPAIGN_SETTINGS_VERSION = 1
+REQUIREMENT_KINDS = ("mechanical", "narrative", "optional")
 ACTION_REJECTED = "action_rejected"
 # Command names starting with this belong to the host (character.name).
 RESERVED_PREFIX = "character."
@@ -95,7 +99,10 @@ class Action:
     message. `operations` holds only the module's selected operations, bound
     to this execution's random source. `character_id` is the host's frozen
     actor in a character game (docs/designs/character_contract.md section 6),
-    and always None in a game without characters.
+    and always None in a game without characters. `policy` is the host's
+    effective policy for that character (or the campaign's, with none),
+    `{"revision", "settings"}`, in a game whose module has CampaignSettings,
+    and None in any other.
     """
 
     state: dict
@@ -103,6 +110,7 @@ class Action:
     args: dict
     operations: Mapping[str, Callable]
     character_id: str | None = None
+    policy: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +152,10 @@ class CharacterRules:
     character may do and which creation steps remain. `validate_seed(state,
     participant_ids, owners)` checks seeded state, where `owners` maps each
     declared character ID to its participant; raise SeedError.
+
+    Version 2 (only with CampaignSettings) passes the character's effective
+    policy as a third argument to `problems`, `complete`, `actions` and
+    `creation_actions` (governance contract section 6).
     """
 
     version: int
@@ -156,6 +168,30 @@ class CharacterRules:
     actions: Callable[[dict, str], list] | None = None
     creation_actions: Callable[[dict, str], list] | None = None
     validate_seed: Callable[[dict, frozenset, Mapping], None] | None = None
+
+
+@dataclass(frozen=True)
+class CampaignSettings:
+    """A module's optional campaign settings and character requirements
+    (docs/designs/governance_contract.md section 6).
+
+    `defaults()` returns every setting the module supports with its default;
+    no other key is accepted, and the defaults must reproduce the module's
+    rules from before it had settings. `validate(settings, state)` is pure:
+    player-safe problems with one character's or the campaign's effective
+    settings, empty if valid. `requirements(policy, state, character_id)` is
+    pure: what a character needs, as a list of entries with a stable `id`, a
+    `kind` (mechanical, narrative or optional), a `description`, whether it is
+    `met` (true, false, or null when the module does not record it; omitted
+    with no character), and anything else the module describes (allowed
+    `values`, a `method` such as choose or roll, a `support` note). It is the
+    one description of a requirement, for the referee and players alike.
+    """
+
+    version: int
+    defaults: Callable[[], dict]
+    validate: Callable[[dict, dict], list]
+    requirements: Callable[[dict, dict, str | None], list]
 
 
 @dataclass(frozen=True)
@@ -186,6 +222,9 @@ class Module:
     `characters`, if given, makes every game of this module a character game
     (docs/designs/character_contract.md). Such a module checks seeds with
     `characters.validate_seed`, never `validate_seed`.
+
+    `settings`, if given, lets a campaign's settings document configure the
+    module (CampaignSettings); without it a document holds no settings.
     """
 
     id: str
@@ -204,6 +243,7 @@ class Module:
     referee_actions: Callable[[dict, str], list] | None = None
     referee_commands: tuple[Command, ...] = ()
     characters: CharacterRules | None = None
+    settings: CampaignSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +322,7 @@ class Runtime:
         *,
         randint: RandInt | None = None,
         character_id: str | None = None,
+        policy: dict | None = None,
     ) -> Outcome:
         """Run one validated command. Raises ActionRejected, or anything the
         module raises unexpectedly; the caller then commits nothing."""
@@ -293,7 +334,57 @@ class Runtime:
             randint,
             character_id,
             f"Command {command!r}",
+            policy,
         )
+
+    # Campaign settings (governance contract section 6). The host merges and
+    # stores them; the module only supplies defaults and judges values.
+
+    @property
+    def settings(self) -> CampaignSettings | None:
+        return self.module.settings
+
+    def settings_defaults(self) -> dict:
+        """Every supported setting with its default; {} without the capability."""
+        if self.module.settings is None:
+            return {}
+        return _json_copy(self.module.settings.defaults(), "settings defaults")
+
+    def settings_problems(self, settings: dict, state: dict) -> list[str]:
+        """The module's player-safe problems with these effective settings."""
+        problems = self.module.settings.validate(
+            _json_copy(settings, "settings"), _json_copy(state, "state")
+        )
+        _check_problems(problems, "Settings problems")
+        return list(problems)
+
+    def requirements(
+        self, policy: dict, state: dict, character_id: str | None
+    ) -> list | None:
+        """What a character (or, with None, any new character) needs, or None
+        without the capability. Entries are checked to carry what clients and
+        the referee rely on."""
+        if self.module.settings is None:
+            return None
+        entries = self.module.settings.requirements(
+            _json_copy(policy, "policy"), _json_copy(state, "state"), character_id
+        )
+        entries = _json_copy({"entries": entries}, "requirements")["entries"]
+        if not isinstance(entries, list):
+            raise TypeError("Requirements must be a list.")
+        for entry in entries:
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("id"), str)
+                or entry.get("kind") not in REQUIREMENT_KINDS
+                or not isinstance(entry.get("description"), str)
+                or not any(entry.get("met") is value for value in (True, False, None))
+            ):
+                raise TypeError(
+                    "A requirement has a string id and description, a kind of "
+                    "mechanical, narrative or optional, and met true, false or null."
+                )
+        return entries
 
     # The character capability (docs/designs/character_contract.md section 3).
     # Each hook sees copies; every result is checked to be JSON.
@@ -305,6 +396,7 @@ class Runtime:
         character_id: str,
         *,
         randint: RandInt | None = None,
+        policy: dict | None = None,
     ) -> Outcome:
         """A new draft's module data. Raises ActionRejected to refuse."""
         return self._run(
@@ -315,20 +407,22 @@ class Runtime:
             randint,
             character_id,
             "Character start",
+            policy,
         )
 
-    def character_problems(self, state: dict, character_id: str) -> list[str]:
-        problems = self._rules().problems(_json_copy(state, "state"), character_id)
-        if not isinstance(problems, list) or not all(
-            isinstance(problem, str) and problem for problem in problems
-        ):
-            raise TypeError("Character problems must be a list of strings.")
+    def character_problems(
+        self, state: dict, character_id: str, policy: dict | None = None
+    ) -> list[str]:
+        problems = self._judge(self._rules().problems, state, character_id, policy)
+        _check_problems(problems, "Character problems")
         return list(problems)
 
-    def complete_character(self, state: dict, character_id: str) -> dict:
+    def complete_character(
+        self, state: dict, character_id: str, policy: dict | None = None
+    ) -> dict:
         """The state with the draft made playable; deterministic, no draws."""
         return _json_copy(
-            self._rules().complete(_json_copy(state, "state"), character_id),
+            self._judge(self._rules().complete, state, character_id, policy),
             "state",
         )
 
@@ -344,13 +438,19 @@ class Runtime:
             raise TypeError("An archive veto is a non-empty string or None.")
         return reason
 
-    def character_actions(self, state: dict, character_id: str) -> list | None:
+    def character_actions(
+        self, state: dict, character_id: str, policy: dict | None = None
+    ) -> list | None:
         """What a ready character may do now, or None without the hook."""
-        return self._described(self._rules().actions, state, character_id)
+        return self._described(self._rules().actions, state, character_id, policy)
 
-    def creation_actions(self, state: dict, character_id: str) -> list | None:
+    def creation_actions(
+        self, state: dict, character_id: str, policy: dict | None = None
+    ) -> list | None:
         """The creation steps a draft has left, or None without the hook."""
-        return self._described(self._rules().creation_actions, state, character_id)
+        return self._described(
+            self._rules().creation_actions, state, character_id, policy
+        )
 
     def validate_character_seed(
         self, state: dict, participant_ids: frozenset[str], owners: Mapping[str, str]
@@ -379,14 +479,27 @@ class Runtime:
             raise ModuleError(f"Module {self.module.id!r} has no characters.")
         return rules
 
-    @staticmethod
-    def _described(hook, state: dict, character_id: str) -> list | None:
+    def _judge(self, hook, state: dict, character_id: str, policy: dict | None):
+        """A draft-judging hook, called as its rules version expects: version 2
+        also gets the effective policy."""
+        if self._rules().version == 1:
+            return hook(_json_copy(state, "state"), character_id)
+        if policy is None:
+            raise ValueError("Version 2 character rules are judged under a policy.")
+        return hook(
+            _json_copy(state, "state"), character_id, _json_copy(policy, "policy")
+        )
+
+    def _described(self, hook, state, character_id, policy) -> list | None:
         if hook is None:
             return None
-        actions = hook(_json_copy(state, "state"), character_id)
+        actions = self._judge(hook, state, character_id, policy)
         return _json_copy({"actions": actions}, "actions")["actions"]
 
-    def _run(self, execute, state, participant_id, args, randint, character_id, what):
+    def _run(
+        self, execute, state, participant_id, args, randint, character_id, what,
+        policy=None,
+    ):  # fmt: skip
         operations = {
             operation: partial(provider.implementation, randint)
             for operation, provider in self.providers.items()
@@ -398,6 +511,7 @@ class Runtime:
                 args=copy.deepcopy(args),
                 operations=operations,
                 character_id=character_id,
+                policy=None if policy is None else _json_copy(policy, "policy"),
             )
         )
         if not isinstance(outcome, Outcome):
@@ -494,12 +608,31 @@ class Catalog:
             )
         if (
             module.characters is not None
-            and module.characters.version != CHARACTER_RULES_VERSION
+            and module.characters.version not in CHARACTER_RULES_VERSIONS
         ):
             raise ModuleError(
                 f"Module {module_id!r} has character rules version "
                 f"{module.characters.version}; this host supports "
-                f"{CHARACTER_RULES_VERSION}."
+                + " and ".join(str(v) for v in CHARACTER_RULES_VERSIONS)
+                + "."
+            )
+        if (
+            module.settings is not None
+            and module.settings.version != CAMPAIGN_SETTINGS_VERSION
+        ):
+            raise ModuleError(
+                f"Module {module_id!r} has campaign settings version "
+                f"{module.settings.version}; this host supports "
+                f"{CAMPAIGN_SETTINGS_VERSION}."
+            )
+        if (
+            module.characters is not None
+            and module.characters.version == 2
+            and module.settings is None
+        ):
+            raise ModuleError(
+                f"Module {module_id!r} uses character rules version 2, which "
+                "needs campaign settings."
             )
         choices = tuple(module.providers if providers is None else providers)
         selected = {}
@@ -593,6 +726,13 @@ def describe_fields(missing: list[str], extra: list[str], subject: str) -> str:
     if extra:
         parts.append(f"{len(extra)} unexpected field{'s' if len(extra) > 1 else ''}")
     return f"{subject} has {'; '.join(parts)}."
+
+
+def _check_problems(problems, what: str):
+    if not isinstance(problems, list) or not all(
+        isinstance(problem, str) and problem for problem in problems
+    ):
+        raise TypeError(f"{what} must be a list of strings.")
 
 
 def _json_copy(value, what: str) -> dict:

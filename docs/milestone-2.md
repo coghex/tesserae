@@ -93,6 +93,12 @@ These are agreed product decisions. Delivered so far: GOV-2
 lobby campaign, with operator setup, adoption, recovery and transfer, and the
 host's inspection of every sheet, conversation and the referee's preparation
 through the protocol; the host's client controls come with GOV-6 and GOV-7.
+GOV-3 ([#134](https://github.com/coghex/tesserae/issues/134)) delivers the
+campaign settings document (import, export, list, activation with exact
+replay and audit, and `tesserae game rules`), the optional module settings
+and requirements capability, the effective policy every character rule and
+the referee's context see, and Trailhead's starting stamina bonus with
+per-walker exceptions.
 The filed public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
 acceptance (#132–#139); the

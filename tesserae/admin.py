@@ -20,7 +20,10 @@ from .store import GameStore, StoreError
 def run_game(args) -> int:
     """`tesserae game create`: a new game bound to one bundled module, or to
     the module in an explicit package directory (`--module-dir`), optionally
-    starting from a seed file (`--seed`)."""
+    starting from a seed file (`--seed`). `tesserae game rules`: its settings
+    documents."""
+    if args.action == "rules":
+        return _rules(args)
     try:
         runtime = _runtime(args.module, args.module_dir)  # before any file exists
         seed = None if args.seed is None else read_seed(args.seed)
@@ -40,6 +43,65 @@ def run_game(args) -> int:
     for participant in seed.participants:
         print(f"{participant.participant_id}\t{participant.name}")
     print("Issue each a token with 'tesserae participant rotate'.")
+    return 0
+
+
+def _rules(args) -> int:
+    """`tesserae game rules import|list|export|activate` (governance contract
+    section 5), as the operator. Each is one transaction, safe beside a
+    running host; activation is refused while a referee job runs."""
+    import json
+
+    from .campaign_rules import OPERATOR_DECIDER, CampaignRules
+    from .store import Refusal
+
+    action = args.rules_action
+    try:
+        if action == "import":
+            with open(args.file, encoding="utf-8") as stream:
+                document = json.load(stream)
+        runtime = None if args.module_dir is None else load_module_dir(args.module_dir)
+        with GameStore.open_existing(args.database, runtime=runtime) as store:
+            rules = CampaignRules(store)
+            if action == "import":
+                result, _ = rules.import_document(document, OPERATOR_DECIDER)
+                print(
+                    f"Stored candidate revision {result['revision']}; nothing live "
+                    f"changed. Activate it with 'tesserae game rules activate --database "
+                    f"{args.database} {result['revision']}'."
+                )
+            elif action == "list":
+                with store.snapshot():
+                    listed = {
+                        "policy_revision": store.policy_revision(),
+                        "revisions": rules.revisions(),
+                    }
+                print(json.dumps(listed, indent=2))
+            elif action == "export":
+                with store.snapshot():
+                    found = rules.document(args.revision)
+                with open(args.file, "x", encoding="utf-8") as stream:
+                    json.dump(found["content"], stream, indent=2, sort_keys=True)
+                    stream.write("\n")
+                print(
+                    f"Wrote revision {found['revision']} ({found['state']}) "
+                    f"to {args.file}."
+                )
+            else:
+                rules.activate(args.revision, None, OPERATOR_DECIDER)
+                print(f"Revision {args.revision} is now the active settings.")
+    except Refusal as refusal:
+        print(f"tesserae game rules {action}: {refusal.text}", file=sys.stderr)
+        for problem in refusal.extra.get("problems", ()):
+            print(f"  - {problem}", file=sys.stderr)
+        return 1
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        print(f"tesserae game rules {action}: not a JSON document: {error}",
+              file=sys.stderr)  # fmt: skip
+        return 1
+    except (ModuleError, StoreError, sqlite3.Error, OSError) as error:
+        print(f"tesserae game rules {action}: {error}", file=sys.stderr)
+        return 1
     return 0
 
 

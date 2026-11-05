@@ -504,6 +504,7 @@ class _Guard:
         self._authorized = None
         self.lost_error = None
         self.role = None
+        self.host_player = None  # (host_id, player_id) while the role is host
 
     def __enter__(self) -> bool:
         self._registry = HostRegistry(self._path)
@@ -515,6 +516,8 @@ class _Guard:
             host = record["host_player_id"]
             if host is not None:
                 self.role = "host" if host == self._context.player_id else "guest"
+            if self.role == "host":
+                self.host_player = (self._context.host_id, self._context.player_id)
             return True
         except (CredentialRevoked, CampaignUnavailable) as error:
             self._authorized = None

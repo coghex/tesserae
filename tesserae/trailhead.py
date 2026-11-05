@@ -3,7 +3,9 @@
 Walkers set out up a mountain trail. Each player creates walkers with the
 referee: a trait (steady, quick or keen) and stamina rolled once as 1d3+1.
 Completing a walker makes it playable; a keen walker gains one more stamina
-then. A ready walker can push on (spend 1 stamina, 1d6 against 4, +1 if
+then, and so does every walker by the campaign's starting stamina bonus (a
+setting, 0 to 2, default 0, which one walker's exception can raise). A ready
+walker can push on (spend 1 stamina, 1d6 against 4, +1 if
 quick; failing leaves it in danger) or recover (1d6 against 3, +1 if steady;
 no cost). A walker in danger cannot be archived. The theme and numbers are
 this module's own; it exists to exercise the host's character capability
@@ -13,6 +15,7 @@ this module's own; it exists to exercise the host's character capability
 from .modules import (
     ActionRejected,
     ArgumentError,
+    CampaignSettings,
     CharacterRules,
     Command,
     Module,
@@ -29,6 +32,8 @@ PUSH_DIE = "1d6"
 PUSH_TARGET = 4
 RECOVER_DIE = "1d6"
 RECOVER_TARGET = 3
+BONUS = "starting_stamina_bonus"
+MAX_BONUS = 2
 
 SCENE = {
     "id": "trailhead",
@@ -59,6 +64,8 @@ CREATION_RULES = {
     "character.name": 'Name the walker: {"name": "..."}.',
 }
 _WALKER_FIELDS = {"trait", "rolled", "stamina", "max_stamina", "ready", "in_danger"}
+# Recorded at completion only when a starting bonus applied; absent reads 0.
+_OPTIONAL_WALKER_FIELDS = {"bonus"}
 
 
 def initial_state() -> dict:
@@ -115,7 +122,7 @@ def _stamina(action) -> Outcome:
     return Outcome(state, {"roll": roll, "stamina": walker["rolled"]})
 
 
-def _problems(state: dict, character_id: str) -> list:
+def _problems(state: dict, character_id: str, policy: dict) -> list:
     walker = state["walkers"][character_id]
     problems = []
     if walker["trait"] is None:
@@ -125,8 +132,11 @@ def _problems(state: dict, character_id: str) -> list:
     return problems
 
 
-def _complete(state: dict, character_id: str) -> dict:
+def _complete(state: dict, character_id: str, policy: dict) -> dict:
     walker = state["walkers"][character_id]
+    bonus = policy["settings"][BONUS]
+    if bonus:
+        walker["bonus"] = bonus
     walker["max_stamina"] = _max_stamina(walker)
     walker["stamina"] = walker["max_stamina"]
     walker["ready"] = True
@@ -134,8 +144,9 @@ def _complete(state: dict, character_id: str) -> dict:
 
 
 def _max_stamina(walker: dict) -> int:
-    """The stamina roll, plus one for a keen walker."""
-    return walker["rolled"] + (1 if walker["trait"] == "keen" else 0)
+    """The stamina roll, plus one for a keen walker and any starting bonus."""
+    keen = 1 if walker["trait"] == "keen" else 0
+    return walker["rolled"] + keen + walker.get("bonus", 0)
 
 
 def _sheet(state: dict, character_id: str) -> dict:
@@ -154,7 +165,7 @@ def _archive_veto(state: dict, character_id: str) -> str | None:
     return None
 
 
-def _creation_actions(state: dict, character_id: str) -> list:
+def _creation_actions(state: dict, character_id: str, policy: dict) -> list:
     walker = state["walkers"][character_id]
     actions = [
         {
@@ -184,7 +195,7 @@ def _creation_actions(state: dict, character_id: str) -> list:
     return actions  # fmt: skip
 
 
-def _actions(state: dict, character_id: str) -> list:
+def _actions(state: dict, character_id: str, policy: dict) -> list:
     walker = state["walkers"][character_id]
     if walker["in_danger"]:
         bonus = 1 if walker["trait"] == "steady" else 0
@@ -212,8 +223,13 @@ def _validate_seed(state: dict, participant_ids: frozenset, owners) -> None:
     if set(state["walkers"]) != set(owners):
         raise SeedError("The seed's walkers must be exactly its declared characters.")
     for character_id, walker in state["walkers"].items():
-        if not isinstance(walker, dict) or set(walker) != _WALKER_FIELDS:
+        if not isinstance(walker, dict) or not (
+            _WALKER_FIELDS <= set(walker) <= _WALKER_FIELDS | _OPTIONAL_WALKER_FIELDS
+        ):
             raise SeedError(f"Walker {character_id} has the wrong fields.")
+        bonus = walker.get("bonus", 1)
+        if type(bonus) is not int or not 1 <= bonus <= MAX_BONUS:
+            raise SeedError(f"Walker {character_id} has an invalid starting bonus.")
         numbers = [walker["rolled"], walker["stamina"], walker["max_stamina"]]
         if (
             walker["trait"] not in TRAITS
@@ -225,6 +241,53 @@ def _validate_seed(state: dict, participant_ids: frozenset, owners) -> None:
             or not 0 <= walker["stamina"] <= walker["max_stamina"]
         ):
             raise SeedError(f"Walker {character_id} is not a valid ready walker.")
+
+
+# --- campaign settings (docs/designs/governance_contract.md section 6) ---------
+
+
+def _defaults() -> dict:
+    return {BONUS: 0}  # the rules from before there were settings
+
+
+def _validate_settings(settings: dict, state: dict) -> list:
+    bonus = settings[BONUS]
+    if type(bonus) is not int or not 0 <= bonus <= MAX_BONUS:
+        return [f"The starting stamina bonus is a whole number from 0 to {MAX_BONUS}."]
+    return []
+
+
+def _requirements(policy: dict, state: dict, character_id: str | None) -> list:
+    """What a walker needs, the one description of it for the referee and
+    players: a trait and a stamina roll (mechanical), a background agreed in
+    conversation (narrative) and, optionally, a home town."""
+    walker = None if character_id is None else state["walkers"].get(character_id)
+    bonus = policy["settings"][BONUS]
+    approval = (
+        f" Approval adds {bonus} starting stamina (this campaign's setting)."
+        if bonus
+        else ""
+    )
+
+    def met(value):
+        return {} if walker is None else {"met": value}
+
+    return [
+        {"id": "trait", "kind": "mechanical", "method": "choose",
+         "values": list(TRAITS),
+         "description": CREATION_RULES["trailhead.trait"], **met(
+             walker is not None and walker["trait"] is not None)},
+        {"id": "stamina", "kind": "mechanical", "method": "roll", "die": STAMINA_DIE,
+         "description": CREATION_RULES["trailhead.stamina"] + approval, **met(
+             walker is not None and walker["rolled"] is not None)},
+        {"id": "background", "kind": "narrative",
+         "description": "Who the walker is and why they are climbing; agree it "
+         "with the referee. It changes no numbers.", **met(None)},
+        {"id": "home", "kind": "optional",
+         "description": "Where the walker comes from, if the player wants to say.",
+         "support": "Not recorded by this module yet; mention it in conversation.",
+         **met(None)},
+    ]  # fmt: skip
 
 
 # --- play ----------------------------------------------------------------------
@@ -311,7 +374,7 @@ TRAILHEAD_MODULE = Module(
     requires_authentication=True,
     referee_context=referee_context,
     characters=CharacterRules(
-        version=1,
+        version=2,
         start=_start,
         steps=(
             Command("trailhead.trait", _validate_trait, _trait),
@@ -324,5 +387,11 @@ TRAILHEAD_MODULE = Module(
         actions=_actions,
         creation_actions=_creation_actions,
         validate_seed=_validate_seed,
+    ),
+    settings=CampaignSettings(
+        version=1,
+        defaults=_defaults,
+        validate=_validate_settings,
+        requirements=_requirements,
     ),
 )

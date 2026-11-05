@@ -58,6 +58,8 @@ ERROR_CODES = frozenset(
         "character_busy",
         # Campaign hosts (docs/designs/governance_contract.md section 13).
         "not_campaign_host",
+        "stale_policy",
+        "invalid_document",
     }
 )
 # One fixed message per session error, so failures never vary with the
@@ -109,6 +111,22 @@ _HOST_FIELDS = {
     "host_messages": frozenset({"version", "type", "after_seq"}),
     "campaign_host_transfer": frozenset({"version", "type", "request_id", "player_id"}),
 }
+# Campaign settings (governance contract sections 5 and 7); a field in
+# brackets is optional.
+_RULES_FIELDS = {
+    "rules_view": (frozenset({"version", "type"}), "character_id"),
+    "rules_list": (frozenset({"version", "type"}), None),
+    "rules_export": (frozenset({"version", "type"}), "revision"),
+    "rules_import": (frozenset({"version", "type", "request_id", "content"}), None),
+    "rules_activate": (
+        frozenset(
+            {"version", "type", "request_id", "revision", "expected_policy_revision"}
+        ),
+        None,
+    ),
+    "rules_reject": (frozenset({"version", "type", "request_id", "revision"}), None),
+}
+RULES_TYPES = frozenset(_RULES_FIELDS)
 
 
 class ProtocolError(ValueError):
@@ -193,6 +211,20 @@ class HostRequest:
     request_id: str | None = None
     after_seq: int | None = None
     player_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RulesRequest:
+    """A campaign settings message (governance contract section 13): only
+    `rules_view` is for every player; the others are the campaign host's,
+    which the host judges, never the message."""
+
+    kind: str
+    request_id: str | None = None
+    character_id: str | None = None
+    revision: int | None = None
+    expected_policy_revision: int | None = None
+    content: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -284,6 +316,8 @@ def parse_client_message(text: str | bytes, runtime: Runtime = DICE_RUNTIME):
         return _parse_character(kind, data)
     if isinstance(kind, str) and kind in _HOST_FIELDS:
         return _parse_host(kind, data)
+    if isinstance(kind, str) and kind in _RULES_FIELDS:
+        return _parse_rules(kind, data)
     if kind == "messages":
         _check_fields(data, _MESSAGES_FIELDS, "A messages request")
         if not is_valid_revision(data["after_seq"]):
@@ -438,6 +472,47 @@ def _parse_host(kind: str, data: dict) -> HostRequest:
             )
         return HostRequest(kind, request_id, player_id=data["player_id"])
     return HostRequest(kind)
+
+
+def _parse_rules(kind: str, data: dict) -> RulesRequest:
+    request_id = data.get("request_id")
+    request_id = request_id if is_valid_request_id(request_id) else None
+    fields, optional = _RULES_FIELDS[kind]
+    try:
+        if optional is not None and optional in data:
+            fields = fields | {optional}
+        _check_fields(data, fields, f"A {kind} request")
+        if "request_id" in fields and request_id is None:
+            raise ProtocolError(
+                "invalid_request",
+                f"'request_id' must be a string of 1 to {MAX_REQUEST_ID_LENGTH} "
+                "characters without whitespace.",
+            )
+        character_id = data.get("character_id")
+        if character_id is not None and not is_valid_identifier(character_id):
+            raise ProtocolError(
+                "invalid_request", "'character_id' must be a character ID or absent."
+            )
+        revision = data.get("revision")
+        if "revision" in data and (not is_valid_revision(revision) or revision < 1):
+            raise ProtocolError(
+                "invalid_request", "'revision' must be a whole number, 1 or more."
+            )
+        expected = data.get("expected_policy_revision")
+        if "expected_policy_revision" in data and not is_valid_revision(expected):
+            raise ProtocolError(
+                "invalid_request",
+                "'expected_policy_revision' must be a whole number, 0 or more.",
+            )
+        content = data.get("content")
+        if "content" in data and not isinstance(content, dict):
+            raise ProtocolError(
+                "invalid_request", "'content' must be a settings document object."
+            )
+    except ProtocolError as error:
+        error.request_id = request_id
+        raise
+    return RulesRequest(kind, request_id, character_id, revision, expected, content)
 
 
 def _check_fields(data: dict, fields: frozenset, subject: str):
@@ -650,6 +725,7 @@ def snapshot_message(
     actor: dict | None = None,
     sheet: dict | None = None,
     role: str | None = None,
+    policy_revision: int | None = None,
 ) -> dict:
     """The recipient's view: the reply to a join or a sync.
 
@@ -660,7 +736,8 @@ def snapshot_message(
     A lobby host adds the selected `campaign`, `{"campaign_id", "name"}`. A
     character game adds the connection's `actor` and its character's `sheet`
     (null in setup), always both (character contract section 9). A lobby
-    campaign with a designated campaign host adds the recipient's `role`
+    campaign with a designated campaign host adds the recipient's `role`,
+    and a game whose module has campaign settings its `policy_revision`
     (governance contract section 13).
     """
     _check_identifier(game_id, "game_id")
@@ -699,6 +776,9 @@ def snapshot_message(
         if role not in ROLES:
             raise ValueError("A role is host or guest.")
         message["role"] = role
+    if policy_revision is not None:
+        _check_revision(policy_revision)
+        message["policy_revision"] = policy_revision
     return message
 
 
@@ -717,6 +797,17 @@ def role_message(role: str, request_id: str | None = None) -> dict:
 def host_view_message(view: dict) -> dict:
     """The reply to `host_view`: everything the campaign host may inspect."""
     return {"version": PROTOCOL_VERSION, "type": "host_view", **view}
+
+
+def rules_view_message(view: dict) -> dict:
+    """The reply to `rules_view` (governance contract section 7)."""
+    return {"version": PROTOCOL_VERSION, "type": "rules_view", **view}
+
+
+def rules_list_message(policy_revision: int, revisions: list) -> dict:
+    """The reply to `rules_list`: every revision's metadata, no content."""
+    return {"version": PROTOCOL_VERSION, "type": "rules_list",
+            "policy_revision": policy_revision, "revisions": list(revisions)}  # fmt: skip
 
 
 def host_messages_message(messages: list, next_after_seq: int | None) -> dict:
