@@ -815,7 +815,8 @@ class GameStore:
         source. Refused with `referee_busy` while a referee job runs. The
         command record, the new state, a touched draft's new revision and one
         `host_audit` row commit together, or nothing does. `precondition()`
-        runs first in the transaction (the caller's authority).
+        runs first in the transaction (the caller's authority), and before
+        any validation error is returned.
         """
         if not isinstance(by, Decider) or by.player_id == OPERATOR:
             raise ValueError("Host operations run for a campaign host.")
@@ -824,7 +825,12 @@ class GameStore:
         try:
             request = parse_request(raw, host)
         except ProtocolError as error:
-            return error.to_message(revision=self._current_revision()), False
+            # Authority first, as for a valid command: a caller whose access
+            # has ended learns nothing, not even the revision.
+            with self.snapshot():
+                if precondition is not None:
+                    precondition()
+                return error.to_message(revision=self._current_revision()), False
         content = request.content()
         args = request.args
         current = None

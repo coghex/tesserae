@@ -132,6 +132,21 @@ class AdministrationTests(CampaignHost):
         )
         self.assertEqual(self.trail().inspect_state()["scene"]["description"], "Fog.")
 
+    async def test_a_host_whose_link_ended_learns_nothing_from_a_bad_command(self):
+        await self.start_host()
+        for name, args in (("trailhead.set_stamina", {"character_id": MARA}),
+                           ("trailhead.rewrite", {})):  # fmt: skip
+            with self.subTest(name=name):
+                bob, _ = await self.enter("bob")  # admitted (again)
+                with self.trail() as store:  # then Bob's participant link ends
+                    store.unlink_host_player(self.host_id, self.players["bob"])
+                refused = await self.command(bob, "h-1", name, args, 0)
+                # Back in the lobby, with no validation detail or revision.
+                self.assertEqual(
+                    (refused["code"], refused["request_id"], refused["revision"]),
+                    ("campaign_unavailable", None, None),
+                )
+
     async def test_transfer_and_revocation_end_the_privilege(self):
         await self.start_host()
         bob, _ = await self.enter("bob")
