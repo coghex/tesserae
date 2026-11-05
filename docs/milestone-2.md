@@ -91,7 +91,9 @@ conversations and referee preparation; other guests retain their privacy.
 These are agreed product decisions, not delivered features. The filed
 public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
-acceptance (#132–#139). Existing Console/Settings navigation,
+acceptance (#132–#139); the
+[governance contract](designs/governance_contract.md) (GOV-1) gives their
+exact rules. Existing Console/Settings navigation,
 memory-only login and localhost scope remain.
 
 ## Subsequent private integration

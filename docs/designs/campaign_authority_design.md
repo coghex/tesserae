@@ -5,7 +5,8 @@ Tracker [#131](https://github.com/coghex/tesserae/issues/131); children #132–#
 Companion private-integration tracker:
 [#140](https://github.com/coghex/tesserae/issues/140), children #141–#147.
 The owner approved the product decisions and requested issue filing after
-design review. GOV-1 settles exact technical contracts before runtime work.
+design review. GOV-1 settles exact technical contracts before runtime work, in
+the [governance contract](governance_contract.md).
 Public runtime baseline:
 `51f53e14816dd7b1fefa1f3c891e0e2e26d9abfa` (M2-3 and its CLI follow-up merged).
 See [D-25](../tesserae_design.md#d-25-campaign-hosts-rules-and-administration),

@@ -306,6 +306,10 @@ turn or draws.
 
 ## 8. Creation privacy, enforced by the host
 
+M2-4 lets a lobby campaign's designated host read creation conversations on
+request ([governance contract](governance_contract.md) section 7); nothing
+here changes for other players.
+
 - A `say` accepted in creation mode is stored and delivered as private to
   its sender, whatever `private` flag it carried. Its `message` (and every
   replay of it) has `audience: "private"` and a `creation` marker (section 9).

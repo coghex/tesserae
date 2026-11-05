@@ -42,7 +42,9 @@ The next [delivery plan](docs/designs/campaign_authority_design.md),
 [#131](https://github.com/coghex/tesserae/issues/131), covers campaign hosts,
 configurable requirements, guest approval requests and host sheet/world
 administration (M2-4). Later private campaign integration is tracked separately
-in [#140](https://github.com/coghex/tesserae/issues/140). Neither is implemented yet.
+in [#140](https://github.com/coghex/tesserae/issues/140). Neither is implemented yet;
+the [governance contract](docs/designs/governance_contract.md) gives M2-4's
+exact rules.
 
 ## First executable slice
 
