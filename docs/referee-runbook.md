@@ -17,10 +17,11 @@ referee folder stay outside any repository.
 - Python 3.11 or later, and Tesserae installed into a virtual environment:
   `python3 -m venv .venv && .venv/bin/python -m pip install .` (or `-e .` for
   development). The commands below assume `tesserae` is that environment's.
-- The Codex CLI, on your `PATH` (`codex --version`). Tesserae does not pin a
-  Codex version; it was verified with `codex-cli 0.166.0`. If a later Codex
-  changes its options or events, `tesserae referee check` and the job
-  diagnostics (section 7) are where it shows.
+- The Codex CLI, version 0.152.0 or later, on your `PATH` (`codex --version`).
+  Tesserae does not pin a Codex version; it was verified with
+  `codex-cli 0.166.0`. If a later Codex changes its options or events,
+  `tesserae referee check` and the job diagnostics (section 7) are where it
+  shows.
 
 ## 2. The referee folder and its one-time login
 
@@ -33,8 +34,10 @@ mode 0700; another with `--referee-dir DIR` on every referee command and on
 `serve`). It writes Codex's configuration there, which leaves Codex only the
 Tesserae bridge (section 6), its standing instructions and the reply schema.
 `login` signs that separate Codex home in once; your own `~/.codex` is never
-used. `check` reports the Codex version, whether the configuration is current
-and whether the login works.
+used. `check` reports the Codex version (and whether it is new enough),
+whether the configuration is current and whether the login works. **Rerun
+`setup` after upgrading Tesserae** too: the configuration also sets how much
+of each bridge result Codex keeps.
 
 The configuration names the Python that runs the bridge, the one `setup` ran
 with. **Rerun `tesserae referee setup` whenever you reinstall or move

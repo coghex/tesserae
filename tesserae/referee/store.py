@@ -43,6 +43,13 @@ TRANSCRIPT_PAGE = 200
 # model whole (it trims large tool outputs). A longer message still gets a
 # page of its own.
 TRANSCRIPT_PAGE_BYTES = 32 * 1024
+# The most one bridge tool result may hold (referee contract section 7):
+# Codex keeps a tool result in the model's history whole up to its per-tool
+# `output_token_limit` (the referee config sets it to this / 4 bytes per
+# token, plus Codex's 20% allowance) and cuts the middle out beyond it. It is
+# also under Codex's default for its bundled models (10,000 tokens + 20%,
+# about 48,000 bytes), so an older referee config still keeps it whole.
+RESULT_BYTES = 44 * 1024
 MAX_NARRATED = 16
 MAX_STEP_ID = 64  # so `ref:<job>:<step>` stays a valid request ID
 FINISHED = ("completed", "failed", "interrupted")
@@ -617,20 +624,28 @@ class RefereeStore:
         )
         return _message_from(row)
 
-    def transcript(self, after_seq: int = 0) -> tuple[list[dict], int | None]:
+    def transcript(
+        self, after_seq: int = 0, *, max_bytes: int | None = None, minimum: int = 1
+    ) -> tuple[list[dict], int | None]:
         """Referee only: the complete conversation, one page at a time, and the
-        `after_seq` of the next page (None at the end). Never truncated."""
+        `after_seq` of the next page (None at the end). Never truncated: a
+        page ends before the message that would take it over `max_bytes`
+        (TRANSCRIPT_PAGE_BYTES by default),
+        but holds at least `minimum` messages (a longer message gets a page
+        of its own). With `minimum` 0 a page may be empty, and then the next
+        page starts at `after_seq` itself."""
         rows = self.store.query(
             f"SELECT {_MESSAGE_COLUMNS} FROM referee_messages WHERE seq > ? "
             "ORDER BY seq LIMIT ?",
             (after_seq, TRANSCRIPT_PAGE + 1),
         )
+        limit = TRANSCRIPT_PAGE_BYTES if max_bytes is None else max_bytes
         page, size = [], 0
         for row in rows:
             message = _message_from(row)
             size += len(json.dumps(message))
-            if page and (len(page) == TRANSCRIPT_PAGE or size > TRANSCRIPT_PAGE_BYTES):
-                return page, page[-1]["seq"]
+            if len(page) >= minimum and (len(page) == TRANSCRIPT_PAGE or size > limit):
+                return page, page[-1]["seq"] if page else after_seq
             page.append(message)
         return page, None
 

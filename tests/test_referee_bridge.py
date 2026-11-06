@@ -22,9 +22,15 @@ from tesserae.modules import (
     Command,
     Module,
     Outcome,
+    Runtime,
 )
 from tesserae.referee import bridge, runner
-from tesserae.referee.store import REFEREE, TRANSCRIPT_PAGE_BYTES, RefereeStore
+from tesserae.referee.store import (
+    REFEREE,
+    RESULT_BYTES,
+    TRANSCRIPT_PAGE_BYTES,
+    RefereeStore,
+)
 from tesserae.referee.tools import BridgeServer, BridgeTools
 from tesserae.store import GameStore, ParticipantContext
 
@@ -384,6 +390,73 @@ class ReadTests(BridgeCase):
         page = self.ok(token, "get_transcript", after_seq=0)
         self.assertEqual((len(page["messages"]), page["next_after_seq"]), (1, None))
         self.refused("invalid_request", token, "get_transcript", after_seq=-1)
+
+
+class ResultBudgetTests(BridgeCase):
+    """`get_context` fits one tool result (RESULT_BYTES; referee contract
+    section 7, #159 and #160): the transcript's first page gives way to the
+    module's context, and nothing is lost, or cut by Codex."""
+
+    def converse(self, count=40):
+        for number in range(count):
+            job = self.referee.submit(
+                self.alice, f"l-{number}", "\u00e9" * 2000, False
+            ).job
+            self.referee.finish(job.job_id, "failed", "test")
+
+    def context_of(self, size: int):
+        blob = {"notes": "x" * size}
+        with mock.patch.object(Runtime, "referee_context", lambda self, state: blob):
+            _, token = self.start_job(request_id="last")
+            return token, self.call(token, "get_context")
+
+    def read_on(self, token, page) -> list:
+        seen = list(page["messages"])
+        while page["next_after_seq"] is not None:
+            page = self.ok(token, "get_transcript", after_seq=page["next_after_seq"])
+            seen += page["messages"]
+        return seen
+
+    def test_a_large_context_shortens_the_first_page_and_loses_no_message(self):
+        self.converse()
+        token, response = self.context_of(30_000)
+        result = response["result"]
+        self.assertLessEqual(
+            len(json.dumps(result)), RESULT_BYTES
+        )  # what the bridge sends
+        self.assertEqual(result["context"], {"notes": "x" * 30_000})  # never shortened
+        first = result["transcript"]["messages"]
+        whole_page, _ = self.referee.transcript(0)
+        self.assertLess(len(first), len(whole_page))
+        seen = self.read_on(token, result["transcript"])
+        self.assertEqual(
+            [m["seq"] for m in seen],
+            [m["seq"] for m in self.referee.transcript(0, max_bytes=10**9)[0]],
+        )
+        self.assertEqual(len(seen), 41)
+
+    def test_with_no_room_left_the_first_page_is_empty_and_reading_starts_at_the_beginning(
+        self,
+    ):
+        self.converse(3)
+        _, response = self.context_of(
+            RESULT_BYTES - 2_000
+        )  # under the limit, with no room for a message
+        transcript = response["result"]["transcript"]
+        self.assertEqual(
+            (transcript["messages"], transcript["next_after_seq"]), ([], 0)
+        )
+        self.assertLessEqual(len(json.dumps(response["result"])), RESULT_BYTES)
+
+    def test_a_context_over_one_result_is_refused_rather_than_cut(self):
+        token, response = self.context_of(RESULT_BYTES)
+        self.assertEqual(
+            (response["ok"], response["error"]["code"]), (False, "context_too_large")
+        )
+        self.assertIn(str(RESULT_BYTES), response["error"]["message"])
+        self.ok(
+            token, "get_transcript", after_seq=0
+        )  # the job can still read and report
 
 
 class DefaultHookTests(BridgeCase):

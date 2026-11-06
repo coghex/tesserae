@@ -23,7 +23,8 @@ records how the CLI shows conversation (owner decision O-1). Character games
 private creation.
 
 Tested against `codex-cli 0.166.0` on macOS (arm64). The runner records the
-version it ran with; it does not pin or refuse other versions.
+version it ran with and does not pin one, but the config needs Codex 0.152.0
+or later (section 3), and `tesserae referee check` reports an older one.
 
 ## 1. Owner decisions this contract follows
 
@@ -61,9 +62,10 @@ referee/
   `config.toml` and `AGENTS.md`, and prints the one-time login command:
   `CODEX_HOME=~/.local/share/tesserae/referee/codex-home codex login`. Rerunning
   setup rewrites those two files and touches nothing else.
-- `tesserae referee check` reports the Codex version, whether the login works
-  (`codex login status` with that `CODEX_HOME`), and whether `config.toml`
-  matches what setup would write.
+- `tesserae referee check` reports the Codex version (and whether it is
+  0.152.0 or later), whether the login works (`codex login status` with that
+  `CODEX_HOME`), and whether `config.toml` matches what setup would write. It
+  exits 0 only when all three hold.
 - The owner's own `~/.codex` is never read: its config, plugins, MCP servers and
   personal `AGENTS.md` instructions stay out of referee runs (the probes in
   section 13 showed a run without a separate home loading them).
@@ -101,6 +103,9 @@ args = ["-m", "tesserae.referee.bridge"]
 env_vars = ["TESSERAE_BRIDGE_SOCKET", "TESSERAE_BRIDGE_TOKEN"]
 tool_timeout_sec = 60
 default_tools_approval_mode = "approve"
+
+[mcp_servers.tesserae.tools.get_context]   # and the same for every bridge tool
+output_token_limit = 11264                 # RESULT_BYTES / 4 (section 7)
 ```
 
 The result, verified on 0.166.0:
@@ -116,6 +121,11 @@ The result, verified on 0.166.0:
   MCP call not marked read-only ("MCP tool call requires approval"): without
   this line, `act` never runs (found by REF-4's real probe). The host still
   authorizes every call (section 6); no other tool source exists to approve.
+- Each bridge tool's `output_token_limit` keeps its result whole in the
+  model's history up to one result's budget (section 7). The limit is this
+  file's, not a model default's. A per-tool table with no `approval_mode`
+  still uses `default_tools_approval_mode`. Codex before 0.152.0 refuses the
+  per-tool key.
 
 ## 4. Running Codex
 
@@ -478,10 +488,36 @@ required keys and limits, checked by the runner), fails the job
 ### Limits
 
 Player text: 1 to 2,000 characters. Messages per reply: 8, each up to 4,000.
-The transcript is never truncated: `get_context` returns its first page and
-`get_transcript` the rest. The page size limits one tool result, not what the
-referee can read. A rebuilt session (section 10) has only this transcript, so it
-must be complete; the referee is told to read every page on a new session.
+
+**One tool result** is at most `RESULT_BYTES` (44 KiB) of `json.dumps` text,
+as the bridge sends it.
+
+- **Basis.** This is from Codex's own source at 0.166.0
+  (`codex-rs/core/src/context_manager/history.rs`,
+  `codex-rs/utils/output-truncation`, `codex-rs/models-manager/models.json`):
+  - Codex keeps a tool result in the model's history up to a token budget,
+    plus a 20% serialization allowance.
+  - It counts 4 bytes a token.
+  - It cuts the middle out of a longer result, keeping the head and tail.
+  - Every bundled model's default budget is 10,000 tokens, which is about
+    48,000 bytes with the allowance.
+  - The referee config sets each bridge tool's limit explicitly to
+    `RESULT_BYTES / 4` tokens (section 3), so the budget is a configured
+    fact. 44 KiB is also under the default, so an older referee folder,
+    with no per-tool limits, still keeps such a result whole.
+- **The transcript.** It is never truncated. `get_transcript` returns pages
+  of up to 200 messages or `TRANSCRIPT_PAGE_BYTES` (32 KiB), always at least
+  one message. `get_context` includes as much of the first page as fits in
+  one result after everything else, possibly none. Its `next_after_seq`
+  then says where `get_transcript` continues (0 to start from the
+  beginning), so nothing is lost.
+- **The rest of `get_context`** is never shortened. This covers the module's
+  context, the sheet, policy, requirements, choices, rulings, results and
+  requests. If those alone exceed the budget, `get_context` is refused with
+  `context_too_large`, rather than letting Codex cut the middle out of it.
+  The module must stay smaller (governance contract section 11).
+- **A rebuilt session** (section 10) has only this transcript, so it must be
+  complete. The referee is told to read every page on a new session.
 
 ## 8. Referee mode on the host
 

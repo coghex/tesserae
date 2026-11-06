@@ -11,6 +11,7 @@ import copy
 import fcntl
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -19,12 +20,22 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .bridge import TOOLS
+from .store import RESULT_BYTES
+
 DEFAULT_DIR = Path.home() / ".local" / "share" / "tesserae" / "referee"
 SESSION_MISSING = "no rollout found"  # what `codex exec resume` says (0.166.0)
 MAX_LINE = 1_000_000  # bytes of one JSONL event kept in diagnostics
 MAX_STDERR = 200_000
 DEFAULT_TIMEOUT = 300.0
 STOP_GRACE = 10.0
+# The oldest Codex with a per-tool output limit (`[mcp_servers.<server>.tools.
+# <tool>] output_token_limit`, 0.152.0); an older one refuses this config.
+MIN_CODEX = (0, 152, 0)
+# Each bridge tool's result is kept whole in the model's history up to this
+# many tokens (Codex counts 4 bytes a token, then allows 20% more), so a
+# result of RESULT_BYTES always fits (contract sections 3 and 7).
+TOOL_OUTPUT_TOKENS = RESULT_BYTES // 4
 
 # Every built-in tool that could run a command, read a file, browse, or start
 # another agent is off (contract section 3; verified on codex-cli 0.166.0).
@@ -132,6 +143,12 @@ def config_text(python: str = sys.executable) -> str:
         # read-only. The bridge's own tools are pre-approved: the host checks
         # each call's token and authority (tesserae/referee/tools.py).
         'default_tools_approval_mode = "approve"\n'
+        # Explicit, so the limit is this file's and not a model default's.
+        + "".join(
+            f"\n[mcp_servers.tesserae.tools.{tool['name']}]\n"
+            f"output_token_limit = {TOOL_OUTPUT_TOKENS}\n"
+            for tool in TOOLS
+        )
     )
 
 
@@ -211,10 +228,13 @@ def check(
     report = {
         "folder": str(folder.root),
         "codex_version": codex_version(codex),
+        "codex_supported": None,
         "config_current": config.is_file()
         and config.read_text() == config_text(python),
         "logged_in": False,
     }
+    if report["codex_version"] is not None:
+        report["codex_supported"] = supported(report["codex_version"])
     if folder.codex_home.is_dir() and report["codex_version"] is not None:
         try:
             status = subprocess.run(
@@ -225,6 +245,12 @@ def check(
             return report
         report["logged_in"] = status.returncode == 0
     return report
+
+
+def supported(version: str) -> bool:
+    """Whether `codex --version` output names MIN_CODEX or later."""
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
+    return match is not None and tuple(map(int, match.groups())) >= MIN_CODEX
 
 
 def codex_version(codex=("codex",)) -> str | None:

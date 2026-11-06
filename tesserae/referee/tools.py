@@ -36,7 +36,15 @@ from ..campaign_rules import CampaignRules, requirements, rules_message
 from ..host_requests import RECENT, HostRequests, proposal_message
 from ..protocol import PROTOCOL_VERSION
 from ..store import GameStore, ParticipantContext, Refusal
-from .store import REFEREE, Job, RefereeError, RefereeStore, Step
+from .store import (
+    REFEREE,
+    RESULT_BYTES,
+    TRANSCRIPT_PAGE_BYTES,
+    Job,
+    RefereeError,
+    RefereeStore,
+    Step,
+)
 
 MAX_REQUEST = 256 * 1024  # one request line from the bridge
 TOOL_ARGUMENTS = {
@@ -353,7 +361,6 @@ class BridgeTools:
         context = runtime.referee_context(state)
         if context is None:  # the minimal default: each participant's own view
             context = {"views": {pid: runtime.view(state, pid) for pid in names}}
-        page, next_after = referee.transcript(0)
         result = {
             "revision": store.revision(),
             "module": {"id": runtime.module.id, "version": runtime.module.version},
@@ -378,7 +385,7 @@ class BridgeTools:
                     job, None if by is None else by.sender
                 )
             ],
-            "transcript": {"messages": page, "next_after_seq": next_after},
+            "transcript": {"messages": [], "next_after_seq": None},
         }
         if job.mode is not None:
             result.update(_character_context(store, runtime, state, job))
@@ -393,7 +400,7 @@ class BridgeTools:
             result["pending_requests"] = [
                 r for r in requests.listing() if r["state"] == "pending"
             ]
-        return result
+        return _with_first_page(result, referee)
 
     def _get_view(self, store, referee, job, args) -> dict:
         participant_id = args["participant_id"]
@@ -512,6 +519,31 @@ def _actor(store: GameStore, job: Job) -> dict:
             "draft_revision": character.draft_revision,
         },
     }
+
+
+def _with_first_page(result: dict, referee: RefereeStore) -> dict:
+    """`get_context` with as much of the transcript's first page (up to
+    TRANSCRIPT_PAGE_BYTES) as fits in one tool result (RESULT_BYTES, referee
+    contract section 7), possibly none: `next_after_seq` says where `get_transcript` continues, so nothing
+    is lost. Everything else is never shortened: a module whose context
+    alone takes the result over the budget is refused, rather than letting
+    Codex cut the middle out of it."""
+    rest = len(json.dumps(result))
+    if rest > RESULT_BYTES:
+        raise ToolError(
+            "context_too_large",
+            f"This game's context is {rest} bytes, over the {RESULT_BYTES}-byte limit "
+            "for one tool result; the module must keep its context and sheets smaller "
+            "(governance contract section 11).",
+        )
+    room = min(TRANSCRIPT_PAGE_BYTES, RESULT_BYTES - rest)  # a page is still a page
+    page, next_after = referee.transcript(0, max_bytes=room, minimum=0)
+    while True:  # the page's own separators and next_after_seq count too
+        result["transcript"] = {"messages": page, "next_after_seq": next_after}
+        if len(json.dumps(result)) <= RESULT_BYTES or not page:
+            return result
+        page = page[:-1]
+        next_after = page[-1]["seq"] if page else 0
 
 
 def _character_context(store: GameStore, runtime, state: dict, job: Job) -> dict:

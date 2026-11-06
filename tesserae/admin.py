@@ -227,8 +227,14 @@ def _referee_folder(args) -> int:
         print(f"Log Codex in for the referee once, with: {folder.login_command()}")
         return 0
     report = runner.check(root)
+    oldest = ".".join(map(str, runner.MIN_CODEX))
+    too_old = (
+        f" (too old: {oldest} or later is needed)"
+        if report["codex_supported"] is False
+        else ""
+    )
     print(f"Referee folder: {report['folder']}")
-    print(f"Codex: {report['codex_version'] or 'not found'}")
+    print(f"Codex: {report['codex_version'] or 'not found'}{too_old}")
     print(
         f"Config current: {'yes' if report['config_current'] else 'no (run tesserae referee setup)'}"
     )
@@ -237,7 +243,9 @@ def _referee_folder(args) -> int:
     )
     return (
         0
-        if report["codex_version"] and report["config_current"] and report["logged_in"]
+        if report["codex_supported"]
+        and report["config_current"]
+        and report["logged_in"]
         else 1
     )
 

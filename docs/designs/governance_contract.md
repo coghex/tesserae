@@ -741,11 +741,22 @@ version 2's opaque module `state` and exposed through `referee_context`,
 importer: the referee transcript of an imported game starts empty, and
 imported records are never inserted as messages, jobs, commands or rolls.
 Budget: `get_context` returns the module's referee context in one unpaged
-tool result, and every commit rewrites the whole module state. A module keeps
-its referee-visible history within about the 32 KiB transcript page
-(`TRANSCRIPT_PAGE_BYTES`), measured as UTF-8 JSON together with the rest of
-`get_context`, using summaries that cite their records. A module that cannot
-fit must raise a scoped public paging requirement; this contract adds none.
+tool result, and every commit rewrites the whole module state.
+
+- **The limit.** Everything in `get_context` except the transcript's first
+  page must fit in one tool result, `RESULT_BYTES` (44 KiB of the bridge's
+  `json.dumps` text; referee contract section 7, where its basis in Codex's
+  own limits is recorded). That includes the module's context, the job's
+  sheet, policy and guidance, requirements, choices, rulings, results and
+  requests. The first page takes only what room is left, and the rest of the
+  transcript stays reachable.
+- **Over the limit.** A larger context is refused (`context_too_large`),
+  never cut.
+- **Headroom.** A module should leave room for some of the transcript: keep
+  its referee-visible history to summaries that cite their records, well
+  within the limit.
+- **Paging.** A module that cannot fit must raise a scoped public paging
+  requirement; this contract adds none.
 
 ## 12. Storage
 
