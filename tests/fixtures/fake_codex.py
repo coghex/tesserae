@@ -13,7 +13,7 @@ from pathlib import Path
 
 argv = sys.argv[1:]
 if argv == ["--version"]:
-    print("codex-cli 0.0.0-fake")
+    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.0.0-fake"))
     sys.exit(0)
 if argv[:2] == ["login", "status"]:
     sys.exit(0 if (Path(os.environ["CODEX_HOME"]) / "auth.json").exists() else 1)

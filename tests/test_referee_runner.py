@@ -98,6 +98,18 @@ class SetupTests(RunnerCase):
         )
         # Only the bridge's tools are pre-approved; the host authorizes each call.
         self.assertEqual(bridge["default_tools_approval_mode"], "approve")
+        # Every bridge tool's result is kept whole up to one result's budget
+        # (Codex counts 4 bytes a token; #160), whatever the model's default.
+        from tesserae.referee.bridge import TOOLS
+        from tesserae.referee.store import RESULT_BYTES
+
+        self.assertEqual(
+            {
+                name: tool["output_token_limit"]
+                for name, tool in bridge["tools"].items()
+            },
+            {tool["name"]: RESULT_BYTES // 4 for tool in TOOLS},
+        )
         self.assertIn(
             "Do not start other agents",
             (self.folder.codex_home / "AGENTS.md").read_text(),
@@ -122,8 +134,8 @@ class SetupTests(RunnerCase):
 
     def test_check_reports_version_config_and_login(self):
         report = runner.check(self.folder.root, codex=CODEX)
-        self.assertEqual((report["codex_version"], report["config_current"], report["logged_in"]),
-                         ("codex-cli 0.0.0-fake", True, False))  # fmt: skip
+        self.assertEqual((report["codex_version"], report["codex_supported"], report["config_current"],
+                          report["logged_in"]), ("codex-cli 0.0.0-fake", False, True, False))  # fmt: skip
         (self.folder.codex_home / "auth.json").write_text("{}")  # the login step, faked
         (self.folder.codex_home / "config.toml").write_text("# edited\n")
         report = runner.check(self.folder.root, codex=CODEX)
@@ -133,6 +145,14 @@ class SetupTests(RunnerCase):
         )  # rerunning setup restores the config, keeps the login
         self.assertTrue(runner.check(self.folder.root, codex=CODEX)["config_current"])
         self.assertTrue((self.folder.codex_home / "auth.json").exists())
+
+    def test_a_codex_older_than_the_per_tool_limit_is_reported(self):
+        # Codex before 0.152.0 refuses the config's per-tool output limits.
+        for version, supported in (("codex-cli 0.151.9", False), ("codex-cli 0.152.0", True),
+                                   ("codex-cli 0.166.0", True)):  # fmt: skip
+            with mock.patch.dict(os.environ, {"FAKE_CODEX_VERSION": version}):
+                report = runner.check(self.folder.root, codex=CODEX)
+            self.assertEqual(report["codex_supported"], supported, version)
 
 
 class RunTests(RunnerCase):
@@ -572,6 +592,12 @@ class CommandLineTests(unittest.TestCase):
         check = run("check")
         self.assertIn("codex-cli 0.0.0-fake", check.stdout)
         self.assertIn("Config current: yes", check.stdout)
+        environment["FAKE_CODEX_VERSION"] = "codex-cli 0.151.0"
+        check = run("check")
+        self.assertIn(
+            "codex-cli 0.151.0 (too old: 0.152.0 or later is needed)", check.stdout
+        )
+        self.assertEqual(check.returncode, 1)
 
     def test_check_without_codex_installed(self):
         directory = tempfile.TemporaryDirectory()
