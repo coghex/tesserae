@@ -15,6 +15,7 @@ import json
 import secrets
 from datetime import datetime, timezone
 
+from . import overrides
 from . import policy as policies
 from .campaign_rules import CampaignRules, mutation
 from .modules import ArgumentError
@@ -74,8 +75,12 @@ class HostRequests:
                     "An exception is for one of the sender's own characters; this "
                     "job has none to default to.",
                 )
+            target = {"kind": "character", "id": character_id}
+            refusal = overrides.legacy_draft_refusal(self.store, target)
+            if refusal is not None:
+                raise refusal
             self._settings_problems(runtime, payload, character_id)
-            return {"kind": kind, "target": {"kind": "character", "id": character_id},
+            return {"kind": kind, "target": target,
                     "payload": payload, "explanation": explanation}  # fmt: skip
         # An operation: exactly one of the module's host operations.
         if not isinstance(payload, dict) or set(payload) != {"command", "args"}:
@@ -97,6 +102,9 @@ class HostRequests:
                 "invalid_request",
                 "The target must be exactly what the operation changes.",
             )
+        refusal = overrides.legacy_draft_refusal(self.store, target)
+        if refusal is not None:
+            raise refusal
         try:
             self.store.target_digest(target)
         except ArgumentError as error:
@@ -176,7 +184,14 @@ class HostRequests:
         content = {"proposal_id": proposal_id, "decision": decision, "note": note}
 
         def apply(db):
+            if self.store.runtime().creation_overrides is not None:
+                overrides.adopt(self.store)  # never approve a legacy draft request
             row = self._row(proposal_id)
+            if row is not None and row["kind"] == overrides.KIND:
+                raise Refusal(
+                    "invalid_request",
+                    "That request is negotiated: use override_decide.",
+                )
             if row is None or row["state"] in ("cancelled", "superseded", "stale"):
                 raise _unavailable()
             if row["state"] != "pending":
@@ -219,6 +234,15 @@ class HostRequests:
         def apply(db):
             row = self._row(proposal_id)
             if (
+                row is not None
+                and row["kind"] == overrides.KIND
+                and row["requester_participant"] == participant_id
+                and row["state"] in overrides.OPEN_STATES
+            ):
+                found = overrides.Overrides(self.store)
+                found.cancel(participant_id, found._request_row(proposal_id))
+                return {"proposal_id": proposal_id, "state": "cancelled"}
+            if (
                 row is None
                 or row["requester_participant"] != participant_id
                 or row["state"] != "pending"
@@ -239,9 +263,12 @@ class HostRequests:
     def listing(self, participant_id: str | None = None, *, recent=None) -> list[dict]:
         """Every proposal (the host's view), or one requester's own; with
         `recent`, pending ones and only that many decided ones, newest last."""
-        where, parameters = "", ()
+        # Negotiated requests have their own paged reads (creation overrides
+        # contract section 10), so this listing keeps its legacy content.
+        where, parameters = f"WHERE kind <> '{overrides.KIND}'", ()
         if participant_id is not None:
-            where, parameters = "WHERE requester_participant = ?", (participant_id,)
+            where += " AND requester_participant = ?"
+            parameters = (participant_id,)
         ids = [row[0] for row in self.store.query(
             f"SELECT proposal_id, state FROM host_requests {where} "
             "ORDER BY created_at, rowid", parameters)]  # fmt: skip

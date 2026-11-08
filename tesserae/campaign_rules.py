@@ -218,6 +218,10 @@ class CampaignRules:
             "activated_by = ? WHERE revision = ?",
             (_now(), by.player_id, revision),
         )
+        # A draft whose effective settings changed re-checks its open offer
+        # (creation overrides contract section 7); policy alone never stales.
+        for character_id in bumped:
+            self.store.recheck_offers(character_id)
         return bumped
 
     def reject(

@@ -14,15 +14,21 @@ from tesserae.store import GameStore
 
 try:  # tests/ is on sys.path under `unittest discover -s tests`
     from test_campaign_host import CampaignHost
+    from test_characters import use_legacy_trailhead
     from test_lobby_characters import answer, say
     from test_lobby_host import message
 except ImportError:  # running as `python -m unittest tests.test_...`
     from tests.test_campaign_host import CampaignHost
+    from tests.test_characters import use_legacy_trailhead
     from tests.test_lobby_characters import answer, say
     from tests.test_lobby_host import message
 
 
 class RequestCase(CampaignHost):
+    def setUp(self):
+        use_legacy_trailhead(self)  # its requests are legacy draft requests
+        super().setUp()
+
     def scripted(self, *calls, then):
         """A job that runs bridge calls with this lobby's host authority and
         proposal notices, then replies."""

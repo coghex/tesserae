@@ -31,12 +31,15 @@ from .campaign_rules import CampaignRules, rules_message
 from .external import load_module_dir
 from .host_requests import HostRequests, proposal_message, requests_message
 from .modules import ModuleError
+from .overrides import Overrides, Viewer
+from .overrides import message as override_message
 from .protocol import (
     JOIN_TIMEOUT_SECONDS,
     CharacterRequest,
     HostRequest,
     JoinRequest,
     MessagesRequest,
+    OverrideRequest,
     ProposalRequest,
     ProtocolError,
     RefereeStatusRequest,
@@ -402,6 +405,27 @@ class CampaignService:
                 self._publish(revision)
         return reply
 
+    async def _overrides(self, session: "_Session", request: OverrideRequest) -> dict:
+        """A creation override message (creation overrides contract section
+        10), inside the registry guard; its proposal notices go out when
+        its transaction commits, and an application publishes its revision."""
+        try:
+            found = await self._call(
+                _override, session.context, request, session=session, role=True,
+                host=True, campaign_host=True,
+            )  # fmt: skip
+        except Exception:
+            logger.exception("Could not answer a creation override message")
+            return self._failure(request.request_id)
+        if found is None:
+            return session_error("session_revoked")
+        if found is _NOT_HOST:
+            return _not_host(request.request_id)
+        reply, revision = found
+        if revision is not None:
+            self._publish(revision)
+        return reply
+
     async def _snapshot(self, session: "_Session") -> dict | None:
         """The recipient's snapshot, or None if revoked: the one place that
         decides what a joined participant may see.
@@ -424,7 +448,7 @@ class CampaignService:
         )
         if found is None:
             return None
-        current, view, referee, lost, role, policy_revision = found
+        current, view, referee, lost, role, policy_revision, categories = found
         session.role = role  # what this connection is told, sent under its lock
         if lost:  # the selection is no longer the caller's: back in setup
             session.character_id = None
@@ -442,6 +466,7 @@ class CampaignService:
             sheet,
             role,
             policy_revision,
+            categories,
         )
 
     async def _actor(self, session: "_Session", *, keep_lost: bool = True):
@@ -535,6 +560,8 @@ class CampaignService:
             return await self._rules(session, parsed)
         elif isinstance(parsed, ProposalRequest):
             return await self._proposals(session, parsed)
+        elif isinstance(parsed, OverrideRequest):
+            return await self._overrides(session, parsed)
         elif isinstance(parsed, CharacterRequest) and self.characters:
             return await self._character(session, parsed)
         elif isinstance(parsed, CharacterRequest) or (
@@ -1091,6 +1118,7 @@ class CampaignService:
         session: "_Session | None" = None,
         role: bool = False,
         host: bool = False,
+        campaign_host: bool = False,
     ):
         """`method(store, *args)` on a worker thread, with a fresh store.
 
@@ -1101,12 +1129,16 @@ class CampaignService:
         given `role=`: the session's campaign role read by that guard ("host",
         "guest", or None with no campaign host, as on a single-game host).
         With `host`, it is also given `host=`: the campaign host's
-        (host_id, player_id) when that role is "host", else None.
+        (host_id, player_id) when that role is "host", else None. With
+        `campaign_host`, it is given `campaign_host=`: the campaign's host
+        player now, whoever the session is (None with none).
         """
         guard = None if session is None else session.guard
         extra = {"role": None} if role else {}
         if host:
             extra["host"] = None
+        if campaign_host:
+            extra["campaign_host"] = None
 
         def work():
             if guard is None:
@@ -1121,6 +1153,8 @@ class CampaignService:
                     extra["role"] = checked.role
                 if host and checked.role == "host":
                     extra["host"] = checked.host_player
+                if campaign_host:
+                    extra["campaign_host"] = getattr(checked, "campaign_host", None)
                 return self._in_store(method, args, session, extra), checked.role
 
         loop = asyncio.get_running_loop()
@@ -1145,10 +1179,17 @@ class CampaignService:
 
     def _open(self) -> GameStore:
         if self._existing:
-            return GameStore.open_existing(
+            store = GameStore.open_existing(
                 self.database, randint=self._randint, runtime=self._runtime
             )
-        return GameStore(self.database, randint=self._randint, runtime=self._runtime)
+        else:
+            store = GameStore(
+                self.database, randint=self._randint, runtime=self._runtime
+            )
+        # Proposals a committed transaction changed get their notice
+        # (creation overrides contract section 7).
+        store.on_proposal = self.proposal_changed
+        return store
 
 
 class GameHost(CampaignService):
@@ -1574,7 +1615,10 @@ def _snapshot_parts(store: GameStore, context, character_id, characters: bool,
         policy_revision = None
         if store.runtime().settings is not None:
             policy_revision = store.policy_revision()
-        return current, view, referee, lost, role, policy_revision
+        categories = None
+        if store.runtime().creation_overrides is not None:
+            categories = Overrides(store).categories()
+        return current, view, referee, lost, role, policy_revision, categories
 
 
 def _session_role(store: GameStore, context, *, role):
@@ -1681,6 +1725,100 @@ def _rules_read(store: GameStore, context, request, *, role):
             return rules_message(rules.document(request.revision))
         except Refusal as refusal:
             return refusal.message(None, None)
+
+
+_OVERRIDE_READS = frozenset({
+    "override_categories", "override_discover", "override_preview",
+    "override_requests", "override_detail", "override_offers", "override_offer",
+    "override_history", "override_record",
+})  # fmt: skip
+_OVERRIDE_HOST = frozenset({"override_decide", "override_withdraw", "override_apply"})
+
+
+def _override(store: GameStore, context, request, *, role, host, campaign_host):
+    """One creation override message for this session: (reply, a revision
+    to publish or None); None if its access has gone; _NOT_HOST for a host
+    message from anyone else."""
+    kind, f, request_id = request.kind, request.fields, request.request_id
+    viewer = Viewer(context.participant_id, role == "host", campaign_host)
+    overrides = Overrides(store)
+    try:
+        if kind in _OVERRIDE_READS:
+            with store.snapshot():
+                if store.session_revision(context) is None:
+                    return None
+                return override_message(
+                    kind, _override_read(overrides, viewer, kind, f)
+                ), None
+        if kind in _OVERRIDE_HOST and role != "host":
+            return None if store.session_revision(context) is None else _NOT_HOST
+
+        def check():
+            if store.session_revision(context) is None:
+                raise _Revoked
+
+        by = None if host is None else Decider(host[1], host[0])
+        if kind == "override_request":
+            result, _ = overrides.request(
+                viewer, request_id, f["character_id"], f["intent"], f["explanation"],
+                f["revises"], check=check,
+            )  # fmt: skip
+            return proposal_message(result, request_id), None
+        if kind == "override_decide":
+            result, _ = overrides.decide(
+                by, viewer, request_id, f["proposal_id"], f["decision"],
+                f["preview_digest"], f["intent"], f["note"], check=check,
+            )  # fmt: skip
+            return proposal_message(result, request_id), None
+        if kind == "override_withdraw":
+            result, _ = overrides.withdraw(
+                by, viewer, request_id, f["offer_id"], f["note"], check=check
+            )
+            return proposal_message(result, request_id), None
+        if kind == "override_respond":
+            result, applied = overrides.respond(
+                viewer, request_id, f["offer_id"], f["response"],
+                f["preview_digest"], f["note"], check=check,
+            )  # fmt: skip
+            revision = result.get("revision") if applied else None
+            return proposal_message(result, request_id), revision
+        result, applied = overrides.apply_direct(
+            by, request_id, f["character_id"], f["intent"], f["preview_digest"],
+            f["reason"], check=check,
+        )  # fmt: skip
+        return (
+            override_message("override_applied", result, request_id),
+            result["revision"] if applied else None,
+        )
+    except _Revoked:
+        return None
+    except Refusal as refusal:
+        return refusal.message(request_id, None), None
+
+
+def _override_read(overrides: Overrides, viewer, kind: str, f: dict) -> dict:
+    if kind == "override_categories":
+        return {"categories": overrides.categories()}
+    if kind == "override_discover":
+        return overrides.discover(viewer, f["character_id"], f["query"])
+    if kind == "override_preview":
+        return overrides.preview(viewer, f["character_id"], f["intent"])
+    if kind == "override_requests":
+        page = overrides.requests(
+            viewer, f["character_id"], f["states"] or "all", f["after"]
+        )
+        return {"items": page["items"], "next": page["next"]}
+    if kind == "override_detail":
+        return overrides.detail(viewer, f["proposal_id"])
+    if kind == "override_offers":
+        page = overrides.offers(viewer, f["proposal_id"], f["after"])
+        return {k: page[k] for k in ("proposal_id", "items", "next")}
+    if kind == "override_offer":
+        return overrides.offer(viewer, f["offer_id"])
+    if kind == "override_history":
+        page = overrides.history(viewer, f["character_id"], f["after"])
+        return {k: page[k] for k in ("character_id", "items", "next")}
+    return overrides.record(viewer, f["record_id"])
 
 
 class _Revoked(Exception):

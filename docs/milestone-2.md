@@ -157,8 +157,13 @@ the implementation slices follow. OVR-2
 ([#174](https://github.com/coghex/tesserae/issues/174)) adds the optional
 module capability, rules document version 2's category policy and two
 original Trailhead families ([modules](modules.md#creation-overrides),
-[Trailhead](trailhead.md#creation-overrides)). The negotiation's records,
-messages, referee tools and client controls follow in OVR-3 to OVR-6.
+[Trailhead](trailhead.md#creation-overrides)). OVR-3
+([#175](https://github.com/coghex/tesserae/issues/175)) adds the negotiation
+itself: campaign schema 10's requests, offers and application records, every
+step from request to acceptance or direct override, staleness, completion's
+expiry of allowances, and the private, paged client messages
+([game store](game_store.md#storage)). The referee's tools and the client
+controls follow in OVR-4 to OVR-6.
 
 ## Later browser work
 

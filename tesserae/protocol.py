@@ -62,6 +62,14 @@ ERROR_CODES = frozenset(
         "invalid_document",
         "proposal_unavailable",
         "proposal_decided",
+        # Negotiated creation overrides (creation overrides contract section 10).
+        "override_unsupported",
+        "override_blocked",
+        "override_required",
+        "invalid_intent",
+        "stale_preview",
+        "offer_unavailable",
+        "offer_stale",
     }
 )
 # One fixed message per session error, so failures never vary with the
@@ -142,6 +150,42 @@ _PROPOSAL_FIELDS = {
     ),
     "request_cancel": frozenset({"version", "type", "request_id", "proposal_id"}),
 }
+
+
+# Negotiated creation overrides (creation overrides contract section 10):
+# each type's required fields, then its optional ones (absent reads null).
+_OVERRIDE_FIELDS = {
+    "override_categories": (frozenset(), frozenset()),
+    "override_discover": (frozenset({"character_id", "query"}), frozenset()),
+    "override_preview": (frozenset({"character_id", "intent"}), frozenset()),
+    "override_request": (
+        frozenset({"request_id", "character_id", "intent", "explanation"}),
+        frozenset({"revises"}),
+    ),
+    "override_decide": (
+        frozenset({"request_id", "proposal_id", "decision"}),
+        frozenset({"preview_digest", "intent", "note"}),
+    ),
+    "override_withdraw": (frozenset({"request_id", "offer_id", "note"}), frozenset()),
+    "override_respond": (
+        frozenset({"request_id", "offer_id", "response"}),
+        frozenset({"preview_digest", "note"}),
+    ),
+    "override_apply": (
+        frozenset({"request_id", "character_id", "intent", "preview_digest", "reason"}),
+        frozenset(),
+    ),
+    "override_requests": (frozenset(), frozenset({"character_id", "states", "after"})),
+    "override_detail": (frozenset({"proposal_id"}), frozenset()),
+    "override_offers": (frozenset({"proposal_id"}), frozenset({"after"})),
+    "override_offer": (frozenset({"offer_id"}), frozenset()),
+    "override_history": (frozenset({"character_id"}), frozenset({"after"})),
+    "override_record": (frozenset({"record_id"}), frozenset()),
+}
+OVERRIDE_TYPES = frozenset(_OVERRIDE_FIELDS)
+_OVERRIDE_IDS = ("character_id", "proposal_id", "offer_id", "record_id", "revises")
+_OVERRIDE_TEXTS = ("explanation", "note", "reason", "preview_digest", "decision",
+                   "response", "states", "after")  # fmt: skip
 
 
 class ProtocolError(ValueError):
@@ -260,6 +304,18 @@ class ProposalRequest:
 
 
 @dataclass(frozen=True)
+class OverrideRequest:
+    """A creation override message (creation overrides contract section
+    10): its type, its request ID if it has one, and its fields (an absent
+    optional one None). Shapes only: who may, and what the values mean,
+    are the host's and the module's to judge."""
+
+    kind: str
+    request_id: str | None = None
+    fields: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class RefereeStatusRequest:
     """A read of the caller's referee projection."""
 
@@ -352,6 +408,8 @@ def parse_client_message(text: str | bytes, runtime: Runtime = DICE_RUNTIME):
         return _parse_rules(kind, data)
     if isinstance(kind, str) and kind in _PROPOSAL_FIELDS:
         return _parse_proposal(kind, data)
+    if isinstance(kind, str) and kind in _OVERRIDE_FIELDS:
+        return _parse_override(kind, data)
     if kind == "messages":
         _check_fields(data, _MESSAGES_FIELDS, "A messages request")
         if not is_valid_revision(data["after_seq"]):
@@ -600,6 +658,49 @@ def _parse_proposal(kind: str, data: dict) -> ProposalRequest:
     )
 
 
+def _parse_override(kind: str, data: dict) -> OverrideRequest:
+    request_id = data.get("request_id")
+    request_id = request_id if is_valid_request_id(request_id) else None
+    required, optional = _OVERRIDE_FIELDS[kind]
+    try:
+        present = frozenset(name for name in optional if name in data)
+        _check_fields(
+            data, {"version", "type"} | required | present, f"A {kind} request"
+        )
+        if "request_id" in required and request_id is None:
+            raise ProtocolError(
+                "invalid_request",
+                f"'request_id' must be a string of 1 to {MAX_REQUEST_ID_LENGTH} "
+                "characters without whitespace.",
+            )
+        fields = {
+            name: data.get(name) for name in (required | optional) - {"request_id"}
+        }
+        for name in _OVERRIDE_IDS:
+            value = fields.get(name)
+            if value is not None and not is_valid_identifier(value):
+                raise ProtocolError("invalid_request", f"'{name}' must be an ID.")
+            if name in required and value is None:
+                raise ProtocolError("invalid_request", f"'{name}' must be an ID.")
+        for name in _OVERRIDE_TEXTS:
+            value = fields.get(name)
+            if value is not None and not isinstance(value, str):
+                raise ProtocolError("invalid_request", f"'{name}' must be text.")
+        for name in ("intent", "query"):
+            if (
+                name in fields
+                and fields[name] is not None
+                and not isinstance(fields[name], dict)
+            ):
+                raise ProtocolError("invalid_request", f"'{name}' must be an object.")
+            if name in required and not isinstance(fields[name], dict):
+                raise ProtocolError("invalid_request", f"'{name}' must be an object.")
+    except ProtocolError as error:
+        error.request_id = request_id
+        raise
+    return OverrideRequest(kind, request_id, fields)
+
+
 def _check_fields(data: dict, fields: frozenset, subject: str):
     """Exactly these fields, at protocol version 1."""
     missing = sorted(fields - data.keys())
@@ -811,6 +912,7 @@ def snapshot_message(
     sheet: dict | None = None,
     role: str | None = None,
     policy_revision: int | None = None,
+    override_categories: list | None = None,
 ) -> dict:
     """The recipient's view: the reply to a join or a sync.
 
@@ -864,6 +966,8 @@ def snapshot_message(
     if policy_revision is not None:
         _check_revision(policy_revision)
         message["policy_revision"] = policy_revision
+    if override_categories is not None:  # creation overrides section 10
+        message["override_categories"] = override_categories
     return message
 
 

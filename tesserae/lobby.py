@@ -507,6 +507,7 @@ class _Guard:
         self.lost_error = None
         self.role = None
         self.host_player = None  # (host_id, player_id) while the role is host
+        self.campaign_host = None  # the campaign's host player, whoever asks
 
     def __enter__(self) -> bool:
         self._registry = HostRegistry(self._path)
@@ -516,6 +517,7 @@ class _Guard:
             )
             record = self._authorized.__enter__()
             host = record["host_player_id"]
+            self.campaign_host = host
             if host is not None:
                 self.role = "host" if host == self._context.player_id else "guest"
             if self.role == "host":
