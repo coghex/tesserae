@@ -20,8 +20,10 @@ from tesserae.store import GameStore
 
 try:  # tests/ is on sys.path under `unittest discover -s tests`
     from test_browser_characters import MARA, CharacterCase, reply
+    from test_characters import use_legacy_trailhead
 except ImportError:  # running as `python -m unittest tests.test_...`
     from tests.test_browser_characters import MARA, CharacterCase, reply
+    from tests.test_characters import use_legacy_trailhead
 
 try:
     from playwright.sync_api import expect
@@ -35,6 +37,7 @@ class GovernanceCase(CharacterCase):
     bonus of N for the job's character."""
 
     def setUp(self):
+        use_legacy_trailhead(self)  # its requests are legacy draft requests
         super().setUp()
         with HostRegistry(self.registry_path) as registry:
             registry.set_host(self.campaign, self.players["bob"])

@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tesserae import store as store_module
-from tesserae.builtin import CATALOG, DICE_PROVIDER
+from tesserae.builtin import CATALOG, DICE_MODULE, DICE_PROVIDER
 from tesserae.credentials import new_token
 from tesserae.modules import (
     ActionRejected,
@@ -24,11 +24,29 @@ from tesserae.modules import (
     Outcome,
     SeedError,
 )
+from tesserae.relay import RELAY_MODULE
 from tesserae.seed import parse_seed
 from tesserae.store import SCHEMA_VERSION, Actor, GameStore
 from tesserae.trailhead import TRAILHEAD_MODULE
 
 TRAILHEAD = CATALOG.resolve("trailhead")
+# Trailhead as it was before negotiated creation overrides, with the same
+# binding: legacy draft requests are its to decide (creation overrides
+# contract section 6). Tests of those requests run on it, with its catalog
+# patched in as the store's (`patch("tesserae.store.CATALOG", ...)`).
+LEGACY_TRAILHEAD_MODULE = replace(TRAILHEAD_MODULE, creation_overrides=None)
+LEGACY_CATALOG = Catalog(
+    [DICE_MODULE, RELAY_MODULE, LEGACY_TRAILHEAD_MODULE], [DICE_PROVIDER]
+)
+LEGACY_TRAILHEAD = LEGACY_CATALOG.resolve("trailhead")
+
+
+def use_legacy_trailhead(case: unittest.TestCase):
+    """For the rest of `case`: every store resolves Trailhead without
+    creation overrides, as games did before (section 6's legacy requests)."""
+    case.enterContext(patch("tesserae.store.CATALOG", LEGACY_CATALOG))
+
+
 ALICE_ID = "p_a1a1a1a1a1a1a1a1"
 BOB_ID = "p_b2b2b2b2b2b2b2b2"
 MARA = "c_0123456789abcdef"
@@ -41,9 +59,28 @@ def command(request_id: str, name: str, args: dict, revision: int) -> str:
     })  # fmt: skip
 
 
+def as_schema_9(path):
+    """Turn a current store back into schema 9: no override offers or
+    records, and host requests without their schema 10 columns. The wider
+    kinds of steps and audit rows need no undoing (only new kinds use them)."""
+    create = store_module._MIGRATIONS[9][0].replace(
+        "CREATE TABLE host_requests", "CREATE TABLE host_requests_9", 1
+    )
+    columns = ", ".join(store_module._COLUMNS[9]["host_requests"])
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executescript(
+            "DROP TABLE override_offers; DROP TABLE override_records;"
+            f"{create};"
+            f"INSERT INTO host_requests_9 SELECT {columns} FROM host_requests;"
+            "DROP TABLE host_requests;"
+            "ALTER TABLE host_requests_9 RENAME TO host_requests;"
+            "PRAGMA user_version = 9;"
+        )
+
+
 def as_schema_8(path):
-    """Turn a current store back into schema 8: no host requests. The
-    referee steps' wider kinds need no undoing (only new kinds use them)."""
+    """Turn a current store back into schema 8: no host requests."""
+    as_schema_9(path)
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript("DROP TABLE host_requests; PRAGMA user_version = 8;")
 

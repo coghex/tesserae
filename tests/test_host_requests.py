@@ -22,10 +22,14 @@ from tesserae.referee.tools import NotCampaignHost
 from tesserae.store import SCHEMA_VERSION, Actor, Decider, GameStore, Refusal
 
 try:  # tests/ is on sys.path under `unittest discover -s tests`
-    from test_characters import as_schema_8
+    from test_characters import LEGACY_TRAILHEAD, as_schema_8, use_legacy_trailhead
     from test_referee_characters import TRAILHEAD, Table, reply
 except ImportError:  # running as `python -m unittest tests.test_...`
-    from tests.test_characters import as_schema_8
+    from tests.test_characters import (
+        LEGACY_TRAILHEAD,
+        as_schema_8,
+        use_legacy_trailhead,
+    )
     from tests.test_referee_characters import TRAILHEAD, Table, reply
 
 HOST = Decider("u_0123456789abcdef", str(uuid.uuid4()))
@@ -42,7 +46,12 @@ class Requests(Table):
     """Bob is the campaign host, while `self.host_player` says so; the
     stand-in authority is checked at every host tool call, like the lobby's."""
 
+    # Legacy draft requests: Trailhead as it was before creation overrides.
+    RUNTIME = LEGACY_TRAILHEAD
+
     def setUp(self):
+        if self.RUNTIME is LEGACY_TRAILHEAD:
+            use_legacy_trailhead(self)
         super().setUp()
         self.host_player = self.bob.participant_id
         self.authority_calls = 0
@@ -203,32 +212,6 @@ class LifecycleTests(Requests):
         )
         self.assertEqual(self.store.active_document()[1]["settings"], {})
 
-    def test_an_approval_keeps_the_active_documents_category_policy(self):
-        """A legacy approval that writes a new revision keeps the active
-        document's version (creation overrides contract section 4)."""
-        rules = CampaignRules(self.store)
-        imported, _ = rules.import_document(
-            {"document_version": 2, "module": {"id": "trailhead", "version": "1",
-             "state_version": 1}, "settings": {}, "exceptions": [], "guidance": None,
-             "overrides": {"categories": {"supplies": "blocked"}}},
-            HOST,
-        )  # fmt: skip
-        rules.activate(imported["revision"], 0, HOST)
-        ash = self.creating()
-        job, token = self.start(self.alice, Actor(ash, "creation"))
-        setting = self.propose(token, step_id="s-1", kind="campaign_setting", scope="campaign",
-                               target=None, payload={"starting_stamina_bonus": 1},
-                               explanation="Everyone is fit.")  # fmt: skip
-        self.answer(job, ("sender", "Asked."))
-        result, _ = self.decide(setting["proposal_id"])
-        self.assertEqual(result["state"], "approved")
-        revision, document = self.store.active_document()
-        self.assertEqual(revision, 2)
-        self.assertEqual(
-            (document["document_version"], document["overrides"], document["settings"]),
-            (2, {"categories": {"supplies": "blocked"}}, {"starting_stamina_bonus": 1}),
-        )
-
     def test_an_approved_operation_runs_exactly_once_as_the_host(self):
         wren = self.ready(name="Wren")
         job, token = self.start(self.alice, Actor(wren, "play"), "Fix my stamina?")
@@ -313,7 +296,7 @@ class LifecycleTests(Requests):
         proposal = self.propose(token, **exception_args())
         self.answer(job, ("sender", "Asked."))
         self.store.close()
-        self.store = GameStore(self.path, randint=self.randint, runtime=TRAILHEAD)
+        self.store = GameStore(self.path, randint=self.randint, runtime=self.RUNTIME)
         self.addCleanup(self.store.close)
         self.referee = RefereeStore(self.store)
         mine = HostRequests(self.store).listing(self.alice.participant_id)
@@ -575,3 +558,33 @@ class ReviewRegressionTests(Requests):
         job, token = self.start(self.alice, Actor(wren, "play"), "Again.", private=True)
         [result] = self.ok(token, "get_context")["earlier_results"]
         self.assertEqual((result["step_id"], result["kind"]), ("p-1", "propose"))
+
+
+class AdoptingTests(Requests):
+    RUNTIME = TRAILHEAD
+
+    def test_an_approval_keeps_the_active_documents_category_policy(self):
+        """A legacy approval that writes a new revision keeps the active
+        document's version (creation overrides contract section 4)."""
+        rules = CampaignRules(self.store)
+        imported, _ = rules.import_document(
+            {"document_version": 2, "module": {"id": "trailhead", "version": "1",
+             "state_version": 1}, "settings": {}, "exceptions": [], "guidance": None,
+             "overrides": {"categories": {"supplies": "blocked"}}},
+            HOST,
+        )  # fmt: skip
+        rules.activate(imported["revision"], 0, HOST)
+        ash = self.creating()
+        job, token = self.start(self.alice, Actor(ash, "creation"))
+        setting = self.propose(token, step_id="s-1", kind="campaign_setting", scope="campaign",
+                               target=None, payload={"starting_stamina_bonus": 1},
+                               explanation="Everyone is fit.")  # fmt: skip
+        self.answer(job, ("sender", "Asked."))
+        result, _ = self.decide(setting["proposal_id"])
+        self.assertEqual(result["state"], "approved")
+        revision, document = self.store.active_document()
+        self.assertEqual(revision, 2)
+        self.assertEqual(
+            (document["document_version"], document["overrides"], document["settings"]),
+            (2, {"categories": {"supplies": "blocked"}}, {"starting_stamina_bonus": 1}),
+        )

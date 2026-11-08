@@ -24,12 +24,14 @@ from .builtin import CATALOG, DICE_RUNTIME
 from .credentials import token_digest
 from .modules import (
     NAME_STEP,
+    RECEIPT_BYTES,
     ActionRejected,
     ArgumentError,
     ModuleError,
     ProviderChoice,
     Runtime,
     check_character_name,
+    result_bytes,
 )
 from .protocol import (
     PROTOCOL_VERSION,
@@ -43,7 +45,7 @@ from .protocol import (
 )
 
 APPLICATION_ID = 0x54455353  # "TESS" in SQLite's header application_id field
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DEFAULT_BUSY_TIMEOUT = 5.0
 PARTICIPANT_ID_PREFIX = "p_"
 _PARTICIPANT_ID = re.compile(r"p_[0-9a-f]{16}")
@@ -144,6 +146,25 @@ _COLUMNS[9] = {
         "requester_player", "target", "kind", "payload", "explanation",
         "policy_revision", "target_revision", "target_digest", "state",
         "created_at", "decided_by", "decided_at", "decision_note", "effect",
+    ],
+}  # fmt: skip
+
+_COLUMNS[10] = {
+    **_COLUMNS[9],
+    "host_requests": [
+        *_COLUMNS[9]["host_requests"], "revises", "preview", "preview_digest",
+        "stale_reason", "origin", "module",
+    ],
+    "override_offers": [
+        "offer_id", "proposal_id", "offer_revision", "origin", "intent", "preview",
+        "preview_digest", "module", "host_player_id", "note", "draft_revision",
+        "state", "created_at", "closed_at", "closed_by", "close_note", "stale_reason",
+    ],
+    "override_records": [
+        "record_id", "character_id", "kind", "proposal_id", "offer_id",
+        "host_player_id", "requester_participant", "intent", "preview",
+        "preview_digest", "receipt", "reason", "revision", "draft_revision",
+        "created_at",
     ],
 }  # fmt: skip
 
@@ -438,6 +459,132 @@ _MIGRATIONS = {
         "DROP TABLE referee_steps",
         "ALTER TABLE referee_steps_9 RENAME TO referee_steps",
     ],
+    # Negotiated creation overrides (OVR-3, #175); see
+    # docs/designs/creation_overrides_contract.md section 6. Three tables are
+    # rebuilt to widen their checks, every row copied as it was; two are new
+    # and empty.
+    10: [
+        """CREATE TABLE host_requests_10 (
+            proposal_id TEXT PRIMARY KEY,
+            job_id TEXT,
+            step_request_id TEXT UNIQUE,
+            requester_participant TEXT NOT NULL,
+            requester_player TEXT,
+            target TEXT,
+            kind TEXT NOT NULL CHECK (kind IN
+                ('exception', 'campaign_setting', 'operation', 'creation_override')),
+            payload TEXT NOT NULL,
+            explanation TEXT NOT NULL,
+            policy_revision INTEGER NOT NULL,
+            target_revision INTEGER,
+            target_digest TEXT,
+            state TEXT NOT NULL CHECK (
+                (kind <> 'creation_override' AND state IN
+                    ('pending', 'approved', 'denied', 'cancelled', 'superseded',
+                     'stale'))
+                OR (kind = 'creation_override' AND state IN
+                    ('pending_host', 'awaiting_player', 'applied', 'denied',
+                     'declined', 'withdrawn', 'cancelled', 'superseded', 'stale'))),
+            created_at TEXT NOT NULL,
+            decided_by TEXT,
+            decided_at TEXT,
+            decision_note TEXT,
+            effect TEXT,
+            revises TEXT REFERENCES host_requests (proposal_id),
+            preview TEXT,
+            preview_digest TEXT,
+            stale_reason TEXT,
+            origin TEXT CHECK (origin IS NULL OR origin IN ('referee', 'client')),
+            module TEXT
+        )""",
+        """INSERT INTO host_requests_10 (proposal_id, job_id, step_request_id,
+            requester_participant, requester_player, target, kind, payload,
+            explanation, policy_revision, target_revision, target_digest, state,
+            created_at, decided_by, decided_at, decision_note, effect)
+            SELECT proposal_id, job_id, step_request_id, requester_participant,
+            requester_player, target, kind, payload, explanation, policy_revision,
+            target_revision, target_digest, state, created_at, decided_by,
+            decided_at, decision_note, effect FROM host_requests ORDER BY rowid""",
+        "DROP TABLE host_requests",
+        "ALTER TABLE host_requests_10 RENAME TO host_requests",
+        """CREATE TABLE override_offers (
+            offer_id TEXT PRIMARY KEY,
+            proposal_id TEXT NOT NULL REFERENCES host_requests (proposal_id),
+            offer_revision INTEGER NOT NULL CHECK (offer_revision >= 1),
+            origin TEXT NOT NULL CHECK (origin IN ('offer', 'counteroffer')),
+            intent TEXT NOT NULL,
+            preview TEXT NOT NULL,
+            preview_digest TEXT NOT NULL,
+            module TEXT NOT NULL,
+            host_player_id TEXT NOT NULL,
+            note TEXT,
+            draft_revision INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'accepted', 'declined',
+                'withdrawn', 'cancelled', 'superseded', 'stale')),
+            created_at TEXT NOT NULL,
+            closed_at TEXT,
+            closed_by TEXT,
+            close_note TEXT,
+            stale_reason TEXT,
+            UNIQUE (proposal_id, offer_revision)
+        )""",
+        """CREATE UNIQUE INDEX one_open_offer ON override_offers (proposal_id)
+            WHERE state = 'open'""",
+        """CREATE TABLE override_records (
+            record_id TEXT PRIMARY KEY,
+            character_id TEXT NOT NULL REFERENCES characters (character_id),
+            kind TEXT NOT NULL CHECK (kind IN ('accepted_offer', 'direct', 'expiry')),
+            proposal_id TEXT,
+            offer_id TEXT,
+            host_player_id TEXT,
+            requester_participant TEXT,
+            intent TEXT,
+            preview TEXT,
+            preview_digest TEXT,
+            receipt TEXT NOT NULL,
+            reason TEXT,
+            revision INTEGER NOT NULL,
+            draft_revision INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE host_audit_10 (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('operation', 'import', 'activation',
+                'rejection', 'decision', 'override')),
+            host_id TEXT,
+            player_id TEXT NOT NULL,
+            via TEXT NOT NULL CHECK (via IN ('client', 'referee', 'operator')),
+            job_id TEXT,
+            target TEXT,
+            detail TEXT NOT NULL,
+            revision INTEGER,
+            created_at TEXT NOT NULL
+        )""",
+        "INSERT INTO host_audit_10 SELECT * FROM host_audit ORDER BY id",
+        "DROP TABLE host_audit",
+        "ALTER TABLE host_audit_10 RENAME TO host_audit",
+        """CREATE TABLE referee_steps_10 (
+            job_id TEXT NOT NULL REFERENCES referee_jobs (job_id),
+            step_id TEXT NOT NULL,
+            kind TEXT NOT NULL
+                CHECK (kind IN ('act', 'referee_act', 'propose', 'host', 'respond')),
+            context TEXT NOT NULL,
+            command TEXT NOT NULL,
+            args TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN ('intended', 'committed', 'refused', 'not_committed')),
+            result TEXT,
+            narrated INTEGER NOT NULL DEFAULT 0 CHECK (narrated IN (0, 1)),
+            character_id TEXT,
+            PRIMARY KEY (job_id, step_id)
+        )""",
+        """INSERT INTO referee_steps_10 SELECT job_id, step_id, kind, context, command,
+            args, request_id, status, result, narrated, character_id
+            FROM referee_steps ORDER BY rowid""",
+        "DROP TABLE referee_steps",
+        "ALTER TABLE referee_steps_10 RENAME TO referee_steps",
+    ],
 }
 
 
@@ -655,6 +802,10 @@ class GameStore:
     ):
         self._randint = randint
         self._runtime = None
+        # Called with each proposal ID a committed transaction changed
+        # (governance section 9's `proposal` notice); set by a serving host.
+        self.on_proposal = None
+        self._proposal_notices = []
         self._wanted_runtime = runtime
         self._load_runtime = load_runtime
         self._new_game = _new_game
@@ -675,9 +826,22 @@ class GameStore:
             self.game_id = self._connection.execute(
                 "SELECT game_id FROM game"
             ).fetchone()[0]
+            self._adopt_overrides()
         except BaseException:
             self._connection.close()
             raise
+
+    def _adopt_overrides(self):
+        """Opened with a module that negotiates creation overrides: legacy
+        pending requests on drafts are superseded, once (creation overrides
+        contract section 6). A read alone once none remain."""
+        if self._runtime is None or self._runtime.creation_overrides is None:
+            return
+        from . import overrides
+
+        if overrides.legacy_draft_requests(self):
+            with self._write():
+                overrides.adopt(self)
 
     @classmethod
     def create(cls, path, runtime: Runtime, *, seed=None, **options) -> "GameStore":
@@ -793,15 +957,18 @@ class GameStore:
                 return session_error("session_revoked"), False
             record = self._find(context.participant_id, request.request_id)
             current = self._current_revision()
-            if record is not None:
-                if record.content == content:
-                    return record.to_message(), False
+            if (record is not None and record.content != content) or (
+                record is None
+                and self.mutation_recorded(context.participant_id, request.request_id)
+            ):
                 return error_message(
                     "request_conflict",
                     "This request_id was already used for a different command.",
                     request_id=request.request_id,
                     revision=current,
                 ), False
+            if record is not None:
+                return record.to_message(), False
             if acting:
                 refusal = self._actor_refusal(
                     context, actor, runtime.is_step(request.command)
@@ -857,6 +1024,7 @@ class GameStore:
                         "UPDATE characters SET name = ? WHERE character_id = ?",
                         (request.args["name"], actor.character_id),
                     )
+                self.recheck_offers(actor.character_id)
         return record.to_message(), True
 
     def execute_host_command(
@@ -899,13 +1067,16 @@ class GameStore:
                     precondition()
                 current = self._current_revision()
                 record = self._find(by.sender, request.request_id)
-                if record is not None:
-                    if record.content == request.content():
-                        return record.to_message(), False
+                if (record is not None and record.content != request.content()) or (
+                    record is None
+                    and self.mutation_recorded(by.sender, request.request_id)
+                ):
                     raise Refusal(
                         "request_conflict",
                         "This request_id was already used for a different command.",
                     )
+                if record is not None:
+                    return record.to_message(), False
                 busy = self.busy_refusal(by.job_id)
                 if busy is not None:
                     raise busy
@@ -968,6 +1139,7 @@ class GameStore:
                 "WHERE character_id = ?",
                 (character_id,),
             )
+            self.recheck_offers(character_id)
         self.audit(
             by,
             "operation",
@@ -995,6 +1167,80 @@ class GameStore:
             f"The referee is still answering {name}. Try again when it finishes.",
             {"job": {"state": "running", "for": name}},
         )
+
+    # Companion stores' writes (tesserae.overrides), inside their transaction.
+
+    def query_write(self, sql: str, parameters: tuple = ()):
+        """One statement inside the caller's write transaction."""
+        if not self._connection.in_transaction:
+            raise RuntimeError("A write needs the caller's transaction.")
+        self._connection.execute(sql, parameters)
+
+    def notify_proposal(self, proposal_id: str):
+        """Send the `proposal` notice for this proposal once the caller's
+        transaction commits (none if it rolls back)."""
+        self._proposal_notices.append(proposal_id)
+
+    def mutation_recorded(self, sender: str, request_id: str) -> bool:
+        """Whether this sender's request ID is a host mutation's (its replay
+        record), so a command reusing it is a conflict: one namespace spans
+        both tables."""
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM host_mutations WHERE sender = ? AND request_id = ?",
+                (sender, request_id),
+            ).fetchone()
+            is not None
+        )
+
+    def recorded_command(self, sender: str, request_id: str) -> "CommandRecord | None":
+        """The command recorded under this sender and request ID, or None."""
+        return self._find(sender, request_id)
+
+    def record_command(
+        self, sender: str, request_id: str, content: dict, result: dict, state: dict
+    ) -> "CommandRecord":
+        """Inside the caller's write transaction: the new module state and one
+        command record at the next revision."""
+        record = CommandRecord(
+            revision=self._current_revision() + 1,
+            participant_id=sender,
+            request_id=request_id,
+            content=content,
+            result=result,
+        )
+        self._write_state(state)
+        self._insert_record(record)
+        self._advance_revision(record.revision)
+        return record
+
+    def bump_draft(self, character_id: str):
+        """One more draft revision, inside the caller's transaction."""
+        self._connection.execute(
+            "UPDATE characters SET draft_revision = draft_revision + 1 "
+            "WHERE character_id = ?",
+            (character_id,),
+        )
+
+    def acting_job(self, character_id: str, except_job: str | None = None) -> bool:
+        """Whether a running referee job other than `except_job` acts for it."""
+        row = self._connection.execute(
+            "SELECT j.job_id FROM referee_jobs AS j JOIN referee_inputs AS i "
+            "ON i.id = j.input_id WHERE j.state = 'running' AND i.character_id = ?",
+            (character_id,),
+        ).fetchone()
+        return row is not None and row[0] != except_job
+
+    def recheck_offers(self, character_id: str):
+        """Inside a transaction that changed a draft's module state or
+        effective settings: its open offer, if any, re-previewed (creation
+        overrides contract section 7's eager check)."""
+        runtime = self._loaded_runtime()
+        if runtime.creation_overrides is None:
+            return
+        from .overrides import Overrides
+
+        Overrides(self).recheck(character_id)
 
     def audit(self, by: Decider, kind: str, detail: dict, *, target=None):
         """One `host_audit` row, inside the caller's write transaction, at
@@ -1315,13 +1561,25 @@ class GameStore:
                     "That character is not finished yet.",
                     {"problems": problems},
                 )
+            expiring = runtime.override_allowances(state, character_id)
             state = runtime.complete_character(state, character_id, policy)
+            if runtime.override_allowances(state, character_id):
+                raise RuntimeError("Completion left creation allowances live.")
+            if result_bytes(expiring) > RECEIPT_BYTES:
+                raise RuntimeError("Expired allowances are over a receipt's bound.")
             self._connection.execute(
                 "UPDATE characters SET phase = 'ready', completed_at = ? "
                 "WHERE character_id = ?",
                 (now, character_id),
             )
             self._end_creation(character_id)
+            if runtime.creation_overrides is not None:
+                from .overrides import Overrides
+
+                Overrides(self).completed(
+                    character_id, expiring, self._current_revision() + 1,
+                    character.draft_revision,
+                )  # fmt: skip
             return state, {"character": self._character(character_id).summary()}
 
         content = _lifecycle_content(
@@ -1361,6 +1619,10 @@ class GameStore:
             self._end_creation(character_id)
             # Requests about it end with it (governance contract section 9).
             self.cancel_requests(
+                "target = ?",
+                (policies.canonical({"kind": "character", "id": character_id}),),
+            )
+            self._cancel_overrides(
                 "target = ?",
                 (policies.canonical({"kind": "character", "id": character_id}),),
             )
@@ -1434,13 +1696,16 @@ class GameStore:
                     return session_error("session_revoked"), False
                 current = self._current_revision()
                 record = self._find(context.participant_id, request_id)
-                if record is not None:
-                    if record.content == content:
-                        return record.to_message(), False
+                if (record is not None and record.content != content) or (
+                    record is None
+                    and self.mutation_recorded(context.participant_id, request_id)
+                ):
                     raise Refusal(
                         "request_conflict",
                         "This request_id was already used for a different command.",
                     )
+                if record is not None:
+                    return record.to_message(), False
                 try:
                     state, result = apply(runtime, self._state(), _now())
                 except ActionRejected as rejection:
@@ -1654,7 +1919,20 @@ class GameStore:
             )
             # The requester's pending requests end with its link (section 9).
             self.cancel_requests("requester_participant = ?", (link[1],))
+            self._cancel_overrides("requester_participant = ?", (link[1],))
             return True
+
+    def _cancel_overrides(self, where: str, parameters: tuple):
+        """Open creation override requests, and their open offers,
+        `cancelled` (creation overrides contract section 7)."""
+        if self._connection.execute(
+            "SELECT 1 FROM host_requests WHERE kind = 'creation_override' AND state "
+            f"IN ('pending_host', 'awaiting_player') AND {where} LIMIT 1",
+            parameters,
+        ).fetchone():
+            from .overrides import Overrides
+
+            Overrides(self).cancel_open(where, parameters)
 
     def cancel_requests(self, where: str, parameters: tuple) -> list[str]:
         """Inside the caller's write transaction: make the matching pending
@@ -1885,9 +2163,14 @@ class GameStore:
             yield
             self._connection.execute("COMMIT")
         except BaseException:
+            self._proposal_notices.clear()
             if self._connection.in_transaction:
                 self._connection.execute("ROLLBACK")
             raise
+        notices, self._proposal_notices = self._proposal_notices, []
+        if self.on_proposal is not None:
+            for proposal_id in dict.fromkeys(notices):
+                self.on_proposal(proposal_id)
 
     def _current_revision(self) -> int:
         return self._connection.execute("SELECT revision FROM game").fetchone()[0]

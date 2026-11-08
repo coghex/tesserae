@@ -14,6 +14,7 @@ import threading
 import unittest
 from pathlib import Path
 
+from test_characters import use_legacy_trailhead
 from test_client_characters import ALICE, MARA, TRAILHEAD, reply, seed
 from test_referee_host import TIMEOUT, Client
 
@@ -109,6 +110,7 @@ class GovernanceClientTests(unittest.TestCase):
     Bob, who has no character; Alice, a guest, has Mara."""
 
     def setUp(self):
+        use_legacy_trailhead(self)  # its requests are legacy draft requests
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.registry_path = self.root / "host.sqlite3"
         self.trail = self.root / "trail.sqlite3"

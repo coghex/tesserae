@@ -60,7 +60,13 @@ on the referee tables and each pending choice kept as its participant's own
 `campaign_documents`, `host_mutations` and `host_audit` tables, and to
 version 9 the empty `host_requests` table, with the referee steps table
 rebuilt to allow proposal and host steps, every row copied (governance
-contract section 12). The game ID, revision, every command and its result,
+contract section 12), and to version 10 the empty `override_offers` and
+`override_records` tables, with `host_requests`, `host_audit` and the
+referee steps rebuilt to widen their checks and `host_requests` given six
+columns, every row copied ([creation overrides
+contract](designs/creation_overrides_contract.md#6-records) section 6).
+Opening a game whose module negotiates creation overrides also supersedes
+its legacy pending requests on drafts, once. The game ID, revision, every command and its result,
 participants, credentials, and the `local-development` attribution of
 earlier history are untouched. A store
 whose schema is newer than this Tesserae understands is refused unchanged, with
@@ -389,7 +395,7 @@ lookups and the module's synchronous rules.
 ## Storage
 
 SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
-"TESS"). The schema version is SQLite's `user_version`, currently 9.
+"TESS"). The schema version is SQLite's `user_version`, currently 10.
 
 | Table | Since | Contents |
 |---|---|---|
@@ -404,7 +410,9 @@ SQLite's header `application_id` identifies a Tesserae store (`0x54455353`,
 | `characters` | 7 | `character_id`, owning `participant_id`, `name`, `phase`, `draft_revision`, and when it was created, completed, introduced and archived; empty in a game without characters |
 | `campaign_documents` | 8 | Each settings document `revision`: canonical `content`, its `sha256`, `origin`, `state` (`candidate`, `active`, `superseded` or `rejected`; at most one `active`), when it was created and activated, and by whom ([governance contract](designs/governance_contract.md#5-the-campaign-settings-document)) |
 | `host_mutations` | 8 | Each campaign host mutation's replay record: `sender` (`host:<player_id>`), `request_id`, `kind`, canonical `content` and recorded `result` |
-| `host_requests` | 9 | Each guest request for a host decision: its `proposal_id`, proposing job and step, requester, target, `kind`, exact `payload`, `explanation`, the policy revision, draft revision and target digest it was made against, `state`, and its decision ([governance contract](designs/governance_contract.md#9-guest-requests-and-host-decisions)) |
+| `host_requests` | 9 | Each guest request for a host decision: its `proposal_id`, proposing job and step, requester, target, `kind`, exact `payload`, `explanation`, the policy revision, draft revision and target digest it was made against, `state`, and its decision ([governance contract](designs/governance_contract.md#9-guest-requests-and-host-decisions)). Version 10 adds kind `creation_override`, with its own states, and each such request's `revises`, stored `preview` and its digest, `stale_reason`, `origin` and `module` ([creation overrides contract](designs/creation_overrides_contract.md#6-records)) |
+| `override_offers` | 10 | Each offer revision of a negotiated request: its intent, the preview the host reviewed and its digest, the module, the offering host, note, draft revision, `state` (at most one `open` per request) and how it closed |
+| `override_records` | 10 | Each application to a draft: an accepted offer, a direct override, or the expiry of unused allowances at completion, with its intent, preview, the module's receipt, the reason, and the game and draft revisions it committed at |
 | `host_audit` | 8 | One row per host mutation: its `kind`, the deciding `host_id` and `player_id` (`operator` and no host for the local operator), `via`, an optional job and target, a `detail` JSON, the game revision then, and when |
 
 The `commands` table is the history. It is not an event-sourcing log, and

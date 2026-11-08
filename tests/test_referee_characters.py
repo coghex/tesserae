@@ -42,12 +42,14 @@ class Table(unittest.TestCase):
     """A Trailhead game in referee mode: Alice and Bob, the referee store,
     and bridge tools for each job."""
 
+    RUNTIME = TRAILHEAD
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "trail.sqlite3"
         self.roll = 3
-        self.store = GameStore.create(self.path, TRAILHEAD, randint=self.randint)
+        self.store = GameStore.create(self.path, self.RUNTIME, randint=self.randint)
         self.addCleanup(self.store.close)
         self.tokens = {"alice": new_token(), "bob": new_token()}
         for name, token in self.tokens.items():
@@ -63,7 +65,7 @@ class Table(unittest.TestCase):
         return self.roll
 
     def open(self):
-        return GameStore(self.path, randint=self.randint, runtime=TRAILHEAD)
+        return GameStore(self.path, randint=self.randint, runtime=self.RUNTIME)
 
     def rid(self) -> str:
         return f"r-{next(self.requests)}"

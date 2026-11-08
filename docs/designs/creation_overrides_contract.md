@@ -9,7 +9,10 @@ module capability, category request policy, the negotiation's records and
 states, requester acceptance, direct host application, the messages, bridge
 tools and client controls that carry them, their bounds, and the upgrade of
 existing games. OVR-2 ([#174](https://github.com/coghex/tesserae/issues/174))
-implements sections 3 and 4 and section 14's module; the rest is not
+implements sections 3 and 4 and section 14's module; OVR-3
+([#175](https://github.com/coghex/tesserae/issues/175)) sections 5 to 10
+(`tesserae/overrides.py`, schema 10 and the client messages). The referee's
+tools and context (section 11) and the clients (section 12) are not
 implemented yet.
 
 It extends the [governance contract](governance_contract.md), the
@@ -355,7 +358,7 @@ Campaign schema version 10, applied in one transaction when a store is
 first opened:
 
 - **`host_requests` is rebuilt**, every row copied unchanged, to widen two
-  checks and add five columns:
+  checks and add six columns:
 
   ```sql
   kind TEXT NOT NULL CHECK (kind IN ('exception', 'campaign_setting', 'operation', 'creation_override')),
@@ -367,8 +370,13 @@ first opened:
   preview TEXT,            -- creation_override: the preview when requested (canonical JSON)
   preview_digest TEXT,
   stale_reason TEXT,       -- section 7
-  origin TEXT CHECK (origin IS NULL OR origin IN ('referee', 'client'))
+  origin TEXT CHECK (origin IS NULL OR origin IN ('referee', 'client')),
+  module TEXT              -- creation_override: the binding and capability version
+                           -- its preview was made under (as an offer's `module`)
   ```
+
+  OVR-3 added `module`, a sixth column, so `override_detail` can tell
+  `module_changed` for a request that has no offer yet (section 10).
 
   `job_id` and `step_request_id` become nullable: a request made from a
   client has neither. Its retry identity is in `host_mutations`.
