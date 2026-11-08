@@ -773,7 +773,7 @@ preview's headline, so it can never hold an effect in part.
 | Offer summary | `offer_id`, `offer_revision`, `origin`, `state`, `current`, `stale_reason`, `headline`, `preview_digest`, `note`, `created_at`, `closed_at`, `cut` | `headline` 240, `note` 240 | 1,024 |
 | Record summary | `record_id`, `character_id`, `kind`, `proposal_id`, `offer_id`, `revision`, `draft_revision`, `created_at`, `headline`, `cut` | `headline` 240 | 1,024 |
 | Context entry (section 11) | `proposal_id`, `character_id`, `requester` (participant ID), `state`, `categories` (first 2) and `categories_more`, `explanation`, `offer {offer_id, offer_revision, origin, state, current, stale_reason, headline, preview_digest, cut}`, `cut` | `explanation` 120, `headline` 120 | 1,024 |
-| `override_detail` | `request`: the summary's fields with every category, the whole `explanation` and `decision_note`, `intent`, the current `preview` and its `preview_digest`, `offer_count`; `offer`: the open or last offer's summary | | 45,056 |
+| `override_detail` | `request`: the summary's fields with every category, the whole `explanation` and `decision_note`, `intent`, the stored `preview` and its `preview_digest`, `offer_count`, and `current` (below); `offer`: the open or last offer's summary | `current.problems`: whole problems, each excerpted to 300, up to 2,048 in all | 45,056 |
 | `override_offer` | The offer summary's fields with the whole `note`, `close_note`, `host_player_id`, `draft_revision`, `intent` and `preview` | | 45,056 |
 | `override_record` | The record summary's fields with `reason`, `intent`, `preview`, `preview_digest` and `receipt` (an expiry's receipt is its expired allowances, held to the same 8,192 bytes) | | 45,056 |
 
@@ -793,7 +793,7 @@ part at its limit:
 | Offer summary | 856 | 1,024 |
 | Record summary | 524 | 1,024 |
 | Context entry | 794 (+ about 40 for `requester`) | 1,024 |
-| `override_detail` | 26,997 | 45,056 |
+| `override_detail` (with a full current preview *and* full problems, which cannot occur together) | 41,513 | 45,056 |
 | `override_offer` | 25,366 | 45,056 |
 | `override_record` | 29,320 | 45,056 |
 | A 32,768-byte page of summaries | 32,241 | 45,056 |
@@ -820,7 +820,37 @@ the real serialization.
   (`character_id`) or only open (`pending_host`, `awaiting_player`) or
   terminal ones. With it, a fresh session can find every request and every
   verdict without knowing an ID.
-- **`override_detail`** is one request in full. **`override_offers`** pages
+- **History never needs the intent to work.** Every read returns what was
+  stored: the request's stored preview (as last previewed when it was
+  requested, or when it returned to `pending_host`), each offer's preview as
+  the host reviewed it, and each record's preview and receipt. A read never
+  calls `apply` and never fails because an intent no longer previews, its
+  draft was completed or archived, or the module changed.
+- **`override_detail`** is one request in full. Its `request.current` reports
+  separately what the intent would do now:
+
+  ```json
+  "current": {"status": "same" | "changed" | "invalid" | "not_checked",
+              "reason": null | "target_not_draft" | "module_changed",
+              "preview": null or the current preview, "preview_digest": null or its digest,
+              "problems": null or ["…"], "problems_more": 0}
+  ```
+
+  - It is previewed only while the target is still a draft and the module's
+    binding and capability version equal the request's. Otherwise `status`
+    is `not_checked` with that `reason`, and nothing of the module runs.
+  - `same` and `changed` carry the current preview and its digest. `changed`
+    means it differs from the stored one.
+  - `invalid` carries the module's `IntentError` problems instead, and a null
+    preview. A preview hook that fails in any other way is also `invalid`,
+    with the problem "The module could not preview this intent." (logged),
+    and the read still succeeds.
+  - `problems` holds whole problems, each excerpted to 300 result bytes, up
+    to 2,048 in all. `problems_more` counts those left out. The full list is
+    a diagnostic, not an authoritative effect, and `override_preview`
+    returns it again for a draft.
+  - The stored preview stays the record of what was asked or offered; the
+    current one is only information for a revision. **`override_offers`** pages
   its offer revisions and **`override_offer`** is one in full, so an offer
   that was never accepted stays retrievable. **`override_history`** pages a
   draft's application records (accepted offers, direct overrides and
@@ -838,6 +868,10 @@ the real serialization.
   - The campaign host sees every request, offer and record.
   - A former host sees only its own, as a guest. Nothing here is pushed to
     anyone; the `proposal` notice carries only an ID and a state.
+  - A completed or archived target hides nothing from those who may see it:
+    the requester and the host still read its requests, offers and records,
+    and the owner and the host page its history by `character_id`. Archiving
+    changes what a character can do, not who may read its past.
 
 New errors (`request_conflict`, `referee_busy`, `character_busy`,
 `character_unavailable`, `not_campaign_host`, `proposal_unavailable` and
@@ -1133,7 +1167,16 @@ class, level or role is assumed.
   - paging to the end lists every request once, terminal ones included,
     while new requests arrive;
   - every view of section 10 at its worst case (12-byte characters, every
-    part at its limit), measured with the bridge's own serialization.
+    part at its limit), measured with the bridge's own serialization;
+  - a request made stale by `intent_invalid` (a creation step removes a
+    prerequisite): `override_detail` returns its stored preview with
+    `current.status` `invalid` and its problems, and its offers and the
+    request stay readable;
+  - a completed target and an archived target: their requests, offers and
+    records stay readable to the requester or owner and the host, with
+    `current.status` `not_checked` and no module hook called;
+  - a preview hook that raises unexpectedly during a read: the read still
+    succeeds, with `invalid`.
 - **OVR-4 (#176):**
   - the scripted conversation through the real runner and bridge: request,
     waiting while another player plays, a counteroffer narrated as not
@@ -1144,6 +1187,9 @@ class, level or role is assumed.
   - a fresh session, with more open requests than the context lists and
     several terminal verdicts, finding every one through
     `override_requests` and narrating each verdict from `override_offer`;
+  - that fresh session explaining a request whose intent no longer previews
+    from its stored preview and current problems, without claiming it can
+    still be accepted;
   - the `overrides` block at its worst case in a composed `get_context`.
 - **OVR-5 and OVR-6 (#177, #178):**
   - the commands and controls against the real backend;
