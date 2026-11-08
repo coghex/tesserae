@@ -162,7 +162,7 @@ and `after` (the module's own opaque cursor). It returns
 - Like `CharacterRules.actions`, discovery is guidance, never a validator:
   only `preview` decides.
 
-A page is at most 50 items and 16 KiB of canonical JSON. A larger page is a
+A page is at most 50 items and 16,384 result bytes (section 10). A larger page is a
 module failure (`internal_error`, logged), never cut.
 
 **`preview(state, character_id, intent, policy)`** is pure and
@@ -208,13 +208,15 @@ player-safe problems, refused as `invalid_intent` (section 10).
   in the state must not change the preview. This is what makes an unrelated
   creation step leave an offer valid. A whole-draft digest is not a
   dependency declaration.
-- A preview is at most 12 KiB of canonical JSON. A larger one is refused as
+- A preview is at most 12,288 result bytes (section 10), and its `headline`
+  at most 600. A larger one is refused as
   `invalid_intent` ("too many changes at once; split the request"), never cut.
 
 **`apply(OverrideAction)`** performs exactly `plan` on the draft and returns
 an `Outcome`.
 - Its `state` replaces the module state.
-- Its `result` is the module's receipt (at most 8 KiB): what was applied,
+- Its `result` is the module's receipt (at most 8,192 result bytes; a
+  larger one is a module failure, nothing changed): what was applied,
   with the original values it preserved.
 - It is deterministic: `Action.operations` is empty, so nothing rolls.
 - It may refuse with `ActionRejected` or `IntentError`, and nothing changes.
@@ -664,8 +666,9 @@ referee must never present a direct override as awaiting anyone.
    about to expire.
 2. `complete` as now. The module's duty 4 drops live allowances and
    creation-only waivers.
-3. `allowances` of the completed state must be empty for that character.
-   Anything else is a module failure: `internal_error`, nothing changed.
+3. `allowances` of the completed state must be empty for that character,
+   and step 1's list must fit a receipt (8,192 result bytes). Anything else
+   is a module failure: `internal_error`, nothing changed.
 4. If step 1 listed any, an `override_records` row (`expiry`) whose receipt
    is that list.
 5. Section 7's completion rule for the draft's requests.
@@ -733,37 +736,108 @@ changes. Each reply follows the existing pairing rules.
 | `override_withdraw` | `request_id`, `offer_id`, `note` | Host | `proposal {proposal_id, state, offer_id, request_id}` |
 | `override_respond` | `request_id`, `offer_id`, `response` (`accept`, `decline`), `preview_digest` (accept), `note` (decline, optional) | Owner | `proposal {proposal_id, state, offer_id, request_id, record_id?, revision?}` |
 | `override_apply` | `request_id`, `character_id`, `intent`, `preview_digest`, `reason` | Host | `override_applied {character_id, record_id, revision, draft_revision, request_id}` |
-| `override_detail` | `proposal_id`, `offer_id` (optional) | Requester; host | `override_detail` (below) |
-| `override_history` | `character_id`, `after` (optional) | Owner; host | `override_history {records, next_after}` |
+| `override_requests` | `character_id` (optional), `states` (`open`, `terminal` or `all`; default `all`), `after` (optional) | Owner; host | `override_requests {items, next}`: request summaries |
+| `override_detail` | `proposal_id` | Requester; host | `override_detail {request, offer}` |
+| `override_offers` | `proposal_id`, `after` (optional) | Requester; host | `override_offers {proposal_id, items, next}`: offer summaries |
+| `override_offer` | `offer_id` | Requester; host | `override_offer {offer}` |
+| `override_history` | `character_id`, `after` (optional) | Owner; host | `override_history {character_id, items, next}`: record summaries |
+| `override_record` | `record_id` | Owner; host | `override_record {record}` |
 
 - `intent` is exactly `{"changes": [...]}`, 1 to 16 changes, each exactly
-  `{"quality_id", "action_id", "parameters"}`, at most 4 KiB as canonical
-  JSON.
-- `explanation`, `note` and `reason` are 1 to 1,000 characters where
-  required. Notes are optional for an offer and a decline, and required for
-  a counteroffer, a denial and a withdrawal.
-- **`requests`** (governance section 7) lists `creation_override` requests
-  in compact form: `{proposal_id, kind, target, state, explanation,
-  categories, revises, created_at, decided_at, decision_note, stale_reason,
-  offer}`.
-  - `offer` is null or `{offer_id, offer_revision, origin, state, headline,
-    preview_digest, current, note}`.
-  - An entry is at most 2 KiB. Its effects are not in the listing; they are
-    in `override_detail`.
-- **`override_detail`** returns `{request: {..., intent, preview,
-  preview_digest}, offers: [compact offers in revision order], offer: the
-  named offer, or the open or last one, with its full intent and preview,
-  records: [records of this request]}`. Its bound comes from its parts: two
-  previews of at most 12 KiB plus compact entries. It never exceeds 44 KiB,
-  because a request keeps at most its 16 most recent offers in the compact
-  list, with `more_offers: N`.
-- **`override_history`** lists the draft's records, newest last, in pages of
-  up to 20 records or 32 KiB. Each record's `receipt` and `preview` are
-  included whole.
-- **Privacy.** A guest sees only its own drafts' requests, offers and
-  records. The host sees every one. Nothing here is pushed to anyone else.
-  A former host gets `not_campaign_host` for host-only reads, and only its
-  own drafts' entries as a guest.
+  `{"quality_id", "action_id", "parameters"}`, of at most 4,096 result bytes
+  (below).
+- `explanation`, `note` and `reason` are 1 to 1,000 characters and at most
+  4,096 result bytes; a longer one is `invalid_request` ("shorten it"). Notes
+  are optional for an offer and a decline, and required for a counteroffer,
+  a denial and a withdrawal.
+
+### Result sizes
+
+Every size this contract introduces is in **result bytes**: the length of
+`json.dumps(value)` with Python's defaults, exactly as the bridge sends a
+tool result (referee contract section 7). That escapes every non-ASCII
+character, so one character can be up to 12 bytes; a bound in characters
+alone is not a bound. Client replies use the same views, so the same
+bounds hold on the WebSocket.
+
+**Excerpts.** A summary carries a text field as an excerpt: the longest
+prefix, in whole characters, of at most a stated number of result bytes. A
+summary names every shortened field in its `cut` list. The full value is
+always in the matching detail read, so nothing authoritative is lost. A
+summary carries no intent, preview or receipt, only their digests and the
+preview's headline, so it can never hold an effect in part.
+
+| View | Fields | Excerpts | Bound |
+|---|---|---|---|
+| Request summary | `proposal_id`, `target`, `requester {participant_id, name}`, `state`, `revises`, `categories` (the first 4 of the intent's, sorted) and `categories_more`, `explanation`, `decision_note`, `stale_reason`, `created_at`, `decided_at`, `record_id` (once applied), `offer` (the open or last offer, in the context entry's offer form), `cut` | `name` 120, `explanation` 240, `decision_note` 240 | 2,048 |
+| Offer summary | `offer_id`, `offer_revision`, `origin`, `state`, `current`, `stale_reason`, `headline`, `preview_digest`, `note`, `created_at`, `closed_at`, `cut` | `headline` 240, `note` 240 | 1,024 |
+| Record summary | `record_id`, `character_id`, `kind`, `proposal_id`, `offer_id`, `revision`, `draft_revision`, `created_at`, `headline`, `cut` | `headline` 240 | 1,024 |
+| Context entry (section 11) | `proposal_id`, `character_id`, `requester` (participant ID), `state`, `categories` (first 2) and `categories_more`, `explanation`, `offer {offer_id, offer_revision, origin, state, current, stale_reason, headline, preview_digest, cut}`, `cut` | `explanation` 120, `headline` 120 | 1,024 |
+| `override_detail` | `request`: the summary's fields with every category, the whole `explanation` and `decision_note`, `intent`, the current `preview` and its `preview_digest`, `offer_count`; `offer`: the open or last offer's summary | | 45,056 |
+| `override_offer` | The offer summary's fields with the whole `note`, `close_note`, `host_player_id`, `draft_revision`, `intent` and `preview` | | 45,056 |
+| `override_record` | The record summary's fields with `reason`, `intent`, `preview`, `preview_digest` and `receipt` (an expiry's receipt is its expired allowances, held to the same 8,192 bytes) | | 45,056 |
+
+The parts are bounded separately:
+- text fields 4,096 bytes;
+- intent 4,096;
+- preview 12,288 (section 3);
+- receipt 8,192 (section 3);
+- participant names 100 characters.
+
+Measured worst cases, with every text made of 12-byte characters and every
+part at its limit:
+
+| View | Measured | Bound |
+|---|---|---|
+| Request summary | 1,692 | 2,048 |
+| Offer summary | 856 | 1,024 |
+| Record summary | 524 | 1,024 |
+| Context entry | 794 (+ about 40 for `requester`) | 1,024 |
+| `override_detail` | 26,997 | 45,056 |
+| `override_offer` | 25,366 | 45,056 |
+| `override_record` | 29,320 | 45,056 |
+| A 32,768-byte page of summaries | 32,241 | 45,056 |
+| The context's `overrides` block | 8,109 | 10,240 |
+
+The implementation must build every view under these rules and check its
+size. A view over its bound is a host failure (`internal_error`, logged),
+never a cut reply. OVR-3 and OVR-4 test each view at its worst case through
+the real serialization.
+
+### Reads
+
+- **Pages.** `override_requests`, `override_offers` and `override_history`
+  return up to 20 summaries, and at most 32,768 result bytes for the whole
+  reply, always at least one item when any remain. `next` is an opaque
+  cursor (null at the end) for the next call's `after`.
+  - Requests are ordered by creation, oldest first. New requests therefore
+    join the end, and paging to the end lists every request once.
+  - Offers are ordered by revision. Every revision is listed, including
+    superseded, stale, withdrawn, declined and cancelled ones.
+  - Records are ordered newest last.
+- **`override_requests`** lists every `creation_override` request the
+  caller may see, terminal ones included, optionally only one draft's
+  (`character_id`) or only open (`pending_host`, `awaiting_player`) or
+  terminal ones. With it, a fresh session can find every request and every
+  verdict without knowing an ID.
+- **`override_detail`** is one request in full. **`override_offers`** pages
+  its offer revisions and **`override_offer`** is one in full, so an offer
+  that was never accepted stays retrievable. **`override_history`** pages a
+  draft's application records (accepted offers, direct overrides and
+  expiries) and **`override_record`** is one in full. Records exist only for
+  applications. Unaccepted offers are found through `override_offers`, not
+  history.
+- **`requests`** (governance section 7) and the snapshot's referee
+  projection leave `creation_override` requests out. They have their own
+  paged read, so `requests` keeps its legacy content and size.
+- **Privacy.** These reads run under the guard like every governance read.
+  - A guest sees only requests it made, their offers, and the records of its
+    own drafts. A request, offer or record of anyone else is
+    `proposal_unavailable`, `offer_unavailable` or `character_unavailable`,
+    with one code for unknown and foreign alike.
+  - The campaign host sees every request, offer and record.
+  - A former host sees only its own, as a guest. Nothing here is pushed to
+    anyone; the `proposal` notice carries only an ID and a state.
 
 New errors (`request_conflict`, `referee_busy`, `character_busy`,
 `character_unavailable`, `not_campaign_host`, `proposal_unavailable` and
@@ -779,37 +853,47 @@ New errors (`request_conflict`, `referee_busy`, `character_busy`,
 | `offer_unavailable` | An unknown or foreign offer, or one that is not `open` | |
 | `offer_stale` | An acceptance that found the offer stale | `proposal_id`, `state`, `stale_reason` |
 
-The snapshot of an adopting campaign gains `override_categories`. Its
-referee projection's `requests` uses the compact form above.
+The snapshot of an adopting campaign gains `override_categories`.
 
 ## 11. The referee
 
 **Context.** In an adopting game, `get_context` adds one `overrides` block.
-Other kinds keep their places in `requests` and `pending_requests`; a
+Legacy kinds keep their places in `requests` and `pending_requests`; a
 `creation_override` request never appears there.
 
 ```json
 "overrides": {
   "categories": [{"category_id": "endurance", "policy": "approval_required"}],
-  "mine": [ "...compact requests of the sender's drafts that are not terminal, newest first..." ],
+  "mine": ["...the sender's open requests (pending_host, awaiting_player), newest first..."],
   "mine_more": 0,
-  "pending_host": [ "...in a host job: compact requests pending_host, oldest first..." ],
+  "recent": ["...the sender's terminal requests, most recently decided first..."],
+  "recent_more": 0,
+  "pending_host": ["...in a host job: requests pending_host, oldest first..."],
   "pending_host_more": 0
 }
 ```
 
-- `mine` and `pending_host` list at most 4 entries each. Each entry is the
-  compact form of section 10, at most 1 KiB here (the explanation is shown
-  up to 300 characters). `…_more` counts the rest.
-- Decided outcomes reach the referee through `override_detail` and
-  `override_history`, not the context.
-- The block is therefore at most 1.5 KiB for categories plus 8 KiB for
-  entries, and adds nothing in a game with no requests.
+- `mine` lists at most 3 entries and `recent` at most 2. `pending_host`
+  appears only in a host job and lists at most 3. Each entry is the context
+  entry of section 10, at most 1,024 result bytes. Each `…_more` counts the
+  rest of its kind.
+- The block is at most 10,240 result bytes: 8,109 measured at its worst,
+  with 16 categories. It is absent in a game whose module lacks the
+  capability.
 - It counts in "everything but the transcript" (governance section 11), so
-  an adopting module must leave 10 KiB of that budget free in its worst
-  case. OVR-7/8 measure the private module against this.
-- Nothing is cut silently. The counts say what is not listed, and the tools
-  below read it.
+  an adopting module must leave 10,240 bytes of that budget free in its
+  worst case. OVR-7/8 measure the private module against this.
+- **Nothing is cut silently.** Every request is reachable:
+  - the counts say how many are not listed;
+  - `override_requests` pages them all, terminal verdicts included;
+  - every entry names its IDs for `override_detail`, `override_offers`,
+    `override_offer` and `override_record`.
+- **Fresh sessions.** A rebuilt session has only the transcript (referee
+  contract section 10). The prompt of every job in an adopting game says:
+  when a `…_more` count is not zero, or on a new session, page
+  `override_requests` before telling a player about their requests. Read the
+  exact offer (`override_offer`) before narrating its effects or acting on
+  it.
 
 **Tools**, all journaled where they mutate (referee contract section 6;
 governance section 10):
@@ -818,14 +902,21 @@ governance section 10):
 |---|---|---|---|
 | `override_discover` | A job of the draft's owner; a host job | `character_id` (default the job's draft), `query` | Section 3's discovery |
 | `override_preview` | As above | `character_id`, `intent` | A preview and its digest |
-| `override_detail` | A job of the requester; a host job | `proposal_id`, `offer_id` | Section 10 |
-| `override_history` | A job of the draft's owner; a host job | `character_id`, `after` | Section 10 |
+| `override_requests` | A job of a requester; a host job | `character_id`, `states`, `after` | Section 10's paged requests, terminal ones included |
+| `override_detail` | A job of the requester; a host job | `proposal_id` | One request in full |
+| `override_offers` | A job of the requester; a host job | `proposal_id`, `after` | Section 10's paged offer revisions |
+| `override_offer` | A job of the requester; a host job | `offer_id` | One offer in full |
+| `override_history` | A job of the draft's owner; a host job | `character_id`, `after` | Section 10's paged application records |
+| `override_record` | A job of the draft's owner; a host job | `record_id` | One record in full |
 | `propose_host_decision` | A job of the draft's owner | `kind: "creation_override"`, `scope: "target"`, `target` (default the job's draft), `payload: {"intent", "revises"?}`, `explanation`, `step_id` | Section 7, step 1 |
 | `override_respond` | A job of the draft's owner | `step_id`, `offer_id`, `response`, `preview_digest`, `note` | Section 7, step 3; a step of kind `respond` in the sender's namespace |
 | `host_override_decide` | The campaign host's job | `step_id`, `proposal_id`, `decision`, `preview_digest`, `intent`, `note` | Section 7, step 2 |
 | `host_override_withdraw` | The campaign host's job | `step_id`, `offer_id`, `note` | Section 7, step 4 |
 | `host_override_apply` | The campaign host's job | `step_id`, `character_id`, `intent`, `preview_digest`, `reason` | Section 8's direct override |
 
+- The read tools follow section 10's privacy rule for the job's sender. A
+  host job reads as the host only while the guard finds its sender the
+  campaign host at the call; otherwise it reads as a guest.
 - The host tools are steps of kind `host` and follow governance section 10:
   reauthorized at each call, available in a host job of any mode (with no
   character selected too), host results through recovery.
@@ -872,7 +963,9 @@ locally.
 /overrides CHARACTER QUALITY PARAM [MATCH]   a parameter's options        (override_discover)
 /override preview CHARACTER INTENT-JSON                                  (override_preview)
 /override request CHARACTER INTENT-JSON EXPLANATION [--revises ID]       (override_request)
-/offer ID                              a request and its offer, exactly  (override_detail)
+/requests overrides [CHARACTER] [open|terminal] [more]   page your requests (host: all)   (override_requests)
+/offer ID                              a request, and its open or last offer exactly   (override_detail, override_offer)
+/offers ID [more]                      every offer revision of a request (override_offers)
 /accept OFFER                          shows the offer, asks to confirm  (override_respond accept)
 /decline OFFER [NOTE]                                                    (override_respond decline)
 /decide ID offer [NOTE]                host: shows the preview, confirm  (override_decide offer)
@@ -880,7 +973,8 @@ locally.
 /decide ID deny NOTE                   host                              (override_decide deny)
 /withdraw OFFER NOTE                   host                              (override_withdraw)
 /override apply CHARACTER INTENT-JSON REASON   host: shows the preview, confirm   (override_apply)
-/override history CHARACTER [N]                                          (override_history)
+/override history CHARACTER [more]     a draft's applications             (override_history)
+/override record ID                    one application in full            (override_record)
 ```
 
 - `CHARACTER` defaults to the selected draft only in `/overrides` and
@@ -892,8 +986,11 @@ locally.
 - `/decide ID approve|deny` keeps working for legacy kinds. On a
   `creation_override` request, `approve` is refused locally with a hint to
   use `offer`.
-- `/requests` lists the compact form, and says whose response is awaited:
-  "waiting for the host" or "offer N waiting for you".
+- `/requests` keeps its legacy listing, and then shows the first page of
+  open override requests, saying whose response is awaited ("waiting for
+  the host" or "offer N waiting for you") and how to page the rest
+  (`/requests overrides … more`). `more` continues from the last page's
+  `next`.
 
 **Browser.** The existing panels, no separate character editor:
 
@@ -936,7 +1033,7 @@ interface calls with the authority section 5 names:
 | Accept, decline | `override_respond` | `override_respond` | `/accept`, `/decline` | Console › Accept, Decline |
 | Cancel | `request_cancel` | (none, as now) | `/cancel` | Console › Withdraw request |
 | Direct override | `override_apply` | `host_override_apply` | `/override apply` | Administration › Override › Apply |
-| Read | `override_detail`, `override_history`, `requests` | the same names; `get_context`'s `overrides` | `/offer`, `/override history`, `/requests` | Console and Requests panels |
+| Read | `override_requests`, `override_detail`, `override_offers`, `override_offer`, `override_history`, `override_record` | the same names; `get_context`'s `overrides` | `/requests overrides`, `/offer`, `/offers`, `/override history`, `/override record` | Console and Requests panels, paged with Show more |
 
 The whole-sheet approval (`character_complete`, `/approve` and the browser's
 Approve) is not in this table and does not change.
@@ -955,9 +1052,10 @@ Only for a game whose module has the capability, unless noted:
 - **Governance section 5 (all games).** Rules document version 2
   (section 4). Version 1 is unchanged.
 - **Governance sections 7, 10 and 15.** The reads, the tools, the context
-  and the clients gain what sections 10 to 12 say. `pending_requests` and
-  `requests` in `get_context` exclude `creation_override` requests, which
-  are in `overrides`.
+  and the clients gain what sections 10 to 12 say. The `requests` read, the
+  snapshot's referee projection, and `requests` and `pending_requests` in
+  `get_context` all exclude `creation_override` requests, which have their
+  own paged reads and the context's `overrides` block.
 - **Governance section 12 (all games).** Campaign schema 10 (section 6).
 - **Character section 9.** `character_complete` also expires allowances and
   stales the draft's requests (sections 7 and 8). Its other rules are
@@ -1030,7 +1128,12 @@ class, level or role is assumed.
   - transfer keeping `pending_host` and staling former-host offers;
   - withdrawal against acceptance;
   - archive, unlink and completion;
-  - privacy of reads and the bounds of section 10.
+  - privacy of every read: a guest gets nothing of another's requests,
+    offers or records, and a former host reads as a guest;
+  - paging to the end lists every request once, terminal ones included,
+    while new requests arrive;
+  - every view of section 10 at its worst case (12-byte characters, every
+    part at its limit), measured with the bridge's own serialization.
 - **OVR-4 (#176):**
   - the scripted conversation through the real runner and bridge: request,
     waiting while another player plays, a counteroffer narrated as not
@@ -1038,7 +1141,10 @@ class, level or role is assumed.
     override with no character and no request;
   - unsupported and blocked requests never claimed as saved;
   - recovery of `respond` and host steps;
-  - the `overrides` block's bound in a composed `get_context`.
+  - a fresh session, with more open requests than the context lists and
+    several terminal verdicts, finding every one through
+    `override_requests` and narrating each verdict from `override_offer`;
+  - the `overrides` block at its worst case in a composed `get_context`.
 - **OVR-5 and OVR-6 (#177, #178):**
   - the commands and controls against the real backend;
   - confirmation by digest;
@@ -1058,5 +1164,6 @@ owner says otherwise.
 - **A guest's request from a client.** Default: allowed (`override_request`),
   as well as through the referee, because a revision must be possible from
   either client.
-- **Offers per request.** Default: the compact history shows the 16 most
-  recent; older ones remain in `override_history` records and the database.
+- **Text limits.** Default: notes, reasons and explanations are 1,000
+  characters and also at most 4,096 result bytes, so a text written mostly
+  in characters outside Latin script may hold fewer characters.
