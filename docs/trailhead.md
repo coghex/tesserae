@@ -106,7 +106,9 @@ and `carried` (items carried), five at a time, filtered by `match`.
 A preview depends only on what it lists in `dependencies`:
 - a replacement on `rolled` and any earlier replacement;
 - the modifier on the current modifier;
-- a grant or removal on the gear and how many gear changes are recorded;
+- a grant or removal on the gear and its recorded changes (at most 16; a
+  change that undoes an earlier one drops its record, so it is allowed at
+  the limit);
 - picks on the picks left.
 
 So naming the walker, choosing its trait or recording a fact never changes

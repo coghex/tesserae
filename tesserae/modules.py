@@ -1257,16 +1257,46 @@ def _check_quality(item, categories: frozenset):
                 'An action is {"action_id", "label", "parameters", "later_random"}.'
             )
         for name, described in action["parameters"].items():
-            if (
-                not _is_id(name)
-                or not isinstance(described, dict)
-                or described.get("type") not in PARAMETER_TYPES
-                or not isinstance(described.get("required"), bool)
-            ):
+            if not _is_id(name) or not _parameter_described(described):
                 raise TypeError(
-                    "A parameter is described by a type (integer, string, enum "
-                    "or option) and whether it is required."
+                    "A parameter is exactly one of {type: integer, minimum, "
+                    "maximum}, {type: string, max_length}, {type: enum, values} "
+                    "or {type: option}, with whether it is required."
                 )
+
+
+def _whole(value) -> bool:
+    return type(value) is int
+
+
+def _parameter_described(described) -> bool:
+    """Whether a parameter description has exactly its type's fields, with
+    values of the right kind (creation overrides contract section 3)."""
+    if not isinstance(described, dict) or described.get("type") not in PARAMETER_TYPES:
+        return False
+    kind = described["type"]
+    fields = {"type", "required"} | {
+        "integer": {"minimum", "maximum"},
+        "string": {"max_length"},
+        "enum": {"values"},
+        "option": set(),
+    }[kind]
+    if set(described) != fields or not isinstance(described["required"], bool):
+        return False
+    if kind == "integer":
+        low, high = described["minimum"], described["maximum"]
+        return _whole(low) and _whole(high) and low <= high
+    if kind == "string":
+        return _whole(described["max_length"]) and described["max_length"] > 0
+    if kind == "enum":
+        values = described["values"]
+        return (
+            isinstance(values, list)
+            and 0 < len(values) <= DISCOVERY_ITEMS
+            and all(_whole(v) or isinstance(v, str) for v in values)
+            and len({json.dumps(v) for v in values}) == len(values)
+        )
+    return True
 
 
 def _check_option(item):

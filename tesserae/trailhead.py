@@ -924,7 +924,9 @@ def _facts(walker: dict) -> dict:
         "stamina_roll": overrides.get("stamina_roll", {}).get("value"),
         "max_stamina_modifier": _modifier(walker),
         "gear": list(walker.get("gear", [])),
-        "gear_record": len(overrides.get("gear", {})),
+        "gear_record": {
+            item: entry["change"] for item, entry in overrides.get("gear", {}).items()
+        },
         "gear_picks": _picks(walker),
     }
 
@@ -1119,11 +1121,6 @@ def _change(quality_id, action_id, parameters, fact, value, work):
             "Unused picks expire when the walker is approved.",
         )  # fmt: skip
     gear = list(value("gear"))
-    # At most one more recorded change each (an undo records one fewer).
-    recorded = value("gear_record") + 1
-    if recorded > MAX_GEAR_RECORD:
-        raise IntentError(["This walker's gear has too many recorded changes."])
-    work["gear_record"] = recorded
     if action_id == "grant":
         item = parameters["item"]
         if not isinstance(item, str) or item not in OUTFITTER:
@@ -1142,6 +1139,12 @@ def _change(quality_id, action_id, parameters, fact, value, work):
         work["gear"] = [g for g in gear if g != item]
         effect = {"before": item, "after": None,
                   "summary": f"Removes {item} from the starting gear."}  # fmt: skip
+    # The records this leaves: undoing an earlier change drops one.
+    record = _recorded(value("gear_record"), item, "granted" if action_id == "grant"
+                       else "removed")  # fmt: skip
+    if len(record) > MAX_GEAR_RECORD:
+        raise IntentError(["This walker's gear has too many recorded changes."])
+    work["gear_record"] = record
     # The item alone, not the whole list: the list is in `dependencies`.
     return (
         {"quality_id": quality_id, **effect},
@@ -1196,14 +1199,26 @@ def _apply_override(action) -> Outcome:
     return Outcome(state, receipt)
 
 
-def _record_gear(overrides: dict, item: str, change: str, by: dict):
-    """Record one gear change against the original list: undoing an earlier
-    change drops its record, so the original is always recoverable."""
-    record = overrides.setdefault("gear", {})
-    earlier = record.get(item, {}).get("change")
+def _recorded(record: dict, item: str, change: str) -> dict:
+    """The gear record, `{item: change}`, after one more change: undoing an
+    earlier change drops its record, so the original list is always
+    recoverable; any other change is recorded."""
+    record = dict(record)
+    earlier = record.get(item)
     if earlier is not None and (earlier == "removed") != (change == "removed"):
         del record[item]
     else:
+        record[item] = change
+    return record
+
+
+def _record_gear(overrides: dict, item: str, change: str, by: dict):
+    """Record one gear change, with who authorized it (`_recorded`)."""
+    record = overrides.setdefault("gear", {})
+    after = _recorded({k: v["change"] for k, v in record.items()}, item, change)
+    for gone in record.keys() - after.keys():
+        del record[gone]
+    if item in after:
         record[item] = {"change": change, "by": by}
 
 
@@ -1238,7 +1253,8 @@ def _pick(action) -> Outcome:
         raise ActionRejected("This walker already carries that item.")
     if len(gear) >= MAX_GEAR:
         raise ActionRejected(f"A walker carries at most {MAX_GEAR} items.")
-    if len(walker["overrides"].get("gear", {})) >= MAX_GEAR_RECORD:
+    record = {k: v["change"] for k, v in walker["overrides"].get("gear", {}).items()}
+    if len(_recorded(record, item, "picked")) > MAX_GEAR_RECORD:
         raise ActionRejected("This walker's gear has too many recorded changes.")
     gear.append(item)
     _record_gear(walker["overrides"], item, "picked", picks["by"])

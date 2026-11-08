@@ -253,6 +253,50 @@ class DiscoveryTests(OverrideCase):
         with self.assertRaisesRegex(TypeError, "declared category"):
             runtime.override_discover(self.state(), ash, {})
 
+    def test_parameter_descriptions_are_checked_by_their_type(self):
+        ash = self.draft()
+
+        def page(**described):
+            action = {
+                "action_id": "set",
+                "label": "Set",
+                "later_random": False,
+                "parameters": {"value": {"required": True, **described}},
+            }
+            return {"items": [{"quality_id": "stamina_roll", "category_id": "endurance",
+                               "label": "Q", "description": "", "current": None,
+                               "actions": [action]}], "next": None}  # fmt: skip
+
+        malformed = {
+            "a word for a minimum": page(type="integer", minimum="not an integer",
+                                         maximum=4),
+            "no maximum": page(type="integer", minimum=2),
+            "a true for a bound": page(type="integer", minimum=True, maximum=4),
+            "an inverted range": page(type="integer", minimum=4, maximum=2),
+            "a string with no length": page(type="string"),
+            "a zero length": page(type="string", max_length=0),
+            "an enum with no values": page(type="enum", values=[]),
+            "an enum's repeated value": page(type="enum", values=["a", "a"]),
+            "an enum of objects": page(type="enum", values=[{"a": 1}]),
+            "an option with a range": page(type="option", minimum=1),
+            "an unknown type": page(type="path"),
+        }  # fmt: skip
+        for name, bad in malformed.items():
+            runtime = resolve(with_overrides(discover=lambda s, c, q, bad=bad: bad))
+            with (
+                self.subTest(name),
+                self.assertRaisesRegex(TypeError, "exactly one of"),
+            ):
+                runtime.override_discover(self.state(), ash, {})
+        for good in (
+            page(type="integer", minimum=-1, maximum=2),
+            page(type="string", max_length=60),
+            page(type="enum", values=["steady", "quick", 3]),
+            page(type="option"),
+        ):
+            runtime = resolve(with_overrides(discover=lambda s, c, q, good=good: good))
+            self.assertEqual(runtime.override_discover(self.state(), ash, {}), good)
+
 
 class PreviewTests(OverrideCase):
     def test_a_preview_is_pure_deterministic_and_reports_exact_effects(self):
@@ -320,7 +364,7 @@ class PreviewTests(OverrideCase):
         moved = self.preview(ash, ROPE, state)
         self.assertNotEqual(preview_digest(moved), preview_digest(rope))
         self.assertEqual(
-            moved["dependencies"], {"gear": ["trail map"], "gear_record": 0}
+            moved["dependencies"], {"gear": ["trail map"], "gear_record": {}}
         )
         # And the roll replacement after another replacement applied.
         state, _ = self.apply(ash, intent(change("stamina_roll", "replace", value=3)),
@@ -513,6 +557,68 @@ class ApplyTests(OverrideCase):
                 runtime.override_apply(
                     self.state(), ash, plan, self.policy(ash), direct()
                 )
+
+    def test_reversals_at_the_record_limit_count_the_records_they_drop(self):
+        ash = self.draft()
+        state = self.state()
+        originals = [f"old {i}" for i in range(8)]
+        state["walkers"][ash]["gear"] = list(originals)
+        state, _ = self.apply(
+            ash,
+            intent(*[change("starting_gear", "remove", carried=i) for i in originals]),
+            state,
+        )
+        granted = list(OUTFITTER[:8])
+        state, _ = self.apply(
+            ash,
+            intent(*[change("starting_gear", "grant", item=i) for i in granted]),
+            state,
+        )
+        self.assertEqual(len(state["walkers"][ash]["overrides"]["gear"]), 16)  # full
+        # Undoing a grant drops a record, so it is allowed at the limit.
+        state, _ = self.apply(
+            ash, intent(change("starting_gear", "remove", carried=granted[0])), state
+        )
+        self.assertEqual(len(state["walkers"][ash]["overrides"]["gear"]), 15)
+        state, _ = self.apply(
+            ash, intent(change("starting_gear", "grant", item=OUTFITTER[8])), state
+        )
+        # Full again: a reversal first makes room within one intent.
+        state, _ = self.apply(
+            ash,
+            intent(
+                change("starting_gear", "remove", carried=granted[1]),
+                change("starting_gear", "grant", item=OUTFITTER[9]),
+            ),
+            state,
+        )
+        self.assertEqual(len(state["walkers"][ash]["overrides"]["gear"]), 16)
+        # A change that adds a record at the limit is refused.
+        full = self.state()
+        full["walkers"][ash]["gear"] = ["old a"]
+        full["walkers"][ash]["overrides"] = {"gear": {
+            f"old r{i}": {"change": "removed",
+                          "by": {"kind": "direct", "record_id": "hr-9"}}
+            for i in range(16)}}  # fmt: skip
+        with self.assertRaisesRegex(IntentError, "too many recorded changes"):
+            self.preview(
+                ash, intent(change("starting_gear", "remove", carried="old a")), full
+            )
+        # A pick that undoes a removal is allowed at the limit; a new one is not.
+        by = {"kind": "direct", "record_id": "hr-9"}
+        records = {f"old r{i}": {"change": "removed", "by": by} for i in range(15)}
+        full["walkers"][ash]["gear"] = []
+        full["walkers"][ash]["overrides"] = {
+            "gear": {**records, "compass": {"change": "removed", "by": by}},
+            "gear_picks": {"remaining": 2, "by": by},
+        }
+        with self.assertRaisesRegex(ActionRejected, "too many recorded changes"):
+            self.step(full, ash, "trailhead.pick", {"item": "headlamp"})
+        full = self.step(full, ash, "trailhead.pick", {"item": "compass"})
+        walker = full["walkers"][ash]
+        self.assertEqual(
+            (walker["gear"], walker["overrides"]["gear"]), (["compass"], records)
+        )
 
     def test_gear_keeps_what_creation_gave(self):
         ash = self.draft()
