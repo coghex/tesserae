@@ -9,8 +9,12 @@ walker can push on (spend 1 stamina, 1d6 against 4, +1 if
 quick; failing leaves it in danger) or recover (1d6 against 3, +1 if steady;
 no cost). A walker in danger cannot be archived. The campaign host can
 correct a walker (stamina, trait, gear, description), keep NPCs, change the
-scene and write preparation only the referee sees; nothing it does rolls. The theme and numbers are
-this module's own; it exists to exercise the host's character capability
+scene and write preparation only the referee sees; nothing it does rolls.
+A draft's stamina roll, maximum stamina modifier and starting gear can be
+overridden by negotiation (docs/designs/creation_overrides_contract.md),
+in two categories, endurance and supplies; an accepted override keeps the
+original values and never rolls. The theme and numbers are this module's
+own; it exists to exercise the host's character capability
 (docs/designs/character_contract.md). See docs/trailhead.md.
 """
 
@@ -21,12 +25,17 @@ from .modules import (
     Administration,
     ArgumentError,
     CampaignSettings,
+    Category,
     CharacterRules,
     Command,
+    CreationOverrides,
+    IntentError,
     Module,
     Outcome,
     ProviderChoice,
     SeedError,
+    UnsupportedOverride,
+    check_intent,
     exact_fields,
 )
 
@@ -67,11 +76,16 @@ CREATION_RULES = {
         f"Roll stamina once: {{}}. {STAMINA_DIE}; it cannot be rerolled."
     ),
     "character.name": 'Name the walker: {"name": "..."}.',
+    "trailhead.pick": (
+        'Pick one item from the outfitter\'s list: {"item": "..."}. Only with '
+        "gear picks an accepted override allowed; unused picks expire at approval."
+    ),
 }
 _WALKER_FIELDS = {"trait", "rolled", "stamina", "max_stamina", "ready", "in_danger"}
 # Recorded at completion only when a starting bonus applied (absent reads 0),
-# and by the host's corrections only once made (absent reads empty).
-_OPTIONAL_WALKER_FIELDS = {"bonus", "gear", "description", "facts"}
+# by the host's corrections only once made (absent reads empty), and by an
+# applied creation override (absent reads "no overrides").
+_OPTIONAL_WALKER_FIELDS = {"bonus", "gear", "description", "facts", "overrides"}
 # Narrative facts agreed in creation (governance contract section 11), each
 # with where it came from; an optional one is simply absent until agreed.
 FACTS = ("background", "home")
@@ -155,6 +169,13 @@ def _problems(state: dict, character_id: str, policy: dict) -> list:
 
 def _complete(state: dict, character_id: str, policy: dict) -> dict:
     walker = state["walkers"][character_id]
+    # Creation-only authority ends here; applied effects and their
+    # provenance stay (creation overrides contract section 3, duty 4).
+    overrides = walker.get("overrides")
+    if overrides is not None:
+        overrides.pop("gear_picks", None)
+        if not overrides:
+            del walker["overrides"]
     bonus = policy["settings"][BONUS]
     if bonus:
         walker["bonus"] = bonus
@@ -165,22 +186,43 @@ def _complete(state: dict, character_id: str, policy: dict) -> dict:
 
 
 def _max_stamina(walker: dict) -> int:
-    """The stamina roll, plus one for a keen walker and any starting bonus."""
+    """The effective stamina roll, plus one for a keen walker, any starting
+    bonus and any overridden modifier: the one calculation creation,
+    completion, the sheet and corrections share."""
     keen = 1 if walker["trait"] == "keen" else 0
-    return walker["rolled"] + keen + walker.get("bonus", 0)
+    return _roll(walker) + keen + walker.get("bonus", 0) + _modifier(walker)
+
+
+def _roll(walker: dict) -> int | None:
+    """The effective stamina roll: an applied replacement's, else the roll."""
+    replaced = walker.get("overrides", {}).get("stamina_roll")
+    return walker["rolled"] if replaced is None else replaced["value"]
+
+
+def _modifier(walker: dict) -> int:
+    found = walker.get("overrides", {}).get("max_stamina_modifier")
+    return 0 if found is None else found["amount"]
 
 
 def _sheet(state: dict, character_id: str) -> dict:
     walker = state["walkers"][character_id]
     sheet = {
         "trait": walker["trait"],
-        "stamina": walker["stamina"] if walker["ready"] else walker["rolled"],
+        "stamina": walker["stamina"] if walker["ready"] else _roll(walker),
         "max_stamina": walker["max_stamina"],
         "in_danger": walker["in_danger"],
     }
     for optional in ("gear", "description", "facts"):  # only once set
         if optional in walker:
             sheet[optional] = walker[optional]
+    if "overrides" in walker:  # what changed, by whose authority, and originals
+        shown = dict(walker["overrides"])
+        if "stamina_roll" in shown:
+            shown["stamina_roll"] = {
+                **shown["stamina_roll"],
+                "original": walker["rolled"],
+            }
+        sheet["overrides"] = shown
     return sheet
 
 
@@ -215,6 +257,17 @@ def _creation_actions(state: dict, character_id: str, policy: dict) -> list:
                 "args": {},
                 "description": CREATION_RULES["trailhead.stamina"],
                 "stakes": f"Rolls {STAMINA_DIE} once; the result stands.",
+            }
+        )
+    picks = _picks(walker)
+    if picks:
+        actions.append(
+            {
+                "command": "trailhead.pick",
+                "args": {"item": "one of the outfitter's items"},
+                "description": CREATION_RULES["trailhead.pick"],
+                "stakes": f"None; {picks} pick{'s' if picks > 1 else ''} left, "
+                "nothing is rolled.",
             }
         )
     return actions  # fmt: skip
@@ -271,6 +324,8 @@ def _validate_seed(state: dict, participant_ids: frozenset, owners) -> None:
             walker["description"], MAX_DESCRIPTION
         ):
             raise SeedError(f"Walker {character_id} has an invalid description.")
+        if "overrides" in walker and _overrides_problem(walker["overrides"]):
+            raise SeedError(f"Walker {character_id} has invalid overrides.")
         numbers = [walker["rolled"], walker["stamina"], walker["max_stamina"]]
         if (
             walker["trait"] not in TRAITS
@@ -575,9 +630,18 @@ def _validate_set_gear(args: dict):
 
 
 def _set_gear(action) -> Outcome:
+    """Replace a walker's gear. The provenance of overridden gear is kept
+    where it still holds: a granted or picked item still carried, a removed
+    one still absent."""
     state = action.state
     walker = _walker(state, action.args["character_id"])
     walker["gear"] = list(action.args["gear"])
+    record = walker.get("overrides", {}).get("gear")
+    if record is not None:
+        for item, entry in list(record.items()):
+            if (entry["change"] == "removed") == (item in walker["gear"]):
+                del record[item]
+        _tidy(walker)
     return Outcome(state, {"gear": walker["gear"]})
 
 
@@ -732,6 +796,459 @@ def _target_state(state: dict, target: dict) -> dict:
     raise ArgumentError("Trailhead's targets are a character, an NPC or the scene.")
 
 
+# --- negotiated creation overrides (creation overrides contract) ---------------
+# Two original families: endurance (a replaced roll and a modifier, both
+# feeding the one maximum-stamina calculation) and supplies (granted or
+# removed gear, and picks: an allowance spent by an ordinary step later).
+# Every preview is computed from the facts it lists in `dependencies` and
+# the intent alone, so an unrelated creation step leaves it unchanged.
+
+ENDURANCE = "endurance"
+SUPPLIES = "supplies"
+OUTFITTER = (
+    "bivouac sack", "camp stove", "climbing rope", "compass", "first-aid kit",
+    "headlamp", "rain shell", "spare socks", "trail map", "trail mix",
+    "trekking poles", "water filter",
+)  # fmt: skip
+MAX_PICKS = 3
+MODIFIER = (-1, 2)
+MAX_GEAR_RECORD = 16
+OPTION_PAGE = 5
+QUALITY_PAGE = 50
+_PROVENANCE_KINDS = ("accepted_offer", "direct")
+
+
+def _integer(minimum: int, maximum: int) -> dict:
+    return {"type": "integer", "minimum": minimum, "maximum": maximum, "required": True}
+
+
+QUALITIES = {
+    "stamina_roll": {
+        "category_id": ENDURANCE, "label": "Stamina roll",
+        "description": f"The walker's {STAMINA_DIE} stamina roll. A replacement "
+        "keeps the original roll; the walker must have rolled first.",
+        "actions": [{"action_id": "replace", "label": "Replace the roll",
+                     "parameters": {"value": _integer(2, 4)}, "later_random": False}],
+    },
+    "max_stamina_modifier": {
+        "category_id": ENDURANCE, "label": "Maximum stamina modifier",
+        "description": "Added to the maximum stamina at approval, after the trait "
+        "and any starting bonus. Normally 0.",
+        "actions": [{"action_id": "set", "label": "Set the modifier",
+                     "parameters": {"amount": _integer(*MODIFIER)},
+                     "later_random": False}],
+    },
+    "starting_gear": {
+        "category_id": SUPPLIES, "label": "Starting gear",
+        "description": f"What the walker carries, up to {MAX_GEAR} items.",
+        "actions": [
+            {"action_id": "grant", "label": "Grant an item",
+             "parameters": {"item": {"type": "option", "required": True}},
+             "later_random": False},
+            {"action_id": "remove", "label": "Remove an item",
+             "parameters": {"carried": {"type": "option", "required": True}},
+             "later_random": False},
+            {"action_id": "allow", "label": "Allow picks",
+             "parameters": {"count": _integer(1, MAX_PICKS)}, "later_random": False},
+        ],
+    },
+}  # fmt: skip
+
+
+def _overrides_problem(overrides, draft: bool = False) -> str | None:
+    """The shape of a walker's `overrides`; picks only on a draft."""
+    allowed = {"stamina_roll", "max_stamina_modifier", "gear"}
+    if draft:
+        allowed.add("gear_picks")
+    if not isinstance(overrides, dict) or not overrides or set(overrides) - allowed:
+        return "Overrides hold stamina_roll, max_stamina_modifier and gear."
+
+    def provenance(entry, *fields) -> bool:
+        by = entry.get("by") if isinstance(entry, dict) else None
+        return (
+            isinstance(entry, dict)
+            and set(entry) == {*fields, "by"}
+            and isinstance(by, dict)
+            and set(by) == {"kind", "record_id"}
+            and by["kind"] in _PROVENANCE_KINDS
+            and isinstance(by["record_id"], str)
+        )
+
+    replaced = overrides.get("stamina_roll", {"value": 2, "by": None})
+    modifier = overrides.get("max_stamina_modifier", {"amount": 0, "by": None})
+    picks = overrides.get("gear_picks")
+    record = overrides.get("gear", {})
+    if (
+        ("stamina_roll" in overrides and not provenance(replaced, "value"))
+        or type(replaced["value"]) is not int
+        or not 2 <= replaced["value"] <= 4
+        or ("max_stamina_modifier" in overrides and not provenance(modifier, "amount"))
+        or type(modifier["amount"]) is not int
+        or not MODIFIER[0] <= modifier["amount"] <= MODIFIER[1]
+        or (picks is not None and not (
+            provenance(picks, "remaining") and type(picks["remaining"]) is int
+            and 1 <= picks["remaining"] <= MAX_PICKS))
+        or not isinstance(record, dict)
+        or ("gear" in overrides and not record)
+        or len(record) > MAX_GEAR_RECORD
+        or not all(_text(item, MAX_ITEM) and item and provenance(entry, "change")
+                   and entry["change"] in ("granted", "picked", "removed")
+                   for item, entry in record.items())
+    ):  # fmt: skip
+        return "Overrides are not valid."
+    return None
+
+
+def _picks(walker: dict) -> int:
+    found = walker.get("overrides", {}).get("gear_picks")
+    return 0 if found is None else found["remaining"]
+
+
+def _tidy(walker: dict):
+    """Drop empty override records, so "no overrides" reads as before."""
+    overrides = walker.get("overrides")
+    if overrides is None:
+        return
+    if not overrides.get("gear", True):
+        del overrides["gear"]
+    if not overrides:
+        del walker["overrides"]
+
+
+def _facts(walker: dict) -> dict:
+    """Everything a preview may read of a draft. A preview lists in its
+    `dependencies` exactly those it read."""
+    overrides = walker.get("overrides", {})
+    return {
+        "rolled": walker["rolled"],
+        "stamina_roll": overrides.get("stamina_roll", {}).get("value"),
+        "max_stamina_modifier": _modifier(walker),
+        "gear": list(walker.get("gear", [])),
+        "gear_record": len(overrides.get("gear", {})),
+        "gear_picks": _picks(walker),
+    }
+
+
+def _draft(state: dict, character_id: str) -> dict:
+    walker = state["walkers"].get(character_id)
+    if walker is None:
+        raise IntentError(["There is no such walker."])
+    if walker["ready"]:
+        raise IntentError(["This walker is approved; overrides change drafts only."])
+    return walker
+
+
+def _discover(state: dict, character_id: str, query: dict) -> dict:
+    walker = _draft(state, character_id)
+    quality_id = query.get("quality_id")
+    if quality_id is not None and quality_id not in QUALITIES:
+        raise UnsupportedOverride("Trailhead has no such quality.")
+    facts = _facts(walker)
+    if "parameter" in query:
+        options = {
+            ("starting_gear", "item"): [i for i in OUTFITTER if i not in facts["gear"]],
+            ("starting_gear", "carried"): facts["gear"],
+        }.get((quality_id, query["parameter"]))
+        if options is None:
+            raise UnsupportedOverride(
+                "That quality has no such parameter with options."
+            )
+        match = query.get("match", "").casefold()
+        found = [{"value": o, "label": o} for o in options if match in o.casefold()]
+        return _page(found, query.get("after"), OPTION_PAGE)
+    current = {
+        "stamina_roll": _roll(walker),
+        "max_stamina_modifier": facts["max_stamina_modifier"],
+        "starting_gear": facts["gear"],
+    }
+    found = [
+        {"quality_id": q, "category_id": d["category_id"], "label": d["label"],
+         "description": d["description"], "current": current[q],
+         "actions": d["actions"]}
+        for q, d in QUALITIES.items()
+        if quality_id in (None, q)
+        and query.get("category_id") in (None, d["category_id"])
+    ]  # fmt: skip
+    return _page(found, query.get("after"), QUALITY_PAGE)
+
+
+def _page(items: list, after, size: int) -> dict:
+    start = 0
+    if after is not None:
+        if not after.isdigit() or not 0 < int(after) <= len(items):
+            raise ArgumentError("'after' is a cursor from an earlier page.")
+        start = int(after)
+    end = start + size
+    return {"items": items[start:end], "next": str(end) if end < len(items) else None}
+
+
+def _preview(state: dict, character_id: str, intent: dict, policy: dict) -> dict:
+    """Exactly what `intent` would do to this draft now. Reads the draft
+    only through `_facts`, and lists what it read as `dependencies`."""
+    facts = _facts(_draft(state, character_id))
+    read = set()
+
+    def fact(name):
+        read.add(name)
+        return facts[name]
+
+    work = {}  # values this intent has already changed
+
+    def value(name):
+        return work[name] if name in work else fact(name)
+
+    effects, consequences, later_steps, seen = [], [], [], set()
+    for change in intent["changes"]:
+        quality_id, action_id = change["quality_id"], change["action_id"]
+        described = QUALITIES.get(quality_id)
+        if described is None:
+            raise UnsupportedOverride("Trailhead has no such quality.")
+        actions = {a["action_id"]: a for a in described["actions"]}
+        if action_id not in actions:
+            raise UnsupportedOverride("That quality has no such action.")
+        parameters = change["parameters"]
+        names = sorted(actions[action_id]["parameters"])
+        if sorted(parameters) != names:
+            raise IntentError([f"{action_id} takes exactly {', '.join(names)}."])
+        if quality_id != "starting_gear":
+            if quality_id in seen:
+                raise IntentError(["Change each endurance quality once per request."])
+            seen.add(quality_id)
+        effect, consequence = _change(
+            quality_id, action_id, parameters, fact, value, work
+        )
+        effects.append(effect)
+        if consequence not in consequences:
+            consequences.append(consequence)
+    if work.get("gear_picks", facts["gear_picks"]) != facts["gear_picks"]:
+        later_steps.append({
+            "command": "trailhead.pick",
+            "summary": "Pick an item from the outfitter's list, one ordinary "
+            "creation step per pick.",
+            "stakes": "None; nothing is rolled. Unused picks expire at approval.",
+        })  # fmt: skip
+    affected = [
+        {"quality_id": q, "category_id": QUALITIES[q]["category_id"]}
+        for q in QUALITIES
+        if any(e["quality_id"] == q for e in effects)
+    ]
+    if len(effects) == 1:
+        headline = effects[0]["summary"]
+    else:
+        labels = ", ".join(
+            QUALITIES[a["quality_id"]]["label"].lower() for a in affected
+        )
+        headline = f"{len(effects)} changes to {labels}."
+    allowances = []
+    if later_steps:
+        picks = work["gear_picks"]
+        allowances.append({
+            "allowance_id": "gear_picks", "quality_id": "starting_gear",
+            "summary": f"{picks} pick{'s' if picks > 1 else ''} from the outfitter's "
+            "list at no cost, until approval.",
+            "creation_only": True,
+        })  # fmt: skip
+    return {
+        "plan": {"changes": [dict(c) for c in intent["changes"]]},
+        "headline": headline,
+        "affected": affected,
+        "effects": effects,
+        "waivers": [],
+        "allowances": allowances,
+        "later_steps": later_steps,
+        "consequences": consequences,
+        "limitations": [],
+        "dependencies": {name: facts[name] for name in sorted(read)},
+    }
+
+
+def _change(quality_id, action_id, parameters, fact, value, work):
+    """One change's effect on the working values: (effect, consequence)."""
+    if quality_id == "stamina_roll":
+        new = parameters["value"]
+        if type(new) is not int or not 2 <= new <= 4:
+            raise IntentError(
+                ["A replacement stamina roll is a whole number from 2 to 4."]
+            )
+        rolled = fact("rolled")
+        if rolled is None:
+            raise IntentError(
+                ["Roll stamina first: a replacement keeps the original roll."]
+            )
+        before = fact("stamina_roll")
+        before = rolled if before is None else before
+        if new == before:
+            raise IntentError(
+                [f"The stamina roll is already {new}; nothing would change."]
+            )
+        return (
+            {"quality_id": quality_id, "before": before, "after": new,
+             "summary": f"Replaces the stamina roll of {before} with {new}; the "
+             f"original roll of {rolled} is kept."},
+            "Approval computes maximum stamina from the replacement, not the roll.",
+        )  # fmt: skip
+    if quality_id == "max_stamina_modifier":
+        new = parameters["amount"]
+        if type(new) is not int or not MODIFIER[0] <= new <= MODIFIER[1]:
+            raise IntentError([
+                f"The modifier is a whole number from {MODIFIER[0]} to {MODIFIER[1]}."
+            ])  # fmt: skip
+        before = fact("max_stamina_modifier")
+        if new == before:
+            raise IntentError(
+                [f"The modifier is already {new:+d}; nothing would change."]
+            )
+        return (
+            {"quality_id": quality_id, "before": before, "after": new,
+             "summary": f"Sets the maximum stamina modifier from {before:+d} to {new:+d}."},
+            "Approval adds the modifier to the maximum stamina, after the trait and "
+            "any starting bonus.",
+        )  # fmt: skip
+    if action_id == "allow":
+        count = parameters["count"]
+        if type(count) is not int or not 1 <= count <= MAX_PICKS:
+            raise IntentError([f"'count' is a whole number from 1 to {MAX_PICKS}."])
+        before = value("gear_picks")
+        if before + count > MAX_PICKS:
+            raise IntentError([f"A walker has at most {MAX_PICKS} gear picks at once."])
+        work["gear_picks"] = before + count
+        return (
+            {"quality_id": quality_id, "before": before, "after": before + count,
+             "summary": f"Allows {count} more pick{'s' if count > 1 else ''} from "
+             "the outfitter's list."},
+            "Unused picks expire when the walker is approved.",
+        )  # fmt: skip
+    gear = list(value("gear"))
+    # At most one more recorded change each (an undo records one fewer).
+    recorded = value("gear_record") + 1
+    if recorded > MAX_GEAR_RECORD:
+        raise IntentError(["This walker's gear has too many recorded changes."])
+    work["gear_record"] = recorded
+    if action_id == "grant":
+        item = parameters["item"]
+        if not isinstance(item, str) or item not in OUTFITTER:
+            raise IntentError(["That item is not on the outfitter's list."])
+        if item in gear:
+            raise IntentError(["The walker already carries that item."])
+        if len(gear) >= MAX_GEAR:
+            raise IntentError([f"A walker carries at most {MAX_GEAR} items."])
+        work["gear"] = gear + [item]
+        effect = {"before": None, "after": item,
+                  "summary": f"Adds {item} to the starting gear."}  # fmt: skip
+    else:  # remove
+        item = parameters["carried"]
+        if not isinstance(item, str) or item not in gear:
+            raise IntentError(["The walker does not carry that item."])
+        work["gear"] = [g for g in gear if g != item]
+        effect = {"before": item, "after": None,
+                  "summary": f"Removes {item} from the starting gear."}  # fmt: skip
+    # The item alone, not the whole list: the list is in `dependencies`.
+    return (
+        {"quality_id": quality_id, **effect},
+        "The change is recorded on the sheet with who authorized it.",
+    )
+
+
+def _apply_override(action) -> Outcome:
+    """Perform exactly a plan this module previews now, recording who
+    authorized it; nothing is drawn. Refuses a plan it would not preview."""
+    try:
+        check_intent(action.plan)
+    except IntentError:
+        raise IntentError(["That is not a plan Trailhead made."]) from None
+    preview = _preview(action.state, action.character_id, action.plan, action.policy)
+    if preview["plan"] != action.plan:
+        raise IntentError(["That is not a plan Trailhead made."])
+    state = action.state
+    walker = state["walkers"][action.character_id]
+    by = {"kind": action.authorization["kind"],
+          "record_id": action.authorization["record_id"]}  # fmt: skip
+    overrides = walker.setdefault("overrides", {})
+    receipt = {}
+    for change in action.plan["changes"]:
+        quality_id, parameters = change["quality_id"], change["parameters"]
+        if quality_id == "stamina_roll":
+            overrides["stamina_roll"] = {"value": parameters["value"], "by": by}
+            receipt["stamina_roll"] = {"original": walker["rolled"],
+                                       "value": parameters["value"]}  # fmt: skip
+        elif quality_id == "max_stamina_modifier":
+            overrides["max_stamina_modifier"] = {
+                "amount": parameters["amount"],
+                "by": by,
+            }
+            receipt["max_stamina_modifier"] = parameters["amount"]
+        elif change["action_id"] == "allow":
+            picks = _picks(walker) + parameters["count"]
+            overrides["gear_picks"] = {"remaining": picks, "by": by}
+            receipt["gear_picks"] = picks
+        else:
+            granted = change["action_id"] == "grant"
+            item = parameters["item" if granted else "carried"]
+            gear = walker.setdefault("gear", [])
+            if granted:
+                gear.append(item)
+            else:
+                gear.remove(item)
+            _record_gear(overrides, item, "granted" if granted else "removed", by)
+            moved = receipt.setdefault("gear", {"added": [], "removed": []})
+            moved["added" if granted else "removed"].append(item)
+    _tidy(walker)
+    return Outcome(state, receipt)
+
+
+def _record_gear(overrides: dict, item: str, change: str, by: dict):
+    """Record one gear change against the original list: undoing an earlier
+    change drops its record, so the original is always recoverable."""
+    record = overrides.setdefault("gear", {})
+    earlier = record.get(item, {}).get("change")
+    if earlier is not None and (earlier == "removed") != (change == "removed"):
+        del record[item]
+    else:
+        record[item] = {"change": change, "by": by}
+
+
+def _allowances(state: dict, character_id: str) -> list:
+    picks = _picks(state["walkers"][character_id])
+    if not picks:
+        return []
+    return [{
+        "allowance_id": "gear_picks", "quality_id": "starting_gear",
+        "summary": f"{picks} pick{'s' if picks > 1 else ''} from the outfitter's list.",
+        "remaining": picks,
+    }]  # fmt: skip
+
+
+def _validate_pick(args: dict):
+    exact_fields(args, {"item"}, "Pick args")
+    if args["item"] not in OUTFITTER:
+        raise ArgumentError("'item' is one of the outfitter's items.")
+
+
+def _pick(action) -> Outcome:
+    """Spend one gear pick an accepted override allowed. Without one, or
+    beyond what it allowed, it is refused: picks never come from here."""
+    state = action.state
+    walker = _walker(state, action.character_id)
+    picks = walker.get("overrides", {}).get("gear_picks")
+    if picks is None:
+        raise ActionRejected("This walker has no gear picks; an override allows them.")
+    gear = walker.setdefault("gear", [])
+    item = action.args["item"]
+    if item in gear:
+        raise ActionRejected("This walker already carries that item.")
+    if len(gear) >= MAX_GEAR:
+        raise ActionRejected(f"A walker carries at most {MAX_GEAR} items.")
+    if len(walker["overrides"].get("gear", {})) >= MAX_GEAR_RECORD:
+        raise ActionRejected("This walker's gear has too many recorded changes.")
+    gear.append(item)
+    _record_gear(walker["overrides"], item, "picked", picks["by"])
+    picks["remaining"] -= 1
+    if not picks["remaining"]:
+        del walker["overrides"]["gear_picks"]
+    _tidy(walker)
+    return Outcome(state, {"item": item, "picks_left": picks["remaining"]})
+
+
 TRAILHEAD_MODULE = Module(
     id="trailhead",
     version="1",
@@ -754,6 +1271,7 @@ TRAILHEAD_MODULE = Module(
             Command("trailhead.trait", _validate_trait, _trait),
             Command("trailhead.stamina", _validate_no_args, _stamina),
             Command("trailhead.fact", _validate_fact, _fact),
+            Command("trailhead.pick", _validate_pick, _pick),
         ),
         problems=_problems,
         complete=_complete,
@@ -784,5 +1302,26 @@ TRAILHEAD_MODULE = Module(
         defaults=_defaults,
         validate=_validate_settings,
         requirements=_requirements,
+    ),
+    creation_overrides=CreationOverrides(
+        version=1,
+        categories=(
+            Category(
+                ENDURANCE,
+                "Endurance",
+                "How much a walker can take: its stamina roll and the "
+                "modifier to its maximum stamina.",
+            ),
+            Category(
+                SUPPLIES,
+                "Supplies",
+                "What a walker carries from the start, and picks from the "
+                "outfitter's list.",
+            ),
+        ),
+        discover=_discover,
+        preview=_preview,
+        apply=_apply_override,
+        allowances=_allowances,
     ),
 )

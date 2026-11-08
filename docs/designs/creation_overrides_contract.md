@@ -8,7 +8,9 @@ into exact rules for OVR-2 to OVR-6 and the acceptance slices: the optional
 module capability, category request policy, the negotiation's records and
 states, requester acceptance, direct host application, the messages, bridge
 tools and client controls that carry them, their bounds, and the upgrade of
-existing games. Nothing here is implemented yet.
+existing games. OVR-2 ([#174](https://github.com/coghex/tesserae/issues/174))
+implements sections 3 and 4 and section 14's module; the rest is not
+implemented yet.
 
 It extends the [governance contract](governance_contract.md), the
 [character contract](character_contract.md) and the
@@ -168,7 +170,9 @@ module failure (`internal_error`, logged), never cut.
 **`preview(state, character_id, intent, policy)`** is pure and
 deterministic. It gets no random source and changes nothing. It returns the
 preview, or raises `IntentError(problems)`: a new `ModuleError` sibling with
-player-safe problems, refused as `invalid_intent` (section 10).
+player-safe problems, refused as `invalid_intent` (section 10). An unknown
+quality, action or parameter raises `UnsupportedOverride`, refused as
+`override_unsupported`; neither echoes client input.
 
 ```json
 {"plan": {"...": "module-defined; what apply will do"},
@@ -219,7 +223,8 @@ an `Outcome`.
   larger one is a module failure, nothing changed): what was applied,
   with the original values it preserved.
 - It is deterministic: `Action.operations` is empty, so nothing rolls.
-- It may refuse with `ActionRejected` or `IntentError`, and nothing changes.
+- It may refuse with `ActionRejected`, `IntentError` or
+  `UnsupportedOverride`, and nothing changes.
 - It must enforce every technical invariant itself: structural validity,
   real catalog references, supported representations and the module's state
   limits. A host's authority waives game rules, never these.
@@ -1106,13 +1111,13 @@ contract at the sections named.
 ## 14. Illustrative module
 
 Trailhead, still version 1 under section 3's rule, with two original
-families. OVR-2 builds the real fixture and may refine it.
+families, as OVR-2 built them ([trailhead.md](../trailhead.md#creation-overrides)).
 
 | Category | Quality | Actions | Notes |
 |---|---|---|---|
-| `endurance` | `stamina_roll` | `replace {value: 2–4}` | Replaces the rolled stamina; the original roll stays as `rolled_original` |
-| `endurance` | `max_stamina_modifier` | `adjust {amount: -1–2}` | A starting modifier the completion rule adds, recorded separately from the settings bonus |
-| `supplies` | `starting_gear` | `grant {item}`, `remove {item}`, `allow {count: 1–3}` | `allow` grants an allowance to pick later items with an ordinary new step; unused picks expire at completion |
+| `endurance` | `stamina_roll` | `replace {value: 2–4}` | Replaces the rolled stamina once it is rolled; the original roll stays in `rolled` |
+| `endurance` | `max_stamina_modifier` | `set {amount: -1–2}` | A starting modifier the completion rule adds, recorded separately from the settings bonus |
+| `supplies` | `starting_gear` | `grant {item}`, `remove {carried}`, `allow {count: 1–3}` | `allow` grants an allowance to pick later items with an ordinary new step, `trailhead.pick`; unused picks expire at completion |
 
 A guest asks for `{"changes": [{"quality_id": "stamina_roll", "action_id":
 "replace", "parameters": {"value": 4}}]}` with the explanation "A mountain

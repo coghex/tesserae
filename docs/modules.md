@@ -28,6 +28,14 @@ A module can also declare characters (`Module.characters`, #112), under the
 module does. The host serves character games to players from M2-3's later
 slices; today the store runs them.
 
+A character module may also describe, preview and apply negotiated changes
+to drafts (`Module.creation_overrides`, #174), under the
+[creation overrides contract](designs/creation_overrides_contract.md): see
+[Creation overrides](#creation-overrides). Trailhead does. The negotiation
+itself (requests, offers, acceptance, the messages and tools) arrives with
+the contract's later slices; today the runtime's hooks and the category
+policy exist.
+
 `serve` loads the game's bound runtime once at startup, refusing an unknown or
 mismatched binding before it listens, and sends each joined participant the
 module's view of the game in join and sync snapshots (#41,
@@ -212,6 +220,61 @@ state and raises `ActionRejected` like any command, and recomputes derived
 numbers through the module's own rules; there is no generic patch, raw SQL
 or script. No player or referee runtime includes these operations.
 
+### Creation overrides
+
+A module with version 2 character rules may let a campaign negotiate
+changes to a draft's starting qualities, by supplying `CreationOverrides`
+([creation overrides contract](designs/creation_overrides_contract.md)
+section 3). The framework never interprets a quality: it checks shapes and
+bounds, computes digests, and calls these hooks. The module owns every
+quality's meaning and effect.
+
+| Field | Meaning |
+|---|---|
+| `version` | 1; any other is refused when the module is resolved |
+| `categories` | 1 to 16 `Category(id, label, description)`: IDs of lowercase letters, digits and `_` (never a path), labels of 1 to 80 characters, descriptions up to 500. Category policy is per category |
+| `discover(state, character_id, query)` | Pure: one page, `{"items", "next"}`, of what can be overridden on the draft now: its qualities (with their category, current value and actions, each action's parameters described by type) or, for a `quality_id` and `parameter`, that parameter's options. Guidance, never a validator. At most 50 items and 16,384 result bytes |
+| `preview(state, character_id, intent, policy)` | Pure and deterministic, with no random source: exactly what the intent would do now: its `plan`, `headline`, `affected` qualities, `effects`, `waivers`, creation-only `allowances`, `later_steps`, `consequences`, `limitations` and `dependencies`. Everything but `dependencies` must be a function of the intent and `dependencies` alone, so an unrelated creation step leaves the preview, and its digest, unchanged. At most 12,288 result bytes |
+| `apply(OverrideAction)` | Deterministic, with no random source: performs exactly the plan, enforcing every technical invariant itself, and returns an `Outcome` whose result is the receipt (at most 8,192 result bytes) |
+| `allowances(state, character_id)` | Pure: the draft's live creation-only allowances, each `{"allowance_id", "quality_id", "summary", "remaining"}`. `complete` must drop them |
+
+An intent is exactly `{"changes": [...]}`, 1 to 16 changes of exactly
+`{"quality_id", "action_id", "parameters"}`, in at most 4,096 result bytes.
+The runtime refuses any other shape with `IntentError` before the module
+sees it. A module refuses what it cannot do as asked with
+`IntentError(problems)` (`invalid_intent`), and an unknown quality, action
+or parameter with `UnsupportedOverride` (`override_unsupported`). Neither
+ever echoes client input. A discovery page, preview or receipt of the wrong
+shape or over its bound is a module failure (`TypeError`), never cut; a
+preview over its bound is refused as too many changes at once.
+
+`OverrideAction` carries copies of the state, the plan, the draft's
+effective policy and an `authorization` the host builds: who authorized the
+change (`accepted_offer` or `direct`), its record, the host, the proposal
+and offer, and the reason. It never comes from a client, a tool argument or
+a model. `Runtime.override_apply` refuses anything else.
+
+Result bytes are `len(json.dumps(value))` with Python's defaults, as the
+referee bridge sends a tool result: every non-ASCII character is escaped.
+`modules.result_bytes` measures it, and `modules.preview_digest` is a
+preview's SHA-256 over its canonical JSON.
+
+A campaign's settings document version 2 adds the category policy:
+`{"overrides": {"categories": {CATEGORY: "approval_required" | "blocked"}}}`
+(contract section 4). Only a module with this capability accepts version
+2; version 1 documents keep their meaning, and every category is then
+`approval_required`. `policy.category_policy` gives each category's policy,
+and `policy.blocked_categories` the blocked categories a guest's intent
+names (consequential qualities never block). Policy never limits the host.
+
+A module may add this under its current version and state version only if
+a game whose state has none of its new keys behaves exactly as before:
+absent override state reads as "no overrides". The module's duties
+(original values kept, one calculation, accepted authority persisting,
+completion ending creation-only authority, reversal as a new intent, no
+hidden families) are the contract's section 3; Trailhead's
+[creation overrides](trailhead.md#creation-overrides) show them.
+
 ### Providers
 
 `Provider(id, version, operation, implementation)` supplies one operation.
@@ -240,8 +303,9 @@ Its view is None, so its snapshots stay metadata-only. `tesserae roll` and
 `builtin.dice` 1, and authenticated participants. See [relay.md](relay.md).
 
 `trailhead` version 1 is the original module with characters: walkers with a
-trait and stamina, created in steps, who push on or recover, and a campaign
-setting for their starting stamina. It requires
+trait and stamina, created in steps, who push on or recover, a campaign
+setting for their starting stamina, and creation overrides in two
+categories. It requires
 `dice.roll.v1` from `builtin.dice` 1, and authenticated participants. See
 [trailhead.md](trailhead.md).
 

@@ -153,7 +153,12 @@ administration. Delivery spans generic contracts, request persistence,
 referee/client controls and separately reviewed private module integration.
 OVR-1 ([#173](https://github.com/coghex/tesserae/issues/173)) specifies the
 [creation overrides contract](designs/creation_overrides_contract.md) that
-the implementation slices follow; nothing of it is implemented yet.
+the implementation slices follow. OVR-2
+([#174](https://github.com/coghex/tesserae/issues/174)) adds the optional
+module capability, rules document version 2's category policy and two
+original Trailhead families ([modules](modules.md#creation-overrides),
+[Trailhead](trailhead.md#creation-overrides)). The negotiation's records,
+messages, referee tools and client controls follow in OVR-3 to OVR-6.
 
 ## Later browser work
 

@@ -200,7 +200,26 @@ class DocumentTests(RulesCase):
                 document(exceptions=[exception(ash) | {"settings": {}}]), "at least one",
             ),
             "an extra field": (document(script="rm"), "1 unexpected field"),
-            "a later document version": (document(document_version=2), "must be 1"),
+            "a later document version": (document(document_version=3), "must be 1 or 2"),
+            "version 2 without its policy": (document(document_version=2), "missing overrides"),
+            "version 1 with a policy": (
+                document(overrides={"categories": {}}), "1 unexpected field",
+            ),
+            "an undeclared category": (
+                document(document_version=2, overrides={"categories": {"magic": "blocked"}}),
+                "unknown category 'magic'; this module declares endurance, supplies",
+            ),
+            "an unknown policy": (
+                document(document_version=2,
+                         overrides={"categories": {"supplies": "automatic"}}),
+                "approval_required or blocked",
+            ),
+            "a policy with more fields": (
+                document(document_version=2,
+                         overrides={"categories": {}, "auto": True}),
+                'exactly {"categories"',
+            ),
+            "a true version": (document(document_version=True), "must be 1 or 2"),
             "long guidance": (document(guidance="x" * 8001), "8000"),
             "not an object": ([], "JSON object"),
         }  # fmt: skip
@@ -342,6 +361,8 @@ class CompatibilityTests(unittest.TestCase):
             ),
         )
         module = replace(TRAILHEAD_MODULE, characters=characters)
+        if characters.version == 1:  # overrides need version 2 rules
+            module = replace(module, creation_overrides=None)
         if settings != "keep":
             module = replace(module, settings=settings)
         return Catalog([module], [DICE_PROVIDER])

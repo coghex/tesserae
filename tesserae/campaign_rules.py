@@ -71,6 +71,13 @@ class CampaignRules:
             "guidance": None if document is None else document["guidance"],
             "requirements": None,
         }
+        if runtime.creation_overrides is not None:
+            policy = policies.category_policy(runtime, document)
+            view["override_categories"] = [
+                {"category_id": c["category_id"], "label": c["label"],
+                 "policy": policy[c["category_id"]]}
+                for c in runtime.override_categories()
+            ]  # fmt: skip
         if runtime.settings is None:
             return view
         policy = policies.effective(runtime, revision, document, character_id)
@@ -323,8 +330,13 @@ def rules_message(result: dict, request_id: str | None = None) -> dict:
 
 def _checked(document, binding: dict, runtime) -> dict:
     try:
+        categories = None
+        if runtime.creation_overrides is not None:
+            categories = frozenset(
+                c["category_id"] for c in runtime.override_categories()
+            )
         return policies.check_shape(
-            document, binding, frozenset(runtime.settings_defaults())
+            document, binding, frozenset(runtime.settings_defaults()), categories
         )
     except policies.DocumentError as error:
         raise _invalid(error.problems) from None
