@@ -77,7 +77,7 @@ referee, under the [model-free testing policy](testing.md): the
 [acceptance record](acceptance/characters.md) shows it. The private module's
 character rules and the private campaign continuation follow separately.
 
-## Fourth slice planned: M2-4
+## Fourth slice: M2-4
 
 The owner selected campaign hosts, rules and administration after M2-3.
 The [delivery plan](designs/campaign_authority_design.md), tracker
@@ -119,8 +119,8 @@ stale, busy and privilege-loss refusals, and GOV-7
 Console and Settings. GOV-8 ([#139](https://github.com/coghex/tesserae/issues/139))
 publishes the [governance runbook](governance-runbook.md) and the
 [acceptance record](acceptance/governance.md): a model-free run across both
-clients passed all 94 checks; the tracker closes once its private record is
-reviewed.
+clients passed all 94 checks. The tracker is closed following independent
+review.
 The filed public slices begin with exact contracts, then authority, configuration,
 administration, requests/referee context, the two clients and model-free
 acceptance (#132–#139); the
@@ -135,10 +135,22 @@ creation requirements and scripts, host administration, an explicit campaign
 import and model-free mixed-client acceptance. It is tracked as M2-5,
 [#140](https://github.com/coghex/tesserae/issues/140), with children #141–#147.
 It depends on the new public contracts and has its own private implementation
-and named-head review. An owner-requested live playtest follows separately;
+and named-head review. This integration tracker is complete and closed after
+scripted CLI and actual VM-browser acceptance. Live play remains separate;
 private source data, paths and evidence do not belong in this repository.
 Neither the public framework acceptance nor this overview implements that
 private integration or resumes the original campaign.
+
+## Next slice: negotiated creation overrides
+
+The owner selected [negotiated creation overrides](designs/negotiated_creation_overrides_design.md)
+after the integration playtest exposed gaps in draft administration, under
+tracker [#172](https://github.com/coghex/tesserae/issues/172). This is
+a proposed delivery, not implemented behavior: cover all module-represented
+starting qualities, use category request policies, and separate the host's
+offer from the requester's acceptance. The host retains explicit direct
+administration. Delivery spans generic contracts, request persistence,
+referee/client controls and separately reviewed private module integration.
 
 ## Later browser work
 
