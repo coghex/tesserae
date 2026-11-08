@@ -100,18 +100,18 @@ holding a `CreationOverrides` (in `tesserae/modules.py`):
 ```python
 @dataclass(frozen=True)
 class Category:
-    id: str            # [a-z][a-z0-9_]{0,47}
-    label: str         # 1 to 80 characters
-    description: str   # up to 500 characters
+    id: str  # [a-z][a-z0-9_]{0,47}
+    label: str  # 1 to 80 characters
+    description: str  # up to 500 characters
 
 
 @dataclass(frozen=True)
 class OverrideAction:
     state: dict
     character_id: str
-    plan: dict              # the preview's plan, exactly
-    policy: dict            # the draft's effective policy
-    authorization: dict     # built by the host, section 3
+    plan: dict  # the preview's plan, exactly
+    policy: dict  # the draft's effective policy
+    authorization: dict  # built by the host, section 3
 
 
 @dataclass(frozen=True)
