@@ -331,6 +331,9 @@ old client never forces the player to retype, which would be a new request.
 
 ## 6. The bridge: the whitelisted scripts
 
+> Creation overrides add discovery, preview, response and host override
+> tools: [creation overrides contract](creation_overrides_contract.md) section 11.
+
 `python -m tesserae.referee.bridge` is an MCP stdio server that Codex starts.
 It holds no game logic: each tool is a request over the host's Unix socket
 (`run/<game_id>.sock`, mode 0600), carrying the job token. The host checks the

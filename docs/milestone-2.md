@@ -151,6 +151,9 @@ starting qualities, use category request policies, and separate the host's
 offer from the requester's acceptance. The host retains explicit direct
 administration. Delivery spans generic contracts, request persistence,
 referee/client controls and separately reviewed private module integration.
+OVR-1 ([#173](https://github.com/coghex/tesserae/issues/173)) specifies the
+[creation overrides contract](designs/creation_overrides_contract.md) that
+the implementation slices follow; nothing of it is implemented yet.
 
 ## Later browser work
 
