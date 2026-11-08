@@ -222,6 +222,9 @@ sent first.
 
 ## 5. The campaign settings document
 
+> Document version 2 adds category override policy for modules with creation
+> overrides: [creation overrides contract](creation_overrides_contract.md) section 4. Version 1 is unchanged.
+
 ### Shape
 
 ```json
@@ -547,6 +550,11 @@ play.
 
 ## 9. Guest requests and host decisions
 
+> For a module with creation overrides, requests to change a draft use the
+> negotiated `creation_override` kind instead of immediate approval, and
+> legacy draft requests are superseded: [creation overrides contract](creation_overrides_contract.md)
+> sections 6, 7 and 13. Everything else here is unchanged.
+
 ### A request
 
 A **proposal** is a durable request for a host decision. Its identity is
@@ -647,6 +655,9 @@ people involved. A proposal, a decision and a cancel each send one. Other
 players keep playing; the referee is busy only while a job actually runs.
 
 ## 10. The referee
+
+> Creation overrides add an `overrides` context block and their own tools:
+> [creation overrides contract](creation_overrides_contract.md) section 11.
 
 **Context.** In a game whose module has settings, or that has an active
 document, `get_context` adds `policy` (the revision, the effective settings
@@ -834,6 +845,9 @@ look at the sheet shows the new revision, and approval completes with the
 bonus. A denial leaves revision 1 and the draft unchanged.
 
 ## 15. Clients (the CLI delivered by GOV-6, the browser by GOV-7)
+
+> Offer, response, withdrawal and direct-override controls:
+> [creation overrides contract](creation_overrides_contract.md) section 12.
 
 **CLI** (`connect --lobby`, inside a campaign):
 

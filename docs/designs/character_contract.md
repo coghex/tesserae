@@ -348,6 +348,11 @@ the draft's next creation job lists it and narrates it privately.
 
 ## 9. Host messages
 
+> With creation overrides, `character_complete` also expires unused starting
+> allowances and stales the draft's open requests, and accepting an offer
+> advances the draft revision: [creation overrides contract](creation_overrides_contract.md) sections 7
+> and 8.
+
 All version 1, strict as the protocol is, inside a selected campaign of a
 lobby host. In a campaign without characters every message below is refused
 with `characters_unsupported` and nothing changes.

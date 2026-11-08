@@ -4,6 +4,7 @@ Status: proposed implementation design, following the owner's decisions on
 2026-11-08. Issue filing is authorized. No runtime behavior is changed by this
 document. Tracker [#172](https://github.com/coghex/tesserae/issues/172);
 planning [PR #171](https://github.com/coghex/tesserae/pull/171).
+The exact rules are the [creation overrides contract](creation_overrides_contract.md) (OVR-1).
 Public baseline: `c8a954cc275934cb159a099624ce6511a396a29e`.
 
 This extends the [campaign authority design](campaign_authority_design.md)
