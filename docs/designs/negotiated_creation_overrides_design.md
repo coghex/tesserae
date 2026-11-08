@@ -2,7 +2,9 @@
 
 Status: proposed implementation design, following the owner's decisions on
 2026-11-08. Issue filing is authorized. No runtime behavior is changed by this
-document. Public baseline: `c8a954cc275934cb159a099624ce6511a396a29e`.
+document. Tracker [#172](https://github.com/coghex/tesserae/issues/172);
+planning [PR #171](https://github.com/coghex/tesserae/pull/171).
+Public baseline: `c8a954cc275934cb159a099624ce6511a396a29e`.
 
 This extends the [campaign authority design](campaign_authority_design.md)
 and [governance contract](governance_contract.md). Where they currently make
@@ -243,17 +245,17 @@ through tools without silent truncation of authoritative effects.
 
 | Slice | Delivery | Depends on |
 |---|---|---|
-| OVR-1 | Normative capability, policy, negotiation and migration contract | None |
-| OVR-2 | Optional module capability, discovery, preview and category policy | OVR-1 |
-| OVR-3 | Persist requests/offers; guarded atomic acceptance and direct host application | OVR-2 |
-| OVR-4 | Referee tools, private notifications and conversational recovery | OVR-3 |
-| OVR-5 | CLI host verdict and requester response controls | OVR-3; OVR-4 for conversational validation |
-| OVR-6 | Browser host verdict and requester response controls | OVR-3; OVR-4 for conversational validation |
-| OVR-7 | Private complete quality inventory and integration contract | OVR-1 for alignment; research can start now |
-| OVR-8 | Private general override engine and scalar/generated-quality integration | OVR-2, OVR-7; OVR-3 for integration checks |
-| OVR-9 | Private collection/grant integration and completion persistence | OVR-8 |
-| OVR-10 | Public original-fixture scripted mixed-client acceptance and runbook | OVR-4, OVR-5, OVR-6 |
-| OVR-11 | Private real-module mixed-client/VM acceptance and live upgrade handoff | OVR-9, OVR-10 |
+| [OVR-1 / #173](https://github.com/coghex/tesserae/issues/173) | Normative capability, policy, negotiation and migration contract | None |
+| [OVR-2 / #174](https://github.com/coghex/tesserae/issues/174) | Optional module capability, discovery, preview and category policy | [OVR-1 / #173](https://github.com/coghex/tesserae/issues/173) |
+| [OVR-3 / #175](https://github.com/coghex/tesserae/issues/175) | Persist requests/offers; guarded atomic acceptance and direct host application | [OVR-2 / #174](https://github.com/coghex/tesserae/issues/174) |
+| [OVR-4 / #176](https://github.com/coghex/tesserae/issues/176) | Referee tools, private notifications and conversational recovery | [OVR-3 / #175](https://github.com/coghex/tesserae/issues/175) |
+| [OVR-5 / #177](https://github.com/coghex/tesserae/issues/177) | CLI host verdict and requester response controls | OVR-3; OVR-4 for conversational validation |
+| [OVR-6 / #178](https://github.com/coghex/tesserae/issues/178) | Browser host verdict and requester response controls | OVR-3; OVR-4 for conversational validation |
+| [OVR-7 / #179](https://github.com/coghex/tesserae/issues/179) | Private complete quality inventory and integration contract | OVR-1 for alignment; research can start now |
+| [OVR-8 / #180](https://github.com/coghex/tesserae/issues/180) | Private general override engine and scalar/generated-quality integration | OVR-2, OVR-7; OVR-3 for integration checks |
+| [OVR-9 / #181](https://github.com/coghex/tesserae/issues/181) | Private collection/grant integration and completion persistence | [OVR-8 / #180](https://github.com/coghex/tesserae/issues/180) |
+| [OVR-10 / #182](https://github.com/coghex/tesserae/issues/182) | Public original-fixture scripted mixed-client acceptance and runbook | OVR-4, OVR-5, OVR-6 |
+| [OVR-11 / #183](https://github.com/coghex/tesserae/issues/183) | Private real-module mixed-client/VM acceptance and live upgrade handoff | OVR-9, OVR-10 |
 
 The private slices contain no public source-specific examples. Their detailed
 quality inventory, reproducer and integration plan live in the owner's local

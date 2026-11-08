@@ -144,7 +144,8 @@ private integration or resumes the original campaign.
 ## Next slice: negotiated creation overrides
 
 The owner selected [negotiated creation overrides](designs/negotiated_creation_overrides_design.md)
-after the integration playtest exposed gaps in draft administration. This is
+after the integration playtest exposed gaps in draft administration, under
+tracker [#172](https://github.com/coghex/tesserae/issues/172). This is
 a proposed delivery, not implemented behavior: cover all module-represented
 starting qualities, use category request policies, and separate the host's
 offer from the requester's acceptance. The host retains explicit direct
