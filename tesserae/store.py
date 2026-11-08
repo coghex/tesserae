@@ -957,15 +957,18 @@ class GameStore:
                 return session_error("session_revoked"), False
             record = self._find(context.participant_id, request.request_id)
             current = self._current_revision()
-            if record is not None:
-                if record.content == content:
-                    return record.to_message(), False
+            if (record is not None and record.content != content) or (
+                record is None
+                and self.mutation_recorded(context.participant_id, request.request_id)
+            ):
                 return error_message(
                     "request_conflict",
                     "This request_id was already used for a different command.",
                     request_id=request.request_id,
                     revision=current,
                 ), False
+            if record is not None:
+                return record.to_message(), False
             if acting:
                 refusal = self._actor_refusal(
                     context, actor, runtime.is_step(request.command)
@@ -1064,13 +1067,16 @@ class GameStore:
                     precondition()
                 current = self._current_revision()
                 record = self._find(by.sender, request.request_id)
-                if record is not None:
-                    if record.content == request.content():
-                        return record.to_message(), False
+                if (record is not None and record.content != request.content()) or (
+                    record is None
+                    and self.mutation_recorded(by.sender, request.request_id)
+                ):
                     raise Refusal(
                         "request_conflict",
                         "This request_id was already used for a different command.",
                     )
+                if record is not None:
+                    return record.to_message(), False
                 busy = self.busy_refusal(by.job_id)
                 if busy is not None:
                     raise busy
@@ -1174,6 +1180,18 @@ class GameStore:
         """Send the `proposal` notice for this proposal once the caller's
         transaction commits (none if it rolls back)."""
         self._proposal_notices.append(proposal_id)
+
+    def mutation_recorded(self, sender: str, request_id: str) -> bool:
+        """Whether this sender's request ID is a host mutation's (its replay
+        record), so a command reusing it is a conflict: one namespace spans
+        both tables."""
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM host_mutations WHERE sender = ? AND request_id = ?",
+                (sender, request_id),
+            ).fetchone()
+            is not None
+        )
 
     def recorded_command(self, sender: str, request_id: str) -> "CommandRecord | None":
         """The command recorded under this sender and request ID, or None."""
@@ -1678,13 +1696,16 @@ class GameStore:
                     return session_error("session_revoked"), False
                 current = self._current_revision()
                 record = self._find(context.participant_id, request_id)
-                if record is not None:
-                    if record.content == content:
-                        return record.to_message(), False
+                if (record is not None and record.content != content) or (
+                    record is None
+                    and self.mutation_recorded(context.participant_id, request_id)
+                ):
                     raise Refusal(
                         "request_conflict",
                         "This request_id was already used for a different command.",
                     )
+                if record is not None:
+                    return record.to_message(), False
                 try:
                     state, result = apply(runtime, self._state(), _now())
                 except ActionRejected as rejection:

@@ -644,6 +644,95 @@ class RaceTests(NegotiationCase):
         self.accept(offer_id)
 
 
+class RequestIdTests(NegotiationCase):
+    """One sender's request IDs span commands and host mutations: an ID
+    used in either is a conflict in the other, in both directions."""
+
+    def conflict(self, call):
+        result = call()
+        if isinstance(result, tuple) and isinstance(result[0], dict):
+            self.assertEqual(result[0].get("code"), "request_conflict", result)
+            return
+        raise AssertionError(f"not refused: {result!r}")
+
+    def test_requester_namespace_both_ways(self):
+        ash = self.draft()
+
+        def creation_step(request_id):
+            raw = command(request_id, "trailhead.trait", {"trait": "quick"},
+                          self.store.revision())  # fmt: skip
+            return self.store.execute_command(
+                self.alice, raw, actor=Actor(ash, "creation")
+            )
+
+        self.request(ash, request_id="x-1")  # a host mutation, then a command
+        tables = self.tables()
+        self.conflict(lambda: creation_step("x-1"))
+        self.conflict(lambda: self.store.create_character(self.alice, "x-1", "Fir"))
+        self.assertEqual(self.tables(), tables)
+        self.assertTrue(creation_step("x-2")[1])  # a command, then mutations
+        tables = self.tables()
+        for call in (
+            lambda: self.request(ash, request_id="x-2"),
+            lambda: HostRequests(self.store).cancel(
+                self.alice.participant_id, "x-2", "hp-000000000000"
+            ),
+        ):
+            self.assertEqual(self.refused(call).code, "request_conflict")
+        self.assertEqual(self.tables(), tables)
+
+    def test_an_acceptance_and_a_cancel_never_share_an_id(self):
+        ash, birch = self.draft(), self.draft(name="Birch")
+        offer_id = self.offer(self.request(ash)["proposal_id"])["offer_id"]
+        other = self.request(birch)
+        self.accept(offer_id, request_id="a-1")
+        refused = self.refused(HostRequests(self.store).cancel,
+                               self.alice.participant_id, "a-1", other["proposal_id"])  # fmt: skip
+        self.assertEqual(refused.code, "request_conflict")
+        self.assertEqual(self.state_of(other["proposal_id"]), "pending_host")
+        HostRequests(self.store).cancel(self.alice.participant_id, "c-1",
+                                        other["proposal_id"])  # fmt: skip
+        third = self.request(ash, ROLL_3)
+        offer_id = self.offer(third["proposal_id"])["offer_id"]
+        self.assertEqual(self.refused(self.accept, offer_id, request_id="c-1").code,
+                         "request_conflict")  # fmt: skip
+
+    def test_host_namespace_both_ways(self):
+        from tesserae.campaign_rules import CampaignRules
+
+        ash = self.draft()
+        rules = CampaignRules(self.store)
+        document = {"document_version": 1, "module": {"id": "trailhead", "version": "1",
+                    "state_version": 1}, "settings": {}, "exceptions": [],
+                    "guidance": None}  # fmt: skip
+
+        def host_command(request_id):
+            raw = json.dumps({"version": 1, "type": "command", "request_id": request_id,
+                              "expected_revision": self.store.revision(),
+                              "command": "trailhead.describe",
+                              "args": {"character_id": ash, "description": "Tall."}})  # fmt: skip
+            return self.store.execute_host_command(HOST, raw)
+
+        self.assertTrue(host_command("h-1")[1])
+        tables = self.tables()
+        for call in (
+            lambda: rules.import_document(document, HOST, request_id="h-1"),
+            lambda: self.overrides.decide(HOST, self.host(), "h-1", "hp-000000000000",
+                                          "deny", None, None, "No."),
+        ):  # fmt: skip
+            self.assertEqual(self.refused(call).code, "request_conflict")
+        self.assertEqual(self.tables(), tables)
+        rules.import_document(document, HOST, request_id="h-2")
+        tables = self.tables()
+        self.conflict(lambda: host_command("h-2"))
+        self.assertEqual(
+            self.refused(self.overrides.apply_direct, HOST, "h-2", ash, ROPE,
+                         self.digest(ash, ROPE), "Mine.").code,
+            "request_conflict",
+        )  # fmt: skip
+        self.assertEqual(self.tables(), tables)
+
+
 class AtomicityTests(NegotiationCase):
     def test_a_failure_at_any_step_of_acceptance_applies_nothing(self):
         ash = self.draft()

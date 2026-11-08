@@ -165,11 +165,13 @@ class RequestTests(RequestCase):
             bob, "request_cancel", request_id="c-1", proposal_id=first
         )
         self.assertEqual(refused["code"], "proposal_unavailable")  # not Bob's own
+        # Not "c-1": Alice used that ID for creating Ash, and one namespace
+        # spans commands and host mutations.
         withdrawn = await self.ask(
-            alice, "request_cancel", request_id="c-1", proposal_id=first
+            alice, "request_cancel", request_id="w-1", proposal_id=first
         )
         self.assertEqual(
-            (withdrawn["state"], withdrawn["request_id"]), ("cancelled", "c-1")
+            (withdrawn["state"], withdrawn["request_id"]), ("cancelled", "w-1")
         )
         self.assertEqual((await self.proposal_notice(bob))["state"], "cancelled")
         with self.trail() as store:

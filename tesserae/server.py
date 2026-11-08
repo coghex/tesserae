@@ -852,7 +852,23 @@ class CampaignService:
                 self.check_role(other)
             if transferred:
                 logger.info("Campaign %s has a new campaign host", self.game_id)
+                await self._announce_open_overrides()
         return reply
+
+    async def _announce_open_overrides(self):
+        """After a transfer: the `proposal` notice for every open negotiated
+        request, so the new host learns of what it inherited without the
+        guests acting (creation overrides contract section 7); each is
+        decided when sent, to the requester and the current host only."""
+        if self._runtime.creation_overrides is None:
+            return
+        try:
+            open_ids = await self._call(_open_override_ids)
+        except Exception:
+            logger.exception("Could not list open override requests to announce")
+            return
+        for proposal_id in open_ids:
+            self._notify_proposal(proposal_id)
 
     def check_role(self, session: "_Session"):
         """Tell `session` its role if it has changed since it was last told,
@@ -1725,6 +1741,12 @@ def _rules_read(store: GameStore, context, request, *, role):
             return rules_message(rules.document(request.revision))
         except Refusal as refusal:
             return refusal.message(None, None)
+
+
+def _open_override_ids(store: GameStore) -> list[str]:
+    return [row[0] for row in store.query(
+        "SELECT proposal_id FROM host_requests WHERE kind = 'creation_override' "
+        "AND state IN ('pending_host', 'awaiting_player') ORDER BY rowid")]  # fmt: skip
 
 
 _OVERRIDE_READS = frozenset({

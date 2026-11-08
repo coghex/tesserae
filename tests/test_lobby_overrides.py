@@ -158,11 +158,23 @@ class NegotiationTests(OverrideCase):
         alice, _ = await self.enter("alice")
         dora, _ = await self.enter("dora")
         ash = (await self.create(alice, "c-1", "Ash"))["character_id"]
+        birch = (await self.create(alice, "c-2", "Birch"))["character_id"]
         proposal_id = await self.requested(alice, bob, ash)
         offered = await self.offered(bob, ash, proposal_id)
+        asked = await self.ask(
+            alice, "override_request", request_id="q-2", character_id=birch,
+            intent=MODIFIER, explanation="Also a guide.",
+        )  # fmt: skip
+        waiting = asked["proposal_id"]
         transferred = await self.transfer(bob, "dora")
         self.assertEqual(transferred["type"], "role", transferred)
-        self.assertEqual(await self.role_notice(dora), "host")
+        # The new host hears its role and each request it inherits, with no
+        # guest doing anything.
+        await self.both(
+            dora, ("role", {"role": "host"}),
+            ("proposal", {"proposal_id": proposal_id}),
+            ("proposal", {"proposal_id": waiting, "state": "pending_host"}),
+        )  # fmt: skip
         # Reads report it at once.
         detail = await self.ask(alice, "override_detail", proposal_id=proposal_id)
         self.assertEqual(

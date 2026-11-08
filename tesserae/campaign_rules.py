@@ -287,6 +287,12 @@ def mutation(store: GameStore, sender: str, request_id, kind, content, apply, ch
                 "WHERE sender = ? AND request_id = ?",
                 (sender, request_id),
             ).fetchone()
+            if row is None and store.recorded_command(sender, request_id):
+                # One namespace spans commands and host mutations.
+                raise Refusal(
+                    "request_conflict",
+                    "This request_id was already used for a different request.",
+                )
             if row is not None:
                 if row[0] != recorded:
                     raise Refusal(
