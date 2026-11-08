@@ -32,8 +32,10 @@ import threading
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
+from .. import overrides as negotiated
 from ..campaign_rules import CampaignRules, requirements, rules_message
 from ..host_requests import RECENT, HostRequests, proposal_message
+from ..modules import result_bytes
 from ..protocol import PROTOCOL_VERSION
 from ..store import GameStore, ParticipantContext, Refusal
 from .store import (
@@ -66,11 +68,38 @@ TOOL_ARGUMENTS = {
     "host_activate_rules": frozenset(
         {"step_id", "revision", "expected_policy_revision"}
     ),
+    # Negotiated creation overrides (creation overrides contract section 11).
+    "override_discover": frozenset({"character_id", "query"}),
+    "override_preview": frozenset({"character_id", "intent"}),
+    "override_requests": frozenset({"character_id", "states", "after"}),
+    "override_detail": frozenset({"proposal_id"}),
+    "override_offers": frozenset({"proposal_id", "after"}),
+    "override_offer": frozenset({"offer_id"}),
+    "override_history": frozenset({"character_id", "after"}),
+    "override_record": frozenset({"record_id"}),
+    "override_respond": frozenset(
+        {"step_id", "offer_id", "response", "preview_digest", "note"}
+    ),
+    "host_override_decide": frozenset(
+        {"step_id", "proposal_id", "decision", "preview_digest", "intent", "note"}
+    ),
+    "host_override_withdraw": frozenset({"step_id", "offer_id", "note"}),
+    "host_override_apply": frozenset(
+        {"step_id", "character_id", "intent", "preview_digest", "reason"}
+    ),
 }
 HOST_TOOLS = frozenset(
     {"host_operations", "host_act", "host_decide", "host_propose_rules",
-     "host_activate_rules"}
+     "host_activate_rules", "host_override_decide", "host_override_withdraw",
+     "host_override_apply"}
 )  # fmt: skip
+OVERRIDE_READS = frozenset(
+    {"override_discover", "override_preview", "override_requests", "override_detail",
+     "override_offers", "override_offer", "override_history", "override_record"}
+)  # fmt: skip
+# The context's `overrides` block (creation overrides contract section 11).
+MINE, RECENT_OVERRIDES, PENDING_HOST = 3, 2, 3
+OVERRIDES_BLOCK_BYTES = 10240
 # A refusal that settles a step. A stale revision does not: nothing ran, and
 # the same step ID may be retried at the new revision.
 RETRYABLE = frozenset({"stale_revision"})
@@ -99,6 +128,10 @@ class BridgeTools:
     the host can notify players; `log(entry)` receives every call and result
     (never a token). Safe to call from several threads.
 
+    `campaign_host(job)`, given by a lobby host, returns the campaign's
+    host player now, read under the registry guard of the job's session (None
+    with none), so an offer by a former host is found stale.
+
     `host_authority(job)`, given by a lobby host, returns a context manager
     that takes the registry guard for the job's sender's session and yields
     its `Decider` while it is the campaign host, else raises
@@ -111,11 +144,13 @@ class BridgeTools:
     action of the revoked job can commit."""
 
     def __init__(self, open_store, *, on_commit=None, log=None,
-                 host_authority=None, on_proposal=None):  # fmt: skip
+                 host_authority=None, on_proposal=None,
+                 campaign_host=None):  # fmt: skip
         self._open = open_store
         self._on_commit = on_commit
         self._log = log
         self.host_authority = host_authority
+        self.campaign_host = campaign_host
         self.on_proposal = on_proposal
         self._grant = None  # (job_id, token) of the running job
         self._guard = threading.Lock()
@@ -193,7 +228,18 @@ class BridgeTools:
         if tool in ("act", "referee_act"):
             return self._act(store, referee, grant, job, tool, args)
         if tool == "propose_host_decision":
+            if args["kind"] == negotiated.KIND:
+                return self._propose_override(store, referee, grant, job, args)
             return self._propose(store, referee, grant, job, args)
+        if tool == "override_respond":
+            return self._respond(store, referee, grant, job, args)
+        if tool in OVERRIDE_READS:
+            with self._host(job, optional=True) as by:
+                with store.snapshot():
+                    if by is not None and not _participant_holds(store, by):
+                        by = None
+                    viewer = self._viewer(job, by)
+                    return _override_read(store, job, viewer, tool, args)
         if tool in HOST_TOOLS:
             with self._host(job) as by:
                 if tool == "host_operations":
@@ -222,6 +268,96 @@ class BridgeTools:
                     return self._get_context(store, referee, job, args, by)
         with store.snapshot():  # one committed state for every read below
             return getattr(self, f"_{tool}")(store, referee, job, args)
+
+    def _viewer(self, job: Job, by) -> "negotiated.Viewer":
+        """Who a job reads and acts as (section 11): the host while its
+        sender is the campaign host at this call, else its own sender."""
+        campaign_host = None
+        if by is not None:
+            campaign_host = by.player_id
+        elif self.campaign_host is not None:
+            campaign_host = self.campaign_host(job)
+        return negotiated.Viewer(job.participant_id, by is not None, campaign_host)
+
+    def _propose_override(self, store, referee, grant, job: Job, args: dict) -> dict:
+        """`propose_host_decision` of kind `creation_override`: checked before
+        it is journaled (refused, never stored, if unsupported, invalid or
+        blocked), then stored once per step. It never waits."""
+        if args["scope"] != "target":
+            raise ToolError("invalid_request", "A creation override's scope is target.")
+        target, payload = args["target"], args["payload"]
+        character_id = job.character_id
+        if target is not None:
+            if (
+                not isinstance(target, dict)
+                or set(target) != {"kind", "id"}
+                or (target["kind"] != "character")
+            ):
+                raise ToolError(
+                    "invalid_request", 'A target is {"kind": "character", "id": ID}.'
+                )
+            character_id = target["id"]
+        if character_id is None:
+            raise ToolError("invalid_request", "This job has no draft to default to.")
+        if not isinstance(payload, dict) or not (
+            {"intent"} <= set(payload) <= {"intent", "revises"}
+        ):
+            raise ToolError(
+                "invalid_request", 'The payload is {"intent", "revises" (optional)}.'
+            )
+        intent, revises = payload["intent"], payload.get("revises")
+        with self._host(job, optional=True) as by:
+            viewer = self._viewer(job, by)
+        requests = negotiated.Overrides(store)
+        with store.snapshot():
+            requests.check_request(viewer, character_id, intent, args["explanation"],
+                                   revises)  # fmt: skip
+        content = {k: v for k, v in args.items() if k != "step_id"}
+        step = referee.intend_step(job.job_id, args["step_id"], "propose",
+                                   job.participant_id, "propose_host_decision", content)  # fmt: skip
+        recorded = _recorded(step)
+        if recorded is not None:
+            return {
+                "step_id": step.step_id,
+                "status": "committed",
+                "proposal": recorded,
+            }
+        with self._acting:
+            view, _ = requests.request_from_step(
+                viewer, step.request_id, job.job_id, character_id, intent,
+                args["explanation"], revises,
+                check=self._still_running(referee, grant, job),
+            )  # fmt: skip
+            referee.record_step(job.job_id, step.step_id, "committed", view)
+        return {"step_id": step.step_id, "status": "committed", "proposal": view}
+
+    def _respond(self, store, referee, grant, job: Job, args: dict) -> dict:
+        """`override_respond`: the owner's accept or decline of an exact
+        offer, a step of kind `respond` in the sender's namespace, from any
+        of its jobs. It never selects the draft."""
+        viewer = self._viewer(job, None)  # a requester's own act, never a host's
+        content = {k: v for k, v in args.items() if k != "step_id"}
+        step = referee.intend_step(job.job_id, args["step_id"], "respond",
+                                   job.participant_id, "override_respond", content)  # fmt: skip
+        recorded = _recorded(step)
+        if recorded is not None:
+            return {"step_id": step.step_id, "status": "committed", "result": recorded}
+        with self._acting:
+            try:
+                result, applied = negotiated.Overrides(store).respond(
+                    viewer, step.request_id, args["offer_id"], args["response"],
+                    args["preview_digest"], args["note"],
+                    check=self._still_running(referee, grant, job), job_id=job.job_id,
+                )  # fmt: skip
+            except Refusal as refusal:
+                reply = refusal.message(step.request_id, None)
+                referee.record_step(job.job_id, step.step_id, "refused", reply)
+                raise ToolError(refusal.code, refusal.text) from None
+            reply = proposal_message(result, step.request_id)
+            if applied and "revision" in result and self._on_commit is not None:
+                self._on_commit(result["revision"])
+            referee.record_step(job.job_id, step.step_id, "committed", reply)
+        return {"step_id": step.step_id, "status": "committed", "result": reply}
 
     @contextmanager
     def _host(self, job: Job, *, optional=False):
@@ -313,7 +449,9 @@ class BridgeTools:
             referee.record_step(job.job_id, step.step_id, "committed", reply)
         if committed:
             effect = reply.get("effect") or {}
-            if reply["type"] == "result" and self._on_commit is not None:
+            if reply["type"] in ("result", "override_applied") and (
+                self._on_commit is not None
+            ):
                 self._on_commit(reply["revision"])
             elif reply["type"] == "proposal":
                 if "revision" in effect and self._on_commit is not None:
@@ -336,6 +474,9 @@ class BridgeTools:
                 "command": content["command"], "args": content["args"],
             })  # fmt: skip
             return store.execute_host_command(by, raw, precondition=check)
+        if tool in ("host_override_decide", "host_override_withdraw",
+                    "host_override_apply"):  # fmt: skip
+            return _host_override(store, by, step, tool, content, check)
         if tool == "host_decide":
             result, applied = HostRequests(store).decide(
                 by, step.request_id, content["proposal_id"], content["decision"],
@@ -400,6 +541,8 @@ class BridgeTools:
             result["pending_requests"] = [
                 r for r in requests.listing() if r["state"] == "pending"
             ]
+        if runtime.creation_overrides is not None:
+            result["overrides"] = _overrides_block(store, job, self._viewer(job, by))
         return _with_first_page(result, referee)
 
     def _get_view(self, store, referee, job, args) -> dict:
@@ -482,6 +625,99 @@ class BridgeTools:
                 self._on_commit(reply["revision"])
             referee.record_step(job.job_id, step.step_id, "committed", reply)
         return {"step_id": step.step_id, "status": "committed", "result": reply}
+
+
+def _override_read(store, job: Job, viewer, tool: str, args: dict) -> dict:
+    """One of section 11's read tools, under section 10's privacy rule for
+    the job's sender (`viewer`). `character_id` defaults to the job's own."""
+    reads = negotiated.Overrides(store)
+    if "character_id" in args:
+        character_id = args["character_id"] or job.character_id
+        if character_id is None and (tool != "override_requests"):
+            raise ToolError("invalid_request", "Name the character: this job has none.")
+    if tool == "override_discover":
+        return reads.discover(viewer, character_id, args["query"] or {})
+    if tool == "override_preview":
+        return reads.preview(viewer, character_id, args["intent"])
+    if tool == "override_requests":
+        page = reads.requests(viewer, args["character_id"], args["states"] or "all",
+                              args["after"])  # fmt: skip
+        return {"items": page["items"], "next": page["next"]}
+    if tool == "override_detail":
+        return reads.detail(viewer, args["proposal_id"])
+    if tool == "override_offers":
+        page = reads.offers(viewer, args["proposal_id"], args["after"])
+        return {k: page[k] for k in ("proposal_id", "items", "next")}
+    if tool == "override_offer":
+        return reads.offer(viewer, args["offer_id"])
+    if tool == "override_history":
+        page = reads.history(viewer, character_id, args["after"])
+        return {k: page[k] for k in ("character_id", "items", "next")}
+    return reads.record(viewer, args["record_id"])
+
+
+def _host_override(store, by, step, tool, content, check):
+    """A host override tool's step, run with the store's own replay in the
+    campaign host's namespace: (reply message, applied)."""
+    reads = negotiated.Overrides(store)
+    viewer = negotiated.Viewer(
+        by.participant.participant_id if by.participant is not None else by.sender,
+        True, by.player_id,
+    )  # fmt: skip
+    if tool == "host_override_decide":
+        result, applied = reads.decide(
+            by, viewer, step.request_id, content["proposal_id"], content["decision"],
+            content["preview_digest"], content["intent"], content["note"], check=check,
+        )  # fmt: skip
+        return proposal_message(result, step.request_id), applied
+    if tool == "host_override_withdraw":
+        result, applied = reads.withdraw(by, viewer, step.request_id,
+                                         content["offer_id"], content["note"],
+                                         check=check)  # fmt: skip
+        return proposal_message(result, step.request_id), applied
+    result, applied = reads.apply_direct(
+        by, step.request_id, content["character_id"], content["intent"],
+        content["preview_digest"], content["reason"], check=check,
+    )  # fmt: skip
+    return negotiated.message("override_applied", result, step.request_id), applied
+
+
+def _overrides_block(store: GameStore, job: Job, viewer) -> dict:
+    """The context's `overrides` block (creation overrides contract section
+    11): the categories' policy; the sender's open requests (newest first)
+    and terminal ones (most recently decided first); in a host job, the
+    requests waiting for the host (oldest first). Each list is short, and
+    its `…_more` counts the rest: `override_requests` pages them all."""
+    reads = negotiated.Overrides(store)
+    categories = [{"category_id": c["category_id"], "policy": c["policy"]}
+                  for c in reads.categories()]  # fmt: skip
+
+    def listed(where, parameters, order, limit):
+        rows = store.query(
+            "SELECT proposal_id FROM host_requests WHERE kind = ? AND "
+            f"{where} ORDER BY {order}",
+            (negotiated.KIND, *parameters),
+        )
+        entries = [reads.context_entry(viewer, reads._request_row(r[0]))
+                   for r in rows[:limit]]  # fmt: skip
+        return entries, len(rows) - len(entries)
+
+    open_states = "state IN ('pending_host', 'awaiting_player')"
+    mine, mine_more = listed(f"requester_participant = ? AND {open_states}",
+                             (job.participant_id,), "rowid DESC", MINE)  # fmt: skip
+    recent, recent_more = listed(
+        f"requester_participant = ? AND NOT ({open_states})", (job.participant_id,),
+        "decided_at DESC, rowid DESC", RECENT_OVERRIDES,
+    )  # fmt: skip
+    block = {"categories": categories, "mine": mine, "mine_more": mine_more,
+             "recent": recent, "recent_more": recent_more}  # fmt: skip
+    if viewer.host:
+        block["pending_host"], block["pending_host_more"] = listed(
+            "state = 'pending_host'", (), "rowid", PENDING_HOST
+        )
+    if result_bytes(block) > OVERRIDES_BLOCK_BYTES:
+        raise RuntimeError("The context's overrides block is over its bound.")
+    return block
 
 
 def _check_mode(runtime, job: Job, tool: str, command: str):

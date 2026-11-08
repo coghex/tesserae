@@ -11,9 +11,10 @@ tools and client controls that carry them, their bounds, and the upgrade of
 existing games. OVR-2 ([#174](https://github.com/coghex/tesserae/issues/174))
 implements sections 3 and 4 and section 14's module; OVR-3
 ([#175](https://github.com/coghex/tesserae/issues/175)) sections 5 to 10
-(`tesserae/overrides.py`, schema 10 and the client messages). The referee's
-tools and context (section 11) and the clients (section 12) are not
-implemented yet.
+(`tesserae/overrides.py`, schema 10 and the client messages); OVR-4
+([#176](https://github.com/coghex/tesserae/issues/176)) section 11 (the
+bridge's tools, the context's `overrides` block and the prompt). The
+clients (section 12) are not implemented yet.
 
 It extends the [governance contract](governance_contract.md), the
 [character contract](character_contract.md) and the
