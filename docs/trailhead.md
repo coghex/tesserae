@@ -19,7 +19,7 @@ store runs every operation below (see the
 
 | | |
 |---|---|
-| Module | `trailhead`, version `1`, state version 1, host API 1, character rules version 2, campaign settings version 1 |
+| Module | `trailhead`, version `1`, state version 1, host API 1, character rules version 2, campaign settings version 1, creation overrides version 1 |
 | Requires | `dice.roll.v1`, selected explicitly as `builtin.dice` version `1` |
 | Tags | `demo`, `original`, `dice`, `characters` (descriptive only) |
 | Participants | Authenticated participants only |
@@ -38,11 +38,13 @@ character's ID.
 | `trailhead.trait` | Exactly `{"trait": "steady"}`, `"quick"` or `"keen"` | Sets the trait; can be changed until approval. |
 | `trailhead.stamina` | Exactly `{}` | Rolls `1d3+1` once. A second roll is refused: the result stands. |
 | `trailhead.fact` | Exactly `{"fact": "background"` or `"home", "text", "provenance"}` | Records one agreed narrative fact (up to 300 characters) with where it came from: `chosen` by the player, `assumed` and accepted, `corrected`, or explicitly `unspecified` (with empty text). It changes no numbers; the sheet shows it. |
+| `trailhead.pick` | Exactly `{"item": ITEM}`, one of the outfitter's items | Spends one gear pick an applied override allowed ([below](#creation-overrides)). Refused without a pick, for an item already carried, or with 8 items. Nothing is rolled. |
 
 A draft can be completed once it has a name, a trait and stamina. Completing
 it is deterministic: a keen walker gets one more maximum stamina, so does
-every walker by its starting stamina bonus ([below](#campaign-settings)), and
-every walker starts at its maximum. Nothing is rolled at completion, so the player
+every walker by its starting stamina bonus ([below](#campaign-settings)) and
+by any overridden modifier, and every walker starts at its maximum. Unused
+gear picks expire then. Nothing is rolled at completion, so the player
 approves every roll.
 
 **Play** (as a ready walker):
@@ -83,6 +85,54 @@ Its requirements, the one description the referee and players see:
 
 There are no classes, levels or roles.
 
+## Creation overrides
+
+A draft's starting qualities can be changed by negotiation
+([creation overrides contract](designs/creation_overrides_contract.md)), in
+two original families. There are no classes, levels or roles here either.
+
+| Category | Quality | Actions | Effect |
+|---|---|---|---|
+| `endurance` | `stamina_roll` | `replace {"value": 2–4}` | Replaces the stamina roll; the walker must have rolled, and the roll stays in `rolled` as the original |
+| `endurance` | `max_stamina_modifier` | `set {"amount": -1–2}` | Added to the maximum stamina at approval, after the trait and any starting bonus |
+| `supplies` | `starting_gear` | `grant {"item"}`, `remove {"carried"}`, `allow {"count": 1–3}` | Adds one of the outfitter's items, removes a carried item, or allows picks (at most 3 at once) that the owner spends later with `trailhead.pick` |
+
+The outfitter's items are a bivouac sack, camp stove, climbing rope,
+compass, first-aid kit, headlamp, rain shell, spare socks, trail map, trail
+mix, trekking poles and water filter. Discovery lists the qualities with
+their current values, and pages the options of `item` (items not carried)
+and `carried` (items carried), five at a time, filtered by `match`.
+
+A preview depends only on what it lists in `dependencies`:
+- a replacement on `rolled` and any earlier replacement;
+- the modifier on the current modifier;
+- a grant or removal on the gear and its recorded changes (at most 16; a
+  change that undoes an earlier one drops its record, so it is allowed at
+  the limit);
+- picks on the picks left.
+
+So naming the walker, choosing its trait or recording a fact never changes
+a preview, while a host's gear correction or another applied override can.
+Applying a plan re-previews it and refuses one it would not make now
+(`invalid_intent`), and draws nothing.
+
+What the overrides keep:
+- **Originals.** `rolled` is never changed; a grant, pick or removal is
+  recorded against the original gear, and undoing one (a new intent) drops
+  its record.
+- **One calculation.** The effective roll and the modifier feed the same
+  maximum-stamina rule that completion, the sheet and the host's trait
+  correction use.
+- **Authority.** A pick beyond what was allowed is refused, and the stamina
+  step stays refused once rolled. The host's gear correction keeps the
+  records that still hold.
+- **Completion.** Unused picks expire at approval; the items used and every
+  record stay, and a ready walker gets no picks.
+
+The sheet shows `overrides` once there are any: the replacement with its
+`original` roll, the modifier, each recorded gear change, and picks left,
+each with who authorized it (`accepted_offer` or `direct`, and the record).
+
 ## Host administration
 
 The campaign host (it needs no walker) can run these; nothing rolls, and each
@@ -92,7 +142,7 @@ changes only its target:
 |---|---|---|
 | `trailhead.set_stamina` | `{"character_id", "stamina"}` | A ready walker's stamina, 0 to its maximum |
 | `trailhead.set_trait` | `{"character_id", "trait"}` | A ready walker's trait; its maximum is recomputed (keen +1, the starting bonus kept) and its stamina kept, lowered only to fit |
-| `trailhead.set_gear` | `{"character_id", "gear"}` | A walker's gear: up to 8 items of 1 to 60 characters |
+| `trailhead.set_gear` | `{"character_id", "gear"}` | A walker's gear: up to 8 items of 1 to 60 characters. Records of overridden gear are kept where they still hold |
 | `trailhead.describe` | `{"character_id", "description"}` | A walker's description, up to 500 characters |
 | `trailhead.npc_set` | `{"npc_id", "name", "note", "visible"}` | Adds or updates an NPC (up to 50); players see it only when visible |
 | `trailhead.scene_set` | `{"description"}` | The scene's description, which everyone sees |
@@ -113,7 +163,10 @@ character, an NPC and the scene (`trailhead`).
 
 `rolled` is the stamina roll; `stamina` and `max_stamina` are set at
 completion, with `bonus` (1 or 2) recorded only when a starting bonus
-applied, and `gear` and `description` only once the host set them. The
+applied, `gear` and `description` only once the host set them, and
+`overrides` only once an override was applied (`stamina_roll`,
+`max_stamina_modifier`, `gear` and, on a draft, `gear_picks`, each with
+its provenance). The
 state gains `npcs`, `scene` (`{"description"}`) and `prep` only once the host
 sets them; absent, the game is as before. The owner's sheet shows `trait`, `stamina` (the roll, while a
 draft), `max_stamina` and `in_danger`, and `gear` and `description` when set.
@@ -124,6 +177,6 @@ preparation.
 
 A version 2 seed declares ready walkers and their owners; its state must hold
 exactly the declared walkers, each ready with a valid trait and stamina, and
-an optional `bonus` of 1 or 2 counted in its maximum, `gear` and
-`description`; and may hold `npcs`, `scene` and `prep` (see
+an optional `bonus` of 1 or 2 counted in its maximum, `gear`, `description`
+and `overrides` (without picks); and may hold `npcs`, `scene` and `prep` (see
 [seeded creation](game_store.md#seeded-creation)).

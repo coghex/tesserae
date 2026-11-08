@@ -203,6 +203,32 @@ class LifecycleTests(Requests):
         )
         self.assertEqual(self.store.active_document()[1]["settings"], {})
 
+    def test_an_approval_keeps_the_active_documents_category_policy(self):
+        """A legacy approval that writes a new revision keeps the active
+        document's version (creation overrides contract section 4)."""
+        rules = CampaignRules(self.store)
+        imported, _ = rules.import_document(
+            {"document_version": 2, "module": {"id": "trailhead", "version": "1",
+             "state_version": 1}, "settings": {}, "exceptions": [], "guidance": None,
+             "overrides": {"categories": {"supplies": "blocked"}}},
+            HOST,
+        )  # fmt: skip
+        rules.activate(imported["revision"], 0, HOST)
+        ash = self.creating()
+        job, token = self.start(self.alice, Actor(ash, "creation"))
+        setting = self.propose(token, step_id="s-1", kind="campaign_setting", scope="campaign",
+                               target=None, payload={"starting_stamina_bonus": 1},
+                               explanation="Everyone is fit.")  # fmt: skip
+        self.answer(job, ("sender", "Asked."))
+        result, _ = self.decide(setting["proposal_id"])
+        self.assertEqual(result["state"], "approved")
+        revision, document = self.store.active_document()
+        self.assertEqual(revision, 2)
+        self.assertEqual(
+            (document["document_version"], document["overrides"], document["settings"]),
+            (2, {"categories": {"supplies": "blocked"}}, {"starting_stamina_bonus": 1}),
+        )
+
     def test_an_approved_operation_runs_exactly_once_as_the_host(self):
         wren = self.ready(name="Wren")
         job, token = self.start(self.alice, Actor(wren, "play"), "Fix my stamina?")

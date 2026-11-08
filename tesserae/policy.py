@@ -12,6 +12,10 @@ import json
 import re
 
 DOCUMENT_VERSION = 1
+# Version 2 adds category request policy, only for a module with creation
+# overrides (creation overrides contract section 4).
+OVERRIDES_DOCUMENT_VERSION = 2
+CATEGORY_POLICIES = ("approval_required", "blocked")
 MAX_GUIDANCE = 8000
 MAX_REASON = 1000
 MAX_EXCEPTIONS = 500
@@ -46,20 +50,34 @@ def digest(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
-def check_shape(document, binding: dict, supported: frozenset) -> dict:
-    """Raise DocumentError unless `document` is a version 1 document for
-    exactly this `binding` ({"id", "version", "state_version"}) using only
-    `supported` setting names; return it unchanged. Values are the module's
-    to judge (check_against)."""
+def check_shape(
+    document, binding: dict, supported: frozenset, categories: frozenset | None = None
+) -> dict:
+    """Raise DocumentError unless `document` is a document for exactly this
+    `binding` ({"id", "version", "state_version"}) using only `supported`
+    setting names; return it unchanged. Version 1 always; version 2, with
+    its category policy over `categories`, only for a module with creation
+    overrides (`categories` not None). Values are the module's to judge
+    (check_against)."""
     if not isinstance(document, dict):
         raise DocumentError(["A settings document is a JSON object."])
-    problems = _fields(document, _FIELDS, "The document")
+    versions = [DOCUMENT_VERSION]
+    if categories is not None:
+        versions.append(OVERRIDES_DOCUMENT_VERSION)
+    version = document.get("document_version")
+    if type(version) is not int or version not in versions:
+        raise DocumentError([
+            "'document_version' must be "
+            + " or ".join(str(v) for v in versions)
+            + ("." if categories is not None
+               else "; version 2 needs a module with creation overrides.")
+        ])  # fmt: skip
+    fields = _FIELDS if version == DOCUMENT_VERSION else (*_FIELDS, "overrides")
+    problems = _fields(document, fields, "The document")
     if problems:
         raise DocumentError(problems)
-    if document["document_version"] != DOCUMENT_VERSION or isinstance(
-        document["document_version"], bool
-    ):
-        problems.append(f"'document_version' must be {DOCUMENT_VERSION}.")
+    if version == OVERRIDES_DOCUMENT_VERSION:
+        problems += _overrides(document["overrides"], categories)
     module = document["module"]
     if not isinstance(module, dict) or _fields(module, _MODULE_FIELDS, "module"):
         problems.append('\'module\' is exactly {"id", "version", "state_version"}.')
@@ -126,6 +144,38 @@ def effective(runtime, revision: int, document: dict | None, character_id) -> di
     return {"revision": revision, "settings": settings}
 
 
+def category_policy(runtime, document: dict | None) -> dict:
+    """Every declared override category's request policy, `{category_id:
+    "approval_required" | "blocked"}`: a version 2 document's, a category it
+    does not list `approval_required`, and with no document or a version 1
+    one every category `approval_required`. {} without the capability."""
+    listed = {}
+    if document is not None and document["document_version"] == 2:
+        listed = document["overrides"]["categories"]
+    return {
+        category["category_id"]: listed.get(
+            category["category_id"], "approval_required"
+        )
+        for category in runtime.override_categories()
+    }
+
+
+def blocked_categories(runtime, policy: dict, intent: dict, preview: dict) -> list:
+    """The blocked categories of the qualities a guest's intent names (by the
+    preview's `affected`), `[{"category_id", "label"}]` in declared order;
+    empty if the request may be stored. Consequential qualities never
+    block: the host sees them in the preview."""
+    named = {change["quality_id"] for change in intent["changes"]}
+    categories = {
+        a["category_id"] for a in preview["affected"] if a["quality_id"] in named
+    }
+    return [
+        {"category_id": c["category_id"], "label": c["label"]}
+        for c in runtime.override_categories()
+        if c["category_id"] in categories and policy[c["category_id"]] == "blocked"
+    ]
+
+
 def own_exception(document: dict | None, character_id: str) -> dict | None:
     """The exception for this character, or None."""
     if document is None:
@@ -184,6 +234,27 @@ def _exceptions(exceptions: list, supported: frozenset) -> list[str]:
             problems.append(
                 f"{label}: 'reason' is text of 1 to {MAX_REASON} characters."
             )
+    return problems
+
+
+def _overrides(overrides, categories: frozenset) -> list[str]:
+    if not isinstance(overrides, dict) or _fields(overrides, ("categories",), ""):
+        return ["'overrides' is exactly {\"categories\": {...}}."]
+    listed = overrides["categories"]
+    if not isinstance(listed, dict):
+        return ["'overrides.categories' must be an object."]
+    problems = []
+    unknown = sorted(listed.keys() - categories)
+    if unknown:
+        problems.append(
+            f"'overrides.categories': unknown categor{'ies' if len(unknown) > 1 else 'y'} "
+            + ", ".join(_shown(key) for key in unknown)
+            + f"; this module declares {', '.join(sorted(categories))}."
+        )
+    if any(value not in CATEGORY_POLICIES for value in listed.values()):
+        problems.append(
+            "'overrides.categories' maps each category to approval_required or blocked."
+        )
     return problems
 
 

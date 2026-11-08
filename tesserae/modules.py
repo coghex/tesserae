@@ -9,7 +9,9 @@ See docs/modules.md for the contract.
 """
 
 import copy
+import hashlib
 import json
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from functools import partial
@@ -22,6 +24,26 @@ HOST_API_VERSION = 1
 CHARACTER_RULES_VERSIONS = (1, 2)
 CAMPAIGN_SETTINGS_VERSION = 1
 ADMINISTRATION_VERSION = 1
+# Negotiated creation overrides (docs/designs/creation_overrides_contract.md).
+CREATION_OVERRIDES_VERSION = 1
+MAX_CATEGORIES = 16
+MAX_CATEGORY_LABEL = 80
+MAX_CATEGORY_DESCRIPTION = 500
+MAX_CHANGES = 16
+INTENT_BYTES = 4096
+DISCOVERY_ITEMS = 50
+DISCOVERY_BYTES = 16384
+PREVIEW_BYTES = 12288
+HEADLINE_CHARS = 200
+HEADLINE_BYTES = 600
+PREVIEW_ENTRIES = 32
+PREVIEW_TEXT = 300
+RECEIPT_BYTES = 8192
+MAX_MATCH = 100
+MAX_CURSOR = 200
+# Category, quality, action and parameter IDs: never a path or a pattern.
+OVERRIDE_ID = re.compile(r"[a-z][a-z0-9_]{0,47}")
+PARAMETER_TYPES = ("integer", "string", "enum", "option")
 REQUIREMENT_KINDS = ("mechanical", "narrative", "optional")
 ACTION_REJECTED = "action_rejected"
 # Command names starting with this belong to the host (character.name).
@@ -62,6 +84,33 @@ class ActionRejected(Exception):
     """
 
     code = ACTION_REJECTED
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+class IntentError(ValueError):
+    """An override intent the module cannot preview or apply as asked
+    (creation overrides contract section 3): player-safe `problems`, refused
+    as `invalid_intent` with nothing changed."""
+
+    code = "invalid_intent"
+
+    def __init__(self, problems: list[str]):
+        problems = list(problems)
+        if not problems or not all(isinstance(p, str) and p for p in problems):
+            raise TypeError("IntentError needs a list of player-safe problems.")
+        super().__init__("; ".join(problems))
+        self.problems = problems
+
+
+class UnsupportedOverride(ValueError):
+    """An override names a category, quality, action or parameter the module
+    does not have: refused as `override_unsupported`, nothing changed. The
+    message is player-safe and never echoes client input."""
+
+    code = "override_unsupported"
 
     def __init__(self, message: str):
         super().__init__(message)
@@ -228,6 +277,53 @@ class Administration:
 
 
 @dataclass(frozen=True)
+class Category:
+    """One module-declared group of overridable qualities."""
+
+    id: str  # OVERRIDE_ID
+    label: str  # 1 to 80 characters
+    description: str  # up to 500 characters
+
+
+@dataclass(frozen=True)
+class OverrideAction:
+    """What `CreationOverrides.apply` receives: copies, and an
+    `authorization` the host built (never a client, a tool or a model)."""
+
+    state: dict
+    character_id: str
+    plan: dict  # the preview's plan, exactly
+    policy: dict  # the draft's effective policy
+    authorization: dict
+
+
+@dataclass(frozen=True)
+class CreationOverrides:
+    """A module's optional negotiated creation overrides
+    (docs/designs/creation_overrides_contract.md section 3).
+
+    `discover(state, character_id, query)` is pure: one page of what can be
+    overridden on that draft now, `{"items", "next"}`. `preview(state,
+    character_id, intent, policy)` is pure and deterministic, gets no random
+    source, and returns exactly what the intent would do, with the facts it
+    was computed from in `dependencies`; it raises IntentError or
+    UnsupportedOverride. `apply(OverrideAction)` performs exactly the plan,
+    deterministically and with no random source, enforcing every technical
+    invariant itself; it returns an Outcome (the receipt as its result) or
+    raises ActionRejected, IntentError or UnsupportedOverride with nothing
+    changed. `allowances(state, character_id)` is pure: the draft's live
+    creation-only allowances. Needs CharacterRules version 2.
+    """
+
+    version: int
+    categories: tuple[Category, ...]
+    discover: Callable[[dict, str, dict], dict]
+    preview: Callable[[dict, str, dict, dict], dict]
+    apply: Callable[[OverrideAction], Outcome]
+    allowances: Callable[[dict, str], list]
+
+
+@dataclass(frozen=True)
 class Module:
     """A trusted module definition. It holds no game state.
 
@@ -260,7 +356,9 @@ class Module:
     module (CampaignSettings); without it a document holds no settings.
     `administration`, if given, gives the campaign host its inspection and
     operations (Administration); without it the host inspects the referee
-    context and every sheet, and runs nothing.
+    context and every sheet, and runs nothing. `creation_overrides`, if
+    given, describes, previews and applies negotiated changes to drafts
+    (CreationOverrides).
     """
 
     id: str
@@ -281,6 +379,7 @@ class Module:
     characters: CharacterRules | None = None
     settings: CampaignSettings | None = None
     administration: Administration | None = None
+    creation_overrides: CreationOverrides | None = None
 
 
 @dataclass(frozen=True)
@@ -657,6 +756,141 @@ class Runtime:
         view = self.module.view(_json_copy(state, "state"), participant_id)
         return None if view is None else _json_copy(view, "view")
 
+    # Negotiated creation overrides (creation overrides contract section 3).
+    # The host checks authority, the target's phase and category policy
+    # before calling these; each hook sees copies, and every answer is
+    # checked against the contract's shapes and result-byte bounds. A
+    # malformed or oversized answer is a module failure (TypeError).
+
+    @property
+    def creation_overrides(self) -> CreationOverrides | None:
+        return self.module.creation_overrides
+
+    def override_categories(self) -> list[dict]:
+        """The declared categories, `{"category_id", "label", "description"}`,
+        in the module's order; [] without the capability."""
+        overrides = self.module.creation_overrides
+        if overrides is None:
+            return []
+        return [
+            {"category_id": c.id, "label": c.label, "description": c.description}
+            for c in overrides.categories
+        ]
+
+    def override_discover(self, state: dict, character_id: str, query: dict) -> dict:
+        """One page of discovery for a draft, `{"items", "next"}`. Raises
+        ArgumentError for a malformed query, UnsupportedOverride for an
+        unknown category, quality or parameter."""
+        overrides = self._overrides()
+        check_query(query)
+        if "category_id" in query and query["category_id"] not in self._category_ids():
+            raise UnsupportedOverride("This module has no such category.")
+        page = overrides.discover(
+            _json_copy(state, "state"), character_id, copy.deepcopy(query)
+        )
+        page = _json_copy(page, "discovery")
+        if set(page) != {"items", "next"} or not isinstance(page["items"], list):
+            raise TypeError('Discovery is exactly {"items", "next"}.')
+        if not (
+            page["next"] is None
+            or (isinstance(page["next"], str) and 0 < len(page["next"]) <= MAX_CURSOR)
+        ):
+            raise TypeError(
+                f"Discovery's next is null or 1 to {MAX_CURSOR} characters."
+            )
+        if len(page["items"]) > DISCOVERY_ITEMS:
+            raise TypeError(f"A discovery page has at most {DISCOVERY_ITEMS} items.")
+        options = "parameter" in query
+        for item in page["items"]:
+            if options:
+                _check_option(item)
+            else:
+                _check_quality(item, self._category_ids())
+        _check_bytes(page, DISCOVERY_BYTES, "A discovery page")
+        return page
+
+    def override_preview(
+        self, state: dict, character_id: str, intent: dict, policy: dict
+    ) -> dict:
+        """The module's preview of `intent` on a draft now. Raises
+        IntentError (the intent's shape, the module's problems, or too big a
+        preview) or UnsupportedOverride; nothing changes."""
+        overrides = self._overrides()
+        check_intent(intent)
+        preview = overrides.preview(
+            _json_copy(state, "state"),
+            character_id,
+            _json_copy(intent, "intent"),
+            _json_copy(policy, "policy"),
+        )
+        preview = _json_copy(preview, "preview")
+        _check_preview(preview, intent, self._category_ids())
+        if result_bytes(preview) > PREVIEW_BYTES:
+            raise IntentError(["Too many changes at once; split the request."])
+        return preview
+
+    def override_apply(
+        self,
+        state: dict,
+        character_id: str,
+        plan: dict,
+        policy: dict,
+        authorization: dict,
+    ) -> Outcome:
+        """Perform a previewed plan, with no random source. `authorization`
+        is the host's own (check_authorization). Raises ActionRejected,
+        IntentError or UnsupportedOverride with nothing changed."""
+        overrides = self._overrides()
+        check_authorization(authorization)
+        outcome = overrides.apply(
+            OverrideAction(
+                state=_json_copy(state, "state"),
+                character_id=character_id,
+                plan=_json_copy(plan, "plan"),
+                policy=_json_copy(policy, "policy"),
+                authorization=_json_copy(authorization, "authorization"),
+            )
+        )
+        if not isinstance(outcome, Outcome):
+            raise TypeError("Override apply did not return an Outcome.")
+        outcome = Outcome(
+            state=_json_copy(outcome.state, "state"),
+            result=_json_copy(outcome.result, "receipt"),
+        )
+        _check_bytes(outcome.result, RECEIPT_BYTES, "A receipt")
+        return outcome
+
+    def override_allowances(self, state: dict, character_id: str) -> list:
+        """The draft's live allowances, each `{"allowance_id", "quality_id",
+        "summary", "remaining"}`; [] without the capability."""
+        overrides = self.module.creation_overrides
+        if overrides is None:
+            return []
+        found = overrides.allowances(_json_copy(state, "state"), character_id)
+        found = _json_copy({"allowances": found}, "allowances")["allowances"]
+        if not isinstance(found, list) or not all(
+            isinstance(a, dict)
+            and set(a) == {"allowance_id", "quality_id", "summary", "remaining"}
+            and _is_id(a["allowance_id"])
+            and _is_id(a["quality_id"])
+            and _is_text(a["summary"], PREVIEW_TEXT)
+            for a in found
+        ):
+            raise TypeError(
+                'Allowances are a list of {"allowance_id", "quality_id", '
+                '"summary", "remaining"}.'
+            )
+        return found
+
+    def _overrides(self) -> CreationOverrides:
+        overrides = self.module.creation_overrides
+        if overrides is None:
+            raise UnsupportedOverride("This game's module has no creation overrides.")
+        return overrides
+
+    def _category_ids(self) -> frozenset:
+        return frozenset(c.id for c in self._overrides().categories)
+
 
 class Catalog:
     """An explicit set of modules and providers. Registration order never
@@ -685,6 +919,8 @@ class Catalog:
                     f"Module {module.id} has characters, so it checks seeds with "
                     "characters.validate_seed, not validate_seed."
                 )
+            if module.creation_overrides is not None:
+                _check_categories(module)
 
     def module_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._modules))
@@ -761,6 +997,20 @@ class Catalog:
             raise ModuleError(
                 f"Module {module_id!r} uses character rules version 2, which "
                 "needs campaign settings."
+            )
+        overrides = module.creation_overrides
+        if overrides is not None and overrides.version != CREATION_OVERRIDES_VERSION:
+            raise ModuleError(
+                f"Module {module_id!r} has creation overrides version "
+                f"{overrides.version}; this host supports "
+                f"{CREATION_OVERRIDES_VERSION}."
+            )
+        if overrides is not None and (
+            module.characters is None or module.characters.version != 2
+        ):
+            raise ModuleError(
+                f"Module {module_id!r} has creation overrides, which need "
+                "character rules version 2."
             )
         choices = tuple(module.providers if providers is None else providers)
         selected = {}
@@ -854,6 +1104,299 @@ def describe_fields(missing: list[str], extra: list[str], subject: str) -> str:
     if extra:
         parts.append(f"{len(extra)} unexpected field{'s' if len(extra) > 1 else ''}")
     return f"{subject} has {'; '.join(parts)}."
+
+
+def result_bytes(value) -> int:
+    """A value's size as the referee bridge sends a tool result:
+    `json.dumps` with Python's defaults, so every non-ASCII character is
+    escaped (creation overrides contract section 10)."""
+    return len(json.dumps(value))
+
+
+def preview_digest(preview: dict) -> str:
+    """SHA-256 of a preview's canonical JSON: what "the same effects" means."""
+    canonical = json.dumps(
+        preview, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def check_intent(intent):
+    """Raise IntentError unless `intent` is exactly `{"changes": [...]}`: 1
+    to 16 changes, each exactly `{"quality_id", "action_id", "parameters"}`
+    with identifier IDs and an object of parameters, in at most 4,096
+    result bytes. The module judges what the changes mean."""
+    if not isinstance(intent, dict) or set(intent) != {"changes"}:
+        raise IntentError(['An intent is exactly {"changes": [...]}.'])
+    changes = intent["changes"]
+    if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_CHANGES:
+        raise IntentError([f"An intent has 1 to {MAX_CHANGES} changes."])
+    for change in changes:
+        if (
+            not isinstance(change, dict)
+            or set(change) != {"quality_id", "action_id", "parameters"}
+            or not _is_id(change["quality_id"])
+            or not _is_id(change["action_id"])
+            or not isinstance(change["parameters"], dict)
+            or not all(_is_id(name) for name in change["parameters"])
+        ):
+            raise IntentError([
+                'A change is exactly {"quality_id", "action_id", "parameters"}: '
+                "two identifiers and an object of named parameters."
+            ])  # fmt: skip
+    try:
+        size = result_bytes(intent)
+        json.dumps(intent, allow_nan=False)
+    except (TypeError, ValueError):
+        raise IntentError(["An intent is JSON."]) from None
+    if size > INTENT_BYTES:
+        raise IntentError([f"An intent is at most {INTENT_BYTES} bytes."])
+
+
+def check_query(query):
+    """Raise ArgumentError unless `query` holds only discovery's optional
+    string fields (creation overrides contract section 3)."""
+    allowed = {"category_id", "quality_id", "parameter", "match", "after"}
+    if not isinstance(query, dict) or set(query) - allowed:
+        raise ArgumentError(
+            "A query has only category_id, quality_id, parameter, match and after."
+        )
+    for name in ("category_id", "quality_id", "parameter"):
+        if name in query and not _is_id(query[name]):
+            raise ArgumentError(f"'{name}' is an identifier.")
+    if "match" in query and not _is_text(query["match"], MAX_MATCH):
+        raise ArgumentError(f"'match' is text of 1 to {MAX_MATCH} characters.")
+    if "after" in query and not _is_text(query["after"], MAX_CURSOR):
+        raise ArgumentError("'after' is a cursor from an earlier page.")
+    if "parameter" in query and "quality_id" not in query:
+        raise ArgumentError("A query for a parameter's options names its quality.")
+
+
+AUTHORIZATION_KINDS = ("accepted_offer", "direct")
+_AUTHORIZATION_FIELDS = frozenset({
+    "kind", "record_id", "host_player_id", "proposal_id", "offer_id",
+    "requester_participant_id", "reason",
+})  # fmt: skip
+
+
+def check_authorization(authorization):
+    """Raise ValueError unless `authorization` is the host's own record of
+    who authorized an application (creation overrides contract section 3).
+    It is built by the host, so a bad one is a host bug, not a refusal."""
+    if (
+        not isinstance(authorization, dict)
+        or set(authorization) != _AUTHORIZATION_FIELDS
+        or authorization["kind"] not in AUTHORIZATION_KINDS
+        or not all(
+            isinstance(authorization[k], str) and authorization[k]
+            for k in ("record_id", "host_player_id", "reason")
+        )
+        or not all(
+            authorization[k] is None or isinstance(authorization[k], str)
+            for k in ("proposal_id", "offer_id", "requester_participant_id")
+        )
+        or (authorization["kind"] == "direct") != (authorization["proposal_id"] is None)
+    ):
+        raise ValueError("Not a host-built override authorization.")
+
+
+def _check_categories(module: Module):
+    categories = module.creation_overrides.categories
+    if not isinstance(categories, tuple) or not 1 <= len(categories) <= MAX_CATEGORIES:
+        raise ModuleError(
+            f"Module {module.id} declares 1 to {MAX_CATEGORIES} override categories."
+        )
+    seen = set()
+    for category in categories:
+        if (
+            not isinstance(category, Category)
+            or not _is_id(category.id)
+            or not _is_text(category.label, MAX_CATEGORY_LABEL)
+            or not isinstance(category.description, str)
+            or len(category.description) > MAX_CATEGORY_DESCRIPTION
+        ):
+            raise ModuleError(
+                f"Module {module.id} has a malformed override category: an ID of "
+                f"lowercase letters, digits and '_', a label of 1 to "
+                f"{MAX_CATEGORY_LABEL} characters and a description of up to "
+                f"{MAX_CATEGORY_DESCRIPTION}."
+            )
+        if category.id in seen:
+            raise ModuleError(
+                f"Duplicate {module.id} override category {category.id!r}."
+            )
+        seen.add(category.id)
+
+
+def _check_quality(item, categories: frozenset):
+    if (
+        not isinstance(item, dict)
+        or set(item) != {"quality_id", "category_id", "label", "description",
+                         "current", "actions"}
+        or not _is_id(item["quality_id"])
+        or item["category_id"] not in categories
+        or not _is_text(item["label"], MAX_CATEGORY_LABEL)
+        or not isinstance(item["description"], str)
+        or len(item["description"]) > MAX_CATEGORY_DESCRIPTION
+        or not isinstance(item["actions"], list)
+    ):  # fmt: skip
+        raise TypeError(
+            'A discovered quality is {"quality_id", "category_id", "label", '
+            '"description", "current", "actions"} in a declared category.'
+        )
+    for action in item["actions"]:
+        if (
+            not isinstance(action, dict)
+            or set(action) != {"action_id", "label", "parameters", "later_random"}
+            or not _is_id(action["action_id"])
+            or not _is_text(action["label"], MAX_CATEGORY_LABEL)
+            or not isinstance(action["later_random"], bool)
+            or not isinstance(action["parameters"], dict)
+        ):
+            raise TypeError(
+                'An action is {"action_id", "label", "parameters", "later_random"}.'
+            )
+        for name, described in action["parameters"].items():
+            if not _is_id(name) or not _parameter_described(described):
+                raise TypeError(
+                    "A parameter is exactly one of {type: integer, minimum, "
+                    "maximum}, {type: string, max_length}, {type: enum, values} "
+                    "or {type: option}, with whether it is required."
+                )
+
+
+def _whole(value) -> bool:
+    return type(value) is int
+
+
+def _parameter_described(described) -> bool:
+    """Whether a parameter description has exactly its type's fields, with
+    values of the right kind (creation overrides contract section 3)."""
+    if not isinstance(described, dict) or described.get("type") not in PARAMETER_TYPES:
+        return False
+    kind = described["type"]
+    fields = {"type", "required"} | {
+        "integer": {"minimum", "maximum"},
+        "string": {"max_length"},
+        "enum": {"values"},
+        "option": set(),
+    }[kind]
+    if set(described) != fields or not isinstance(described["required"], bool):
+        return False
+    if kind == "integer":
+        low, high = described["minimum"], described["maximum"]
+        return _whole(low) and _whole(high) and low <= high
+    if kind == "string":
+        return _whole(described["max_length"]) and described["max_length"] > 0
+    if kind == "enum":
+        values = described["values"]
+        return (
+            isinstance(values, list)
+            and 0 < len(values) <= DISCOVERY_ITEMS
+            and all(_whole(v) or isinstance(v, str) for v in values)
+            and len({json.dumps(v) for v in values}) == len(values)
+        )
+    return True
+
+
+def _check_option(item):
+    if (
+        not isinstance(item, dict)
+        or set(item) != {"value", "label"}
+        or not _is_text(item["label"], MAX_CATEGORY_LABEL)
+    ):
+        raise TypeError('A parameter option is {"value", "label"}.')
+
+
+_PREVIEW_FIELDS = frozenset({
+    "plan", "headline", "affected", "effects", "waivers", "allowances",
+    "later_steps", "consequences", "limitations", "dependencies",
+})  # fmt: skip
+_ENTRY_FIELDS = {
+    "effects": frozenset({"quality_id", "summary", "before", "after"}),
+    "waivers": frozenset({"quality_id", "summary", "creation_only"}),
+    "allowances": frozenset({"allowance_id", "quality_id", "summary", "creation_only"}),
+    "later_steps": frozenset({"command", "summary", "stakes"}),
+}
+
+
+def _check_preview(preview: dict, intent: dict, categories: frozenset):
+    """TypeError unless `preview` has the contract's shape, every quality the
+    intent names among `affected`, and every affected quality in a declared
+    category."""
+    if set(preview) != _PREVIEW_FIELDS:
+        raise TypeError("A preview has exactly the contract's fields.")
+    if not isinstance(preview["plan"], dict) or not isinstance(
+        preview["dependencies"], dict
+    ):
+        raise TypeError("A preview's plan and dependencies are objects.")
+    headline = preview["headline"]
+    if (
+        not _is_text(headline, HEADLINE_CHARS)
+        or "\n" in headline
+        or result_bytes(headline) > HEADLINE_BYTES
+    ):
+        raise TypeError(
+            f"A headline is one line of 1 to {HEADLINE_CHARS} characters and at "
+            f"most {HEADLINE_BYTES} bytes."
+        )
+    affected = preview["affected"]
+    if not isinstance(affected, list) or not all(
+        isinstance(a, dict)
+        and set(a) == {"quality_id", "category_id"}
+        and _is_id(a["quality_id"])
+        and a["category_id"] in categories
+        for a in affected
+    ):
+        raise TypeError(
+            'Affected qualities are {"quality_id", "category_id"} in declared '
+            "categories."
+        )
+    named = {change["quality_id"] for change in intent["changes"]}
+    if not named <= {a["quality_id"] for a in affected}:
+        raise TypeError("A preview lists every quality its intent names as affected.")
+    for name in ("consequences", "limitations"):
+        entries = preview[name]
+        if (
+            not isinstance(entries, list)
+            or len(entries) > PREVIEW_ENTRIES
+            or not all(_is_text(text, PREVIEW_TEXT) for text in entries)
+        ):
+            raise TypeError(
+                f"A preview's {name} are up to {PREVIEW_ENTRIES} texts of 1 to "
+                f"{PREVIEW_TEXT} characters."
+            )
+    for name, fields in _ENTRY_FIELDS.items():
+        entries = preview[name]
+        if not isinstance(entries, list) or len(entries) > PREVIEW_ENTRIES:
+            raise TypeError(f"A preview has up to {PREVIEW_ENTRIES} {name}.")
+        for entry in entries:
+            texts = [entry.get(k) for k in ("summary", "stakes") if k in fields]
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != fields
+                or not all(_is_text(text, PREVIEW_TEXT) for text in texts)
+                or ("quality_id" in fields and not _is_id(entry["quality_id"]))
+                or ("creation_only" in fields
+                    and not isinstance(entry["creation_only"], bool))
+                or (name == "allowances" and (entry["creation_only"] is not True
+                                              or not _is_id(entry["allowance_id"])))
+                or (name == "later_steps" and not _is_text(entry["command"], 100))
+            ):  # fmt: skip
+                raise TypeError(f"A preview's {name} do not have the contract's shape.")
+
+
+def _check_bytes(value, limit: int, what: str):
+    if result_bytes(value) > limit:
+        raise TypeError(f"{what} is over {limit} result bytes.")
+
+
+def _is_id(value) -> bool:
+    return isinstance(value, str) and OVERRIDE_ID.fullmatch(value) is not None
+
+
+def _is_text(value, limit: int) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= limit
 
 
 def _check_problems(problems, what: str):
