@@ -215,16 +215,22 @@ What the negotiation guarantees, from both clients:
   connections (`[request] ID is now STATE.`, or the Console and Requests
   panels). A host may deny straight from the notice
   (`/decide ID deny NOTE`).
-- **When an offer no longer holds** it shows why, and the request waits for
-  the host again:
-  - `preview_changed`: a relevant change, such as another applied override
-    on the same quality;
-  - `host_changed`: the host was transferred;
-  - `intent_invalid`: the draft can no longer take it.
+- **When an offer no longer holds** it shows why, and what happens next
+  depends on whether the request can still be done as asked:
+  - It can, after `preview_changed` (a relevant change, such as another
+    override applied to the same quality) or `host_changed` (the host was
+    transferred). The request waits for the host again, who reviews it and
+    offers again; the player never asks twice.
+  - It cannot, after `intent_invalid` (the draft can no longer take it as
+    asked, for example the item it would remove is gone) or `completed` (the
+    draft was completed). The request ends as `stale`. The player revises it
+    (**Revise**, or `/override request ... --revises ID`) or asks for
+    something else.
 
-  The host reviews it and offers again; the player never asks twice.
-  Unrelated creation steps, other players' turns and new settings leave an
-  offer current.
+  Unrelated creation steps and other players' turns leave an offer current.
+  So do new settings that do not change what the offer would do. A module
+  may make a preview depend on settings, and then a settings change that
+  alters it stales the offer.
 - **Host transfer.** A request waiting for a verdict waits for the new host.
   An offer the former host made no longer holds; the new host offers again.
 - **Withdrawal** ends the request (`withdrawn`); the player asks again if
@@ -270,7 +276,7 @@ installation, so the referee's bridge is the new one.
 | `override_unsupported` | The module does not negotiate overrides, or has no such quality, action or parameter | `/overrides` lists what can be asked |
 | `invalid_intent` | The module cannot do that as asked: the problems are shown | Change the intent; a change that changes nothing is refused too |
 | `stale_preview` | The preview confirmed is no longer what the change would do | Review it again; the client shows what it would do now |
-| `offer_stale` | The offer no longer holds (its reason is shown) | Wait for the host's fresh offer |
+| `offer_stale` | The offer no longer holds (its reason is shown) | If the request waits for the host again, wait for a fresh offer; if it ended `stale`, revise it or ask anew |
 | `offer_unavailable` | No such open offer: withdrawn, accepted, or someone else's | `/requests overrides` shows its state |
 | `proposal_unavailable` | Not your request (or none by that ID) | |
 | `proposal_decided` | Another decision landed first | Read the request again |
