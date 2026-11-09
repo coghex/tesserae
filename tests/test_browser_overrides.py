@@ -15,14 +15,15 @@ import time
 import unittest
 
 from tesserae.credentials import new_token
+from tesserae.overrides import Overrides, Viewer
 from tesserae.referee.tools import BridgeTools
 from tesserae.registry import HostRegistry
-from tesserae.store import GameStore
+from tesserae.store import GameStore, ParticipantContext
 
 try:  # tests/ is on sys.path under `unittest discover -s tests`
-    from test_browser_characters import CharacterCase, reply
+    from test_browser_characters import ALICE, CharacterCase, reply
 except ImportError:  # running as `python -m unittest tests.test_...`
-    from tests.test_browser_characters import CharacterCase, reply
+    from tests.test_browser_characters import ALICE, CharacterCase, reply
 
 try:
     from playwright.sync_api import expect
@@ -357,6 +358,35 @@ class NegotiationTests(OverrideCase):
         offered = alice.locator("#console-override-list li").first
         expect(offered).to_contain_text("no longer holds (host_changed)")
         self.assertNotIn("mountain guide", dora.content())
+        self.assertEqual(self.errors, [])
+
+    def test_a_hosts_own_request_past_pages_of_others_is_in_reach(self):
+        """Twenty of Alice's requests, then Bob's own as a guest; then Bob is
+        made host. His first page of everyone's requests holds none of his:
+        his Console still reaches his own."""
+        with HostRegistry(self.registry_path) as registry:
+            registry.set_host(self.campaign, self.players["dora"])
+            host_id = registry.host_id
+        dora = self.players["dora"]
+        with GameStore.open_existing(self.trail) as store:
+            overrides = Overrides(store)
+            reply_, _ = store.create_character(ParticipantContext(ALICE), "c-a", "Ash")
+            ash = reply_["result"]["character"]["character_id"]
+            for i in range(20):
+                overrides.request(Viewer(ALICE, False, dora), f"q-{i}", ash,
+                                  modifier(1 + i % 2), f"Alice's {i}.")  # fmt: skip
+            bob = store.admit_host_player(host_id, self.players["bob"], "Bob")
+            reply_, _ = store.create_character(bob, "c-b", "Bram")
+            bram = reply_["result"]["character"]["character_id"]
+            overrides.request(Viewer(bob.participant_id, False, dora), "q-b", bram,
+                              modifier(1), "Bob's own.")  # fmt: skip
+        with HostRegistry(self.registry_path) as registry:
+            registry.set_host(self.campaign, self.players["bob"])
+        page = self.entered("bob")
+        mine = page.locator("#console-override-list li")
+        expect(mine).to_have_count(1)
+        expect(mine.first).to_contain_text("“Bob's own.”")
+        self.assertNotIn("Alice's", page.locator("#console-overrides").inner_text())
         self.assertEqual(self.errors, [])
 
     def test_an_unused_allowance_expires_when_the_character_is_approved(self):

@@ -1423,22 +1423,29 @@ function awaitedText(request, asHost) {
 
 async function loadOwnOverrides(more = false) {
   if (!state.overrides || state.phase !== "joined") return;
-  const message = { version: 1, type: "override_requests", states: "all" };
-  if (more) {
-    if (!state.own.next) return;
-    message.after = state.own.next;
-  }
+  if (more && !state.own.next) return;
   const here = campaignScope;
   const own = state.own; // replaced when authority changes: a late reply lands nowhere
-  const reply = await ask((current) => current.request(message));
-  if (!reply || here !== campaignScope || own !== state.own) return;
-  if (reply.type !== "override_requests") return;
-  // The player's own requests only: a campaign host's read lists everyone's,
-  // which belongs in its host panels, never in this personal list.
   const me = state.me && state.me.participantId;
-  const mine = reply.items.filter((r) => r.requester && r.requester.participant_id === me);
+  let after = more ? own.next : null;
+  let mine = [];
+  let next = null;
+  // A campaign host's read lists everyone's requests, which belong in its
+  // host panels, never in this personal list: keep only the player's own,
+  // and read on past pages that hold none of them, so none is out of reach.
+  for (;;) {
+    const message = { version: 1, type: "override_requests", states: "all" };
+    if (after) message.after = after;
+    const reply = await ask((current) => current.request(message));
+    if (!reply || here !== campaignScope || own !== state.own) return;
+    if (reply.type !== "override_requests") return;
+    mine = reply.items.filter((r) => r.requester && r.requester.participant_id === me);
+    next = reply.next;
+    if (mine.length || !next) break;
+    after = next;
+  }
   own.items = more ? [...(own.items || []), ...mine] : mine;
-  own.next = reply.next;
+  own.next = next;
   own.version += 1;
   for (const request of mine) {
     const offer = request.offer;
@@ -2226,7 +2233,10 @@ function renderOwnOverrides(shown) {
   const own = state.own;
   const on = Boolean(shown && state.overrides);
   const items = own.items || [];
-  $("console-overrides").hidden = !on || (!items.length && !own.note && !own.revise);
+  // While more pages may hold the player's requests, the panel and its
+  // Show more stay within reach.
+  $("console-overrides").hidden =
+    !on || (!items.length && !own.note && !own.revise && !own.next);
   $("console-overrides-note").textContent = own.note;
   $("console-overrides-more").hidden = !own.next;
   if (renderedOwn !== own.version) {
