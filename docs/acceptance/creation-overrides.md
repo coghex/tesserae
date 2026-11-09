@@ -65,7 +65,7 @@ does not adopt overrides shared the registry.
 | A direct change | Hana, with no character and no request, applied a supplies change (blocked to guests) from her CLI; the history records it as `direct` |
 | A relevant change | Hana's direct replacement of the same roll staled an open offer at once (`preview_changed`), and the request waited for her again. Her fresh offer, accepted, applied over the current draft with its other changes kept |
 | Retries, conflicts, consent | An exact retry returned the recorded reply; the same request ID with other content was a conflict. Accepting with anything but the offered digest was refused (`stale_preview`), and another guest could not accept the offer (`offer_unavailable`) |
-| Races | An acceptance and a withdrawal sent at once: exactly one won, here the acceptance, and a later withdrawal of the applied offer was refused, with nothing rolled back. Two decisions on one request sent at once: exactly one was taken, here the denial, and the offer was refused (`proposal_decided`) |
+| Races | An acceptance and a withdrawal sent at once: exactly one won, here the withdrawal, and the acceptance was refused with nothing applied. Two decisions on one request sent at once: exactly one was taken, here the denial, and the offer was refused (`proposal_decided`) |
 | Verdict recovery | A verdict reached while Dora was disconnected was listed by her client on return |
 | Host transfer | Hana transferred the campaign to Alice. Dora's request awaiting a verdict waited for Alice, who offered it, and Dora accepted without asking again. Hana's open offer to Bob no longer held (`host_changed`), and accepting it was refused as stale. Alice's fresh offer, accepted in Bob's page, applied; no request was asked twice. The operator then made Hana host again |
 | Access loss | With Dora's access revoked while her offer was open, her acceptance was refused, her client left the campaign, and nothing applied. Restored, she accepted the same offer |
@@ -73,7 +73,7 @@ does not adopt overrides shared the registry.
 | Allowances and completion | A direct grant of two gear picks; Bob spent one and approved the walker. The unused pick expired at completion, recorded with what remained. The item picked and every authorization stayed in the history. Ready, the walker's own play job tried a pick through the real bridge: refused (`mode_forbidden`), with its gear and authorization history unchanged; a raw player command was refused outright in referee mode. Completing a draft ended its open request (`stale`), and archiving one cancelled its request |
 | The referee | Hana's own referee job offered a request on her explicit words; a guest's job could not use the host's tools |
 | Restart | After a host restart, Bob's page reconnected and listed his applied requests, Alice's CLI listed her ended ones, the host paged every request, and a referee job read the requests through the bridge |
-| Budgets | Every job's composed context fit one tool result: the largest was 14,556 of 45,056 bytes, with an overrides block of at most 997 of 10,240. A discovery page was 1,432 of 16,384 bytes. A three-change preview was 1,614 of 12,288. A request's detail with a 1,000-character explanation was 3,161 of 45,056 |
+| Budgets | Measured once all 20 jobs had run, over every `get_context` each recorded (36), checked to be every job in the store. Every composed context fit one tool result: the largest was 15,605 of 45,056 bytes (a guest's job, refused a host tool), with an overrides block of at most 1,302 of 10,240. A discovery page was 1,432 of 16,384 bytes. A three-change preview was 1,614 of 12,288. A request's detail with a 1,000-character explanation was 3,161 of 45,056 |
 | Compatibility | The Relay campaign had no override categories and refused the override messages (`override_unsupported`). A single-game host served a Relay game to a game-token player as before, and `tesserae roll` rolled |
 | Model-free | The stand-in answered all 20 jobs through the real bridge's tools; no other agent command was attempted |
 | The pages | No script error in any page |
@@ -102,8 +102,10 @@ five points and checks the same each time:
   and its upgrade belong to the private tracker; this run does not accept
   them.
 - A race's outcome is whichever request the host serialized first. This run
-  saw the acceptance and the denial win; an earlier run of the same scenario
-  saw the withdrawal and the offer win, with nothing applied by the loser.
+  saw the withdrawal and the denial win. Earlier runs of the same scenario
+  also saw the acceptance win (and a later withdrawal of the applied offer
+  refused, nothing rolled back) and the offer win. The loser applied nothing
+  each time.
 
 ## Private review
 

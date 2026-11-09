@@ -215,15 +215,19 @@ What the negotiation guarantees, from both clients:
   connections (`[request] ID is now STATE.`, or the Console and Requests
   panels). A host may deny straight from the notice
   (`/decide ID deny NOTE`).
-- **When an offer no longer holds** it shows why, and what happens next
-  depends on whether the request can still be done as asked:
-  - It can, after `preview_changed` (a relevant change, such as another
-    override applied to the same quality) or `host_changed` (the host was
-    transferred). The request waits for the host again, who reviews it and
+- **When an offer no longer holds** it shows why: `preview_changed` (a
+  relevant change, such as another override applied to the same quality),
+  `host_changed` (the host was transferred), `intent_invalid` (the draft can
+  no longer take the offer as it stands, for example the item it would
+  remove is gone) or `completed` (the draft was completed). What happens next
+  depends on the request itself, not on that reason. Read the request's
+  state (`/requests overrides`, or the Console):
+  - **It waits for the host again** (`pending_host`) when the player's
+    original request can still be done as asked. This holds even if the
+    offer was a counteroffer that became invalid. The host reviews it and
     offers again; the player never asks twice.
-  - It cannot, after `intent_invalid` (the draft can no longer take it as
-    asked, for example the item it would remove is gone) or `completed` (the
-    draft was completed). The request ends as `stale`. The player revises it
+  - **It ends as `stale`** when the original request can no longer be done
+    as asked, or its draft was completed. The player revises it
     (**Revise**, or `/override request ... --revises ID`) or asks for
     something else.
 
