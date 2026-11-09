@@ -76,7 +76,7 @@ from .referee.orchestrator import CodexReferee, RefereeJobFailed
 from .referee.runner import DEFAULT_DIR as DEFAULT_REFEREE_DIR
 from .referee.runner import DEFAULT_TIMEOUT, RefereeDir, RunnerError
 from .referee.store import REFEREE, RefereeError, RefereeStore
-from .referee.tools import NotCampaignHost
+from .referee.tools import AccessEnded, NotCampaignHost
 from .store import (
     SETUP,
     Actor,
@@ -227,9 +227,13 @@ class CampaignService:
         # Jobs accepted from a session of the campaign host, in memory only
         # (governance contract section 10): job ID to that session.
         self._job_hosts: dict[str, "_Session"] = {}
+        # Every running job's session, so its bridge can ask the registry who
+        # the campaign host is now (creation overrides contract section 7).
+        self._job_sessions: dict[str, "_Session"] = {}
         self._loop = None
         if self._referee is not None:
             self._referee.tools.host_authority = self._host_authority
+            self._referee.tools.campaign_host = self._campaign_host
 
     def _check_serving(self):
         """A subclass's own refusals, before any referee is set up."""
@@ -326,7 +330,26 @@ class CampaignService:
         return {
             "host_authority": self._host_authority,
             "on_proposal": self.proposal_changed,
+            "campaign_host": self._campaign_host,
         }
+
+    @contextmanager
+    def _campaign_host(self, job):
+        """On a bridge thread: the registry guard of the session the job's
+        input came from, held until exit, yielding the campaign's host player
+        now, or None with no campaign host (or on a host without a lobby).
+        Raises AccessEnded if the session's access has gone: that refuses
+        the call, never reads as "no campaign host". A transfer or a
+        revocation waits for it, so a step it is held through sees one."""
+        session = self._job_sessions.get(job.job_id)
+        if session is None or session.guard is None:
+            yield None
+            return
+        checked = session.guard()
+        with checked as allowed:
+            if not allowed:
+                raise AccessEnded
+            yield getattr(checked, "campaign_host", None)
 
     @contextmanager
     def _host_authority(self, job):
@@ -672,6 +695,7 @@ class CampaignService:
                     return error_message(code, text, request_id=request.request_id)
                 submission, said, names = outcome[1:]
                 if kind == "accepted":
+                    self._job_sessions[submission.job.job_id] = session
                     if role == "host":  # a host job: its tools are checked per call
                         self._job_hosts[submission.job.job_id] = session
                     self._outbox.put_nowait(("conversation", ([said], names)))
@@ -992,6 +1016,7 @@ class CampaignService:
                 self._executor, self._host_sender, job
             )
         self._job_hosts.pop(job.job_id, None)
+        self._job_sessions.pop(job.job_id, None)
         async with self._lifecycle:  # no new job is accepted until this is queued
             try:
                 stored, names = await self._call(

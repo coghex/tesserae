@@ -97,12 +97,22 @@ TOOLS = [
             "Ask the campaign host to decide one exact change the sender wants: an exception "
             "to a setting for one of the sender's characters (target null: this job's), a "
             "campaign-wide setting (scope campaign), or a host operation. The host decides "
-            "later; reply and end the job. Nothing changes until the host approves."
+            "later; reply and end the job. Nothing changes until the host approves. Where "
+            "get_context has an overrides block, a change to a draft is kind "
+            'creation_override, scope target, payload {"intent", "revises" (optional)}: '
+            "the host may offer it, and only the player's acceptance applies it."
         ),
         "inputSchema": _schema(
             {
                 "step_id": _STEP["properties"]["step_id"],
-                "kind": {"enum": ["exception", "campaign_setting", "operation"]},
+                "kind": {
+                    "enum": [
+                        "exception",
+                        "campaign_setting",
+                        "operation",
+                        "creation_override",
+                    ]
+                },  # fmt: skip
                 "scope": {"enum": ["target", "campaign"]},
                 "target": {"type": ["object", "null"]},
                 "payload": {"type": "object"},
@@ -167,6 +177,135 @@ TOOLS = [
         ),  # fmt: skip
     },
 ]
+# Negotiated creation overrides (creation overrides contract section 11).
+_NULLABLE_ID = {"type": ["string", "null"]}
+_INTENT = {
+    "type": "object",
+    "description": 'Exactly {"changes": [{"quality_id", "action_id", "parameters"}]}.',
+}
+_READ = {"annotations": {"readOnlyHint": True}}
+TOOLS += [
+    {
+        "name": "override_discover",
+        "description": (
+            "What can be overridden on a draft (character_id null: this job's): its "
+            "qualities and actions, or with quality_id and parameter a parameter's "
+            "options. A page; pass its next as the query's after."
+        ),
+        "inputSchema": _schema({"character_id": _NULLABLE_ID,
+                                "query": {"type": ["object", "null"]}}),
+        **_READ,
+    },
+    {
+        "name": "override_preview",
+        "description": (
+            "Exactly what an intent would do to a draft now, and its preview_digest. "
+            "Nothing changes."
+        ),
+        "inputSchema": _schema({"character_id": _NULLABLE_ID, "intent": _INTENT}),
+        **_READ,
+    },
+    {
+        "name": "override_requests",
+        "description": (
+            "Page the sender's creation override requests (the host: every one), "
+            "terminal verdicts included; states open, terminal or all."
+        ),
+        "inputSchema": _schema({
+            "character_id": _NULLABLE_ID,
+            "states": {"enum": ["open", "terminal", "all", None]},
+            "after": _NULLABLE_ID,
+        }),
+        **_READ,
+    },
+    {
+        "name": "override_detail",
+        "description": "One request in full: what was asked, and what it would do now.",
+        "inputSchema": _schema({"proposal_id": {"type": "string"}}),
+        **_READ,
+    },
+    {
+        "name": "override_offers",
+        "description": "Page a request's offer revisions, every one.",
+        "inputSchema": _schema({"proposal_id": {"type": "string"},
+                                "after": _NULLABLE_ID}),
+        **_READ,
+    },
+    {
+        "name": "override_offer",
+        "description": "One offer exactly: read it before narrating or acting on it.",
+        "inputSchema": _schema({"offer_id": {"type": "string"}}),
+        **_READ,
+    },
+    {
+        "name": "override_history",
+        "description": "Page a draft's applied overrides, direct ones and expiries.",
+        "inputSchema": _schema({"character_id": _NULLABLE_ID, "after": _NULLABLE_ID}),
+        **_READ,
+    },
+    {
+        "name": "override_record",
+        "description": "One applied override in full, with the module's receipt.",
+        "inputSchema": _schema({"record_id": {"type": "string"}}),
+        **_READ,
+    },
+    {
+        "name": "override_respond",
+        "description": (
+            "Only on the player's explicit word about this exact offer: accept it (with "
+            "the offer's preview_digest; it applies the change) or decline it."
+        ),
+        "inputSchema": _schema({
+            "step_id": _STEP["properties"]["step_id"],
+            "offer_id": {"type": "string"},
+            "response": {"enum": ["accept", "decline"]},
+            "preview_digest": _NULLABLE_ID,
+            "note": _NULLABLE_ID,
+        }),
+    },
+    {
+        "name": "host_override_decide",
+        "description": (
+            "Campaign host's job only, on the host's explicit instruction: offer the "
+            "request as asked, counteroffer another intent (with a note), or deny it "
+            "(with a note). An offer names the preview_digest the host reviewed; nothing "
+            "applies until the player accepts."
+        ),
+        "inputSchema": _schema({
+            "step_id": _STEP["properties"]["step_id"],
+            "proposal_id": {"type": "string"},
+            "decision": {"enum": ["offer", "counteroffer", "deny"]},
+            "preview_digest": _NULLABLE_ID,
+            "intent": {"type": ["object", "null"]},
+            "note": _NULLABLE_ID,
+        }),
+    },
+    {
+        "name": "host_override_withdraw",
+        "description": (
+            "Campaign host's job only, on the host's instruction: withdraw an open, "
+            "unaccepted offer, with a note. It never undoes an applied change."
+        ),
+        "inputSchema": _schema({"step_id": _STEP["properties"]["step_id"],
+                                "offer_id": {"type": "string"},
+                                "note": {"type": "string"}}),
+    },
+    {
+        "name": "host_override_apply",
+        "description": (
+            "Campaign host's job only, on the host's explicit instruction: apply an exact "
+            "intent to any draft now, with the preview_digest previewed and a reason. No "
+            "request is needed, and nothing awaits anyone."
+        ),
+        "inputSchema": _schema({
+            "step_id": _STEP["properties"]["step_id"],
+            "character_id": {"type": "string"},
+            "intent": _INTENT,
+            "preview_digest": {"type": "string"},
+            "reason": {"type": "string"},
+        }),
+    },
+]  # fmt: skip
 _TOOL_NAMES = {tool["name"] for tool in TOOLS}
 
 

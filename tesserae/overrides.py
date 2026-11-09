@@ -135,12 +135,30 @@ class Overrides:
         return self._mutation(viewer.participant_id, request_id, "override_request",
                               content, apply, check)  # fmt: skip
 
-    def store_request(self, viewer: Viewer, character_id, intent, explanation,
-                      revises=None, *, origin="client", job=None,
-                      step_request_id=None) -> dict:  # fmt: skip
-        """Inside the caller's write transaction: check, preview and store one
-        request as `pending_host`, superseding the requester's earlier open
-        request for the draft. Raises Refusal with nothing stored."""
+    def request_from_step(self, viewer: Viewer, step_request_id: str, job_id: str,
+                          character_id, intent, explanation, revises=None, *,
+                          check=None) -> tuple[dict, bool]:  # fmt: skip
+        """A referee job's request (`propose_host_decision`, kind
+        `creation_override`), stored once per step: the same step returns the
+        request it stored, `{"proposal_id", "state", "preview_digest"}`."""
+        with self.store.transaction():
+            if check is not None:
+                check()
+            found = self.store.query(
+                "SELECT proposal_id FROM host_requests WHERE step_request_id = ?",
+                (step_request_id,),
+            )
+            if found:
+                return step_view(self._request_row(found[0][0])), False
+            return self.store_request(
+                viewer, character_id, intent, explanation, revises,
+                origin="referee", job=job_id, step_request_id=step_request_id,
+            ), True  # fmt: skip
+
+    def check_request(self, viewer: Viewer, character_id, intent, explanation,
+                      revises=None) -> tuple:  # fmt: skip
+        """Everything a request is checked for, with nothing stored: (the
+        draft, its preview, the preview's digest). Raises Refusal."""
         runtime = self._runtime()
         if viewer.host:
             raise Refusal(
@@ -170,6 +188,18 @@ class Overrides:
                 + "; nothing was stored.",
                 {"categories": blocked},
             )
+        return character, preview, digest
+
+    def store_request(self, viewer: Viewer, character_id, intent, explanation,
+                      revises=None, *, origin="client", job=None,
+                      step_request_id=None) -> dict:  # fmt: skip
+        """Inside the caller's write transaction: check, preview and store one
+        request as `pending_host`, superseding the requester's earlier open
+        request for the draft. Raises Refusal with nothing stored."""
+        runtime = self._runtime()
+        character, preview, digest = self.check_request(
+            viewer, character_id, intent, explanation, revises
+        )
         now = _now()
         for row in self._open_requests(
             "requester_participant = ? AND target = ?",
@@ -1238,6 +1268,12 @@ def message(kind: str, body: dict, request_id: str | None = None) -> dict:
     if request_id is not None:
         reply["request_id"] = request_id
     return reply
+
+
+def step_view(row: dict) -> dict:
+    """A request as a referee step records it."""
+    return {"proposal_id": row["proposal_id"], "state": row["state"],
+            "preview_digest": row["preview_digest"]}  # fmt: skip
 
 
 def legacy_draft_refusal(store: GameStore, target) -> Refusal | None:

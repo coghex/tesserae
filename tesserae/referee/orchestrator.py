@@ -47,9 +47,36 @@ class RefereeJobFailed(Exception):
         self.error = error
 
 
+# Creation overrides contract section 11's prompt rules.
+OVERRIDE_RULES = [
+    "Changes to a draft's starting qualities are negotiated: discover and preview "
+    "them (override_discover, override_preview), ask the host with "
+    "propose_host_decision (kind creation_override), tell the player it waits for "
+    "the host, and end the job.",
+    "Say whether each request is waiting for the host, offered, or applied. An offer "
+    "is not applied: never say approved or granted before an acceptance applies it. "
+    "Unused creation allowances expire when the character is approved.",
+    "Accept or decline (override_respond) only on the player's explicit word about the "
+    "exact offer, naming its offer_id and preview_digest; ask when consent is unclear. "
+    "Never substitute a stale or counteroffered effect for the one the player agreed "
+    "to, and never resubmit a refused, blocked or denied request unasked.",
+    "When a get_context overrides count (…_more) is not zero, or in a new session, "
+    "page override_requests before telling a player about their requests. Read the "
+    "exact offer (override_offer) before narrating its effects or acting on it.",
+]
+OVERRIDE_HOST_RULES = [
+    "As campaign host: give a verdict (host_override_decide), withdraw an offer "
+    "(host_override_withdraw) or apply a change directly (host_override_apply) only "
+    "on the host's explicit instruction, with the exact IDs and the preview_digest "
+    "previewed; a direct change needs a reason and no earlier request. Requests left "
+    "pending_host after a transfer are this host's to decide; an offer by a former "
+    "host is stale and needs a fresh offer.",
+]
+
+
 def job_prompt(job: Job, sender: str, revision: int, *, new_session: bool,
                previous: Job | None, character=None, governed=False,
-               host=False) -> str:  # fmt: skip
+               host=False, overrides=False) -> str:  # fmt: skip
     """The prompt for one job, on Codex's stdin (contract section 4). The
     player's words are quoted as a JSON string, so they stay one value.
 
@@ -58,7 +85,9 @@ def job_prompt(job: Job, sender: str, revision: int, *, new_session: bool,
     game whose module has settings or administration (`governed`) it says how
     to ask the campaign host for a decision, and in a job of the campaign
     host (`host`) how the host tools may be used (governance contract
-    section 10)."""
+    section 10). In a game whose module negotiates creation overrides
+    (`overrides`) it says how to ask, wait, respond and narrate them
+    (creation overrides contract section 11)."""
     where = "privately to you" if job.private else "to the table"
     who = f"{sender} ({job.participant_id})"
     mode_lines = []
@@ -103,6 +132,10 @@ def job_prompt(job: Job, sender: str, revision: int, *, new_session: bool,
             "the host's explicit instruction, with the exact proposal ID or revision "
             "it names. Referee-only preparation never goes in a table message."
         )
+    if overrides:
+        mode_lines += OVERRIDE_RULES
+        if host:
+            mode_lines += OVERRIDE_HOST_RULES
     lines = [
         f"New input (job {job.job_id}) from {who}, {where}:",
         json.dumps(job.text, ensure_ascii=False),
@@ -280,6 +313,7 @@ class CodexReferee:
                     governed=store.runtime().settings is not None
                     or store.runtime().administration is not None,
                     host=host,
+                    overrides=store.runtime().creation_overrides is not None,
                 )  # fmt: skip
             schema = reply_schema(
                 characters=job.mode is not None, creation=job.mode == "creation"

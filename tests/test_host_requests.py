@@ -250,6 +250,16 @@ class LifecycleTests(Requests):
         self.assertEqual(self.store.query(
             "SELECT count(*) FROM referee_steps WHERE kind = 'propose'"), [(0,)])  # fmt: skip
 
+    def test_a_retried_proposal_returns_its_record_whatever_has_changed(self):
+        ash = self.creating()
+        job, token = self.start(self.alice, Actor(None, "setup"))  # names its target
+        args = exception_args(target={"kind": "character", "id": ash})
+        proposal = self.ok(token, "propose_host_decision", **args)
+        archived, committed = self.store.archive_character(self.alice, self.rid(), ash)
+        self.assertTrue(committed, archived)
+        # Checked again it would be refused; replayed, it is what was stored.
+        self.assertEqual(self.ok(token, "propose_host_decision", **args), proposal)
+
     def test_an_archived_target_or_an_ended_link_cancels_pending_requests(self):
         ash = self.creating()
         job, token = self.start(self.alice, Actor(ash, "creation"))

@@ -162,8 +162,11 @@ original Trailhead families ([modules](modules.md#creation-overrides),
 itself: campaign schema 10's requests, offers and application records, every
 step from request to acceptance or direct override, staleness, completion's
 expiry of allowances, and the private, paged client messages
-([game store](game_store.md#storage)). The referee's tools and the client
-controls follow in OVR-4 to OVR-6.
+([game store](game_store.md#storage)). OVR-4
+([#176](https://github.com/coghex/tesserae/issues/176)) connects it to the
+referee: the bridge's discovery, preview, request, response, verdict,
+withdrawal and direct-override tools, the context's `overrides` block and
+the prompt's rules. The CLI and browser controls follow in OVR-5 and OVR-6.
 
 ## Later browser work
 

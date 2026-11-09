@@ -505,7 +505,12 @@ class SocketTests(BridgeCase):
             self.assertEqual(names, ["get_context", "get_transcript", "get_view", "list_actions", "act",
                                      "referee_act", "record_ruling", "propose_host_decision",
                               "host_operations", "host_act", "host_decide",
-                              "host_propose_rules", "host_activate_rules"])  # fmt: skip
+                              "host_propose_rules", "host_activate_rules",
+                              "override_discover", "override_preview", "override_requests",
+                              "override_detail", "override_offers", "override_offer",
+                              "override_history", "override_record", "override_respond",
+                              "host_override_decide", "host_override_withdraw",
+                              "host_override_apply"])  # fmt: skip
             acted = rpc(3, "tools/call", {"name": "act", "arguments": {
                 "step_id": "s1", "command": "relay.enlist", "args": {"name": "Wren"}}})["result"]  # fmt: skip
             self.assertFalse(acted["isError"])

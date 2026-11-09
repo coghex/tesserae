@@ -19,7 +19,9 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from ..host_requests import RECENT, HostRequests
+from .. import overrides
+from ..campaign_rules import rules_message
+from ..host_requests import RECENT, HostRequests, proposal_message
 from ..protocol import is_valid_request_id
 from ..store import (
     HOST_SENDER_PREFIX,
@@ -451,7 +453,7 @@ class RefereeStore:
                 "invalid_request",
                 f"A step ID is 1 to {MAX_STEP_ID} characters with no whitespace.",
             )
-        if kind not in ("act", "referee_act", "propose", "host"):
+        if kind not in ("act", "referee_act", "propose", "host", "respond"):
             raise ValueError(f"Unknown step kind {kind!r}.")
         if (kind == "host") != context.startswith(HOST_SENDER_PREFIX):
             raise ValueError("A host step runs in a campaign host's context.")
@@ -485,7 +487,9 @@ class RefereeStore:
                         command,
                         encoded,
                         f"ref:{job_id}:{step_id}",
-                        job.character_id if kind in ("act", "propose") else None,
+                        job.character_id
+                        if kind in ("act", "propose", "respond")
+                        else None,
                     ),
                 )
             return self._step(db, job_id, step_id)
@@ -541,22 +545,47 @@ class RefereeStore:
         ).fetchone()[0]
         if kind == "propose":
             row = db.execute(
-                "SELECT proposal_id FROM host_requests WHERE step_request_id = ?",
+                "SELECT proposal_id, kind FROM host_requests WHERE step_request_id = ?",
                 (request_id,),
             ).fetchone()
             if row is None:
                 return None
+            if row[1] == overrides.KIND:
+                found = overrides.Overrides(self.store)._request_row(row[0])
+                return overrides.step_view(found)
             return HostRequests(self.store)._view(row[0])
         found = self.store.lookup(ParticipantContext(context), request_id)
         if found is not None:
+            # An acceptance or a direct override replies as its message
+            # does, not as a plain command result.
+            if found.content.get("type") == "override_respond":
+                return proposal_message(found.result, request_id)
+            if found.content.get("type") == "override_apply":
+                return overrides.message("override_applied", found.result, request_id)
             return found.to_message()
-        if kind != "host":
+        if kind not in ("host", "respond"):  # a decline is a host mutation
             return None
         row = db.execute(
-            "SELECT result FROM host_mutations WHERE sender = ? AND request_id = ?",
+            "SELECT kind, result FROM host_mutations WHERE sender = ? AND request_id = ?",
             (context, request_id),
         ).fetchone()
-        return None if row is None else json.loads(row[0])
+        if row is None:
+            return None
+        # The reply as the tool gave it: the recorded result in its message.
+        result = json.loads(row[1])
+        if row[0] in _RULES_MUTATIONS:
+            return rules_message(result, request_id)
+        return proposal_message(result, request_id)
+
+    def recorded_step(self, job_id: str, step_id) -> Step | None:
+        """A step already journaled under this ID for this job, or None."""
+        if not is_valid_request_id(step_id):
+            return None
+        found = self.store.query(
+            "SELECT 1 FROM referee_steps WHERE job_id = ? AND step_id = ?",
+            (job_id, step_id),
+        )
+        return self._step(self.store, job_id, step_id) if found else None
 
     def unnarrated_steps(
         self, for_job: Job | None = None, host_sender: str | None = None
@@ -883,6 +912,9 @@ def _job_from(row) -> Job:
 
 
 _MESSAGE_COLUMNS = "seq, sender, audience, text, character_id, creation"
+# Host mutations whose reply is a `rules` message; every other one a
+# step records (a verdict, a withdrawal, a decline) replies as `proposal`.
+_RULES_MUTATIONS = frozenset({"rules_import", "rules_activate", "rules_reject"})
 
 
 def _message(seq: int, sender: str, audience, text: str, character_id=None,
@@ -911,8 +943,8 @@ def _visible_results(job: Job | None, host_sender: str | None) -> tuple[str, tup
     mode, parameters = (
         ("", ()) if job is None or job.mode is None else _results_for(job)
     )
-    if job is not None:
-        mode += " AND (s.kind != 'propose' OR i.participant_id = ?)"
+    if job is not None:  # a request or a response is its requester's own
+        mode += " AND (s.kind NOT IN ('propose', 'respond') OR i.participant_id = ?)"
         parameters = (*parameters, job.participant_id)
     if host_sender is None:
         return " AND s.kind != 'host'" + mode, parameters
