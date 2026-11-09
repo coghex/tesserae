@@ -122,6 +122,12 @@ class NotCampaignHost(Exception):
     the campaign host."""
 
 
+class AccessEnded(Exception):
+    """Raised by `campaign_host(job)`: the job's sender no longer has access
+    to the campaign (a revoked grant or credential), as distinct from a
+    campaign that simply has no campaign host. Nothing runs or replays."""
+
+
 class BridgeTools:
     """The tools for one game. `open_store()` returns a new GameStore for the
     calling thread; `on_commit(revision)` is called after each fresh commit, so
@@ -130,9 +136,11 @@ class BridgeTools:
 
     `campaign_host(job)`, given by a lobby host, returns a context manager
     that holds the registry guard of the job's session and yields the
-    campaign's host player (None with none, or with access gone). It is held
-    through a whole override step, so a transfer is ordered against it and an
-    offer by a former host is found stale.
+    campaign's host player (None with no campaign host), or raises
+    AccessEnded if the job's sender has lost access. It is held through a
+    whole override step, from before its journal or replay to its commit, so
+    a transfer or revocation is ordered against it and an offer by a former
+    host is found stale.
 
     `host_authority(job)`, given by a lobby host, returns a context manager
     that takes the registry guard for the job's sender's session and yields
@@ -189,6 +197,11 @@ class BridgeTools:
             response = _error(refusal.code, refusal.text)
         except RefereeError as error:
             response = _error(error.code, str(error))
+        except AccessEnded:
+            response = _error(
+                "session_revoked",
+                "This job's sender no longer has access to the campaign; nothing ran.",
+            )
         except Exception:
             logger.exception("A referee tool call failed")
             response = _error(
@@ -315,9 +328,10 @@ class BridgeTools:
         intent, revises = payload["intent"], payload.get("revises")
         content = {k: v for k, v in args.items() if k != "step_id"}
         requests = negotiated.Overrides(store)
-        # An exact retry first: its recorded request, whatever has changed.
-        earlier = referee.recorded_step(job.job_id, args["step_id"])
         with self._host(job, optional=True) as by, self._viewer(job, by) as viewer:
+            # Access first, then an exact retry: its recorded request,
+            # whatever has changed since.
+            earlier = referee.recorded_step(job.job_id, args["step_id"])
             if earlier is None:  # a new request is checked before it is journaled
                 with store.snapshot():
                     requests.check_request(viewer, character_id, intent,
@@ -343,30 +357,34 @@ class BridgeTools:
         offer, a step of kind `respond` in the sender's namespace, from any
         of its jobs. It never selects the draft."""
         content = {k: v for k, v in args.items() if k != "step_id"}
-        step = referee.intend_step(job.job_id, args["step_id"], "respond",
-                                   job.participant_id, "override_respond", content)  # fmt: skip
-        recorded = _recorded(step)
-        if recorded is not None:
-            return {"step_id": step.step_id, "status": "committed", "result": recorded}
-        # A requester's own act, never a host's: the campaign's host is read,
-        # and held, through validation and commit, so a transfer cannot slip
-        # between them.
-        with self._viewer(job, None) as viewer, self._acting:
-            try:
-                result, applied = negotiated.Overrides(store).respond(
-                    viewer, step.request_id, args["offer_id"], args["response"],
-                    args["preview_digest"], args["note"],
-                    check=self._still_running(referee, grant, job), job_id=job.job_id,
-                )  # fmt: skip
-            except Refusal as refusal:
-                reply = refusal.message(step.request_id, None)
-                referee.record_step(job.job_id, step.step_id, "refused", reply)
-                raise ToolError(refusal.code, refusal.text) from None
-            reply = proposal_message(result, step.request_id)
-            if applied and "revision" in result and self._on_commit is not None:
-                self._on_commit(result["revision"])
-            referee.record_step(job.job_id, step.step_id, "committed", reply)
-        return {"step_id": step.step_id, "status": "committed", "result": reply}
+        # A requester's own act, never a host's. Its access, and the
+        # campaign's host, are read and held from before the journal or an
+        # exact replay through validation and commit: a transfer or a
+        # revocation cannot slip between them.
+        with self._viewer(job, None) as viewer:
+            step = referee.intend_step(job.job_id, args["step_id"], "respond",
+                                       job.participant_id, "override_respond",
+                                       content)  # fmt: skip
+            recorded = _recorded(step)
+            if recorded is not None:
+                return {"step_id": step.step_id, "status": "committed",
+                        "result": recorded}  # fmt: skip
+            with self._acting:
+                try:
+                    result, applied = negotiated.Overrides(store).respond(
+                        viewer, step.request_id, args["offer_id"], args["response"],
+                        args["preview_digest"], args["note"],
+                        check=self._still_running(referee, grant, job), job_id=job.job_id,
+                    )  # fmt: skip
+                except Refusal as refusal:
+                    reply = refusal.message(step.request_id, None)
+                    referee.record_step(job.job_id, step.step_id, "refused", reply)
+                    raise ToolError(refusal.code, refusal.text) from None
+                reply = proposal_message(result, step.request_id)
+                if applied and "revision" in result and self._on_commit is not None:
+                    self._on_commit(result["revision"])
+                referee.record_step(job.job_id, step.step_id, "committed", reply)
+            return {"step_id": step.step_id, "status": "committed", "result": reply}
 
     @contextmanager
     def _host(self, job: Job, *, optional=False):

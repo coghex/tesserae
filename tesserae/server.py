@@ -76,7 +76,7 @@ from .referee.orchestrator import CodexReferee, RefereeJobFailed
 from .referee.runner import DEFAULT_DIR as DEFAULT_REFEREE_DIR
 from .referee.runner import DEFAULT_TIMEOUT, RefereeDir, RunnerError
 from .referee.store import REFEREE, RefereeError, RefereeStore
-from .referee.tools import NotCampaignHost
+from .referee.tools import AccessEnded, NotCampaignHost
 from .store import (
     SETUP,
     Actor,
@@ -337,15 +337,19 @@ class CampaignService:
     def _campaign_host(self, job):
         """On a bridge thread: the registry guard of the session the job's
         input came from, held until exit, yielding the campaign's host player
-        now; None with no campaign host, no lobby, or access gone. A transfer
-        waits for it, so a step it is held through sees one designation."""
+        now, or None with no campaign host (or on a host without a lobby).
+        Raises AccessEnded if the session's access has gone: that refuses
+        the call, never reads as "no campaign host". A transfer or a
+        revocation waits for it, so a step it is held through sees one."""
         session = self._job_sessions.get(job.job_id)
         if session is None or session.guard is None:
             yield None
             return
         checked = session.guard()
         with checked as allowed:
-            yield getattr(checked, "campaign_host", None) if allowed else None
+            if not allowed:
+                raise AccessEnded
+            yield getattr(checked, "campaign_host", None)
 
     @contextmanager
     def _host_authority(self, job):

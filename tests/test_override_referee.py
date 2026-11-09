@@ -29,7 +29,7 @@ from tesserae.referee import runner
 from tesserae.referee.bridge import TOOLS
 from tesserae.referee.orchestrator import CodexReferee, job_prompt
 from tesserae.referee.store import RESULT_BYTES, RefereeStore
-from tesserae.referee.tools import TOOL_ARGUMENTS, NotCampaignHost
+from tesserae.referee.tools import TOOL_ARGUMENTS, AccessEnded, NotCampaignHost
 from tesserae.store import Actor, Decider, GameStore, ParticipantContext
 from tesserae.trailhead import TRAILHEAD_MODULE
 
@@ -70,11 +70,15 @@ class OverrideTable(Table):
         self.tools.host_authority = self.authority
         self.tools.campaign_host = self.designation
         self.held = 0  # how many steps hold the registry guard now
+        self.access = True  # whether the job's sender still has access
         self.deferred = []  # transfers waiting for the guard, as the registry's do
 
     @contextmanager
     def designation(self, job):
-        """The stand-in registry guard: while held, a transfer waits."""
+        """The stand-in registry guard: while held, a transfer waits; with
+        access gone, it refuses the call."""
+        if not self.access:
+            raise AccessEnded
         self.held += 1
         try:
             yield self.host_player
@@ -423,6 +427,68 @@ class RaceAndReplayTests(OverrideTable):
                      offer_id=second["offer_id"], response="accept",
                      preview_digest=offer_digest(self.store, second["offer_id"]),
                      note=None)  # fmt: skip
+
+    def test_lost_access_refuses_new_steps_and_exact_retries(self):
+        ash, birch = self.draft(name="Ash"), self.draft(name="Birch")
+        first = self.offered(self.asked(ash), ash)
+        second = self.offered(self.asked(birch, step="p-2"), birch, step="o-2")
+        job, token = self.job(self.alice)
+        accept = {"step_id": "r-1", "offer_id": first["offer_id"], "response": "accept",
+                  "preview_digest": offer_digest(self.store, first["offer_id"]),
+                  "note": None}  # fmt: skip
+        self.ok(token, "override_respond", **accept)
+        request = ask("p-9", ROPE, target={"kind": "character", "id": birch})
+        self.access = False  # the registry revokes Alice's grant
+        steps, records = (
+            self.steps(),
+            self.store.query("SELECT count(*) FROM override_records"),
+        )
+        for tool, args in (
+            ("override_respond", accept),  # an exact retry
+            ("override_respond", {**accept, "step_id": "r-2",
+                                  "offer_id": second["offer_id"],
+                                  "preview_digest": offer_digest(self.store,
+                                                                 second["offer_id"])}),
+            ("propose_host_decision", request),
+            ("override_offer", {"offer_id": second["offer_id"]}),
+            ("get_context", {}),
+        ):  # fmt: skip
+            with self.subTest(tool=tool, step=args.get("step_id")):
+                self.refused("session_revoked", token, tool, **args)
+        self.assertEqual(self.steps(), steps)  # nothing journaled
+        self.assertEqual(
+            self.store.query("SELECT count(*) FROM override_records"), records
+        )
+        self.assertEqual(Overrides(self.store)._offer_row(second["offer_id"])["state"],
+                         "open")  # fmt: skip
+
+    def test_the_hosts_hook_tells_denial_from_no_campaign_host(self):
+        from types import SimpleNamespace
+
+        from tesserae.server import CampaignService
+
+        class Guard:
+            def __init__(self, allowed, host):
+                self.allowed, self.campaign_host = allowed, host
+
+            def __enter__(self):
+                return self.allowed
+
+            def __exit__(self, *exc_info):
+                return False
+
+        job = SimpleNamespace(job_id="j-1")
+        for allowed, host in ((True, None), (True, NEW_HOST), (False, NEW_HOST)):
+            session = SimpleNamespace(guard=lambda a=allowed, h=host: Guard(a, h))
+            service = SimpleNamespace(_job_sessions={"j-1": session})
+            with self.subTest(allowed=allowed, host=host):
+                if allowed:
+                    with CampaignService._campaign_host(service, job) as found:
+                        self.assertEqual(found, host)
+                else:
+                    with self.assertRaises(AccessEnded):
+                        with CampaignService._campaign_host(service, job):
+                            pass
 
     def test_a_retried_request_returns_its_record_whatever_has_changed(self):
         ash = self.draft(name="Ash")
