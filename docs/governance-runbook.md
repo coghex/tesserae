@@ -113,6 +113,56 @@ request becomes **stale** and nothing changes; the guest asks again. A denial
 changes nothing. A second decision on the same request is refused. A request
 is cancelled with its character (archived) or its player's link (unlinked).
 
+### Creation overrides from the CLI
+
+In a campaign whose module negotiates creation overrides (Trailhead does),
+a change to a **draft's** starting qualities is not approved and applied in
+one step. It is asked, offered, and applied only when the player accepts the
+exact offer ([creation overrides
+contract](designs/creation_overrides_contract.md) section 12). The whole-sheet
+`/approve` stays separate. Legacy requests for a draft are refused there
+(`override_required`); ready characters, NPCs, the world and campaign
+settings keep the requests above.
+
+**Players** (`connect --lobby`):
+
+| Command | Does |
+|---|---|
+| `/overrides [CHARACTER] [CATEGORY]` | What can be changed on a draft (the selected one by default), or with no draft the categories and their policy |
+| `/overrides CHARACTER QUALITY PARAM [MATCH]` | A parameter's options |
+| `/overrides more` | The next page of the last `/overrides`, with the same query |
+| `/override preview [CHARACTER] INTENT-JSON` | Exactly what an intent would do now; nothing changes |
+| `/override request [CHARACTER] INTENT-JSON WHY [--revises ID]` | Ask the host; it waits for the host |
+| `/requests overrides [CHARACTER] [open\|terminal] [more]` | Your requests, saying whose response is awaited ("waiting for the host", "offer N waiting for you, not applied yet") |
+| `/offer ID`, `/offers ID [more]` | A request and its offer, or every offer revision |
+| `/accept OFFER` | Shows the exact offer; `/accept OFFER confirm` applies exactly that one |
+| `/decline OFFER [NOTE]` | Declines it |
+| `/override history [CHARACTER] [more]`, `/override record ID` | What was applied, by whom, with the module's receipt |
+
+**The campaign host** (no character needed):
+
+| Command | Does |
+|---|---|
+| `/requests` | The legacy list, then the first page of open override requests |
+| `/decide ID offer [NOTE]` | Shows what it would do now; `/decide ID confirm` offers it |
+| `/decide ID counter INTENT-JSON NOTE` | Shows the counteroffer's preview; `/decide ID confirm` offers it |
+| `/decide ID deny NOTE` | Denies it |
+| `/withdraw OFFER NOTE` | Withdraws an offer not yet accepted (an accepted one stays applied) |
+| `/override apply CHARACTER INTENT-JSON REASON` | Shows the preview; `/override apply confirm` applies it directly, with no request |
+
+A confirmation sends the digest of the preview it showed. If the draft
+changed meanwhile, the host refuses it (`stale_preview` or `offer_stale`),
+the client shows what it would do now, and nothing is applied or resent:
+review it and confirm again. Only the latest review can be confirmed:
+starting another review, another confirmation, or a change of role clears
+it, and a reply to an older or failed review never makes it confirmable
+again. Previews show each effect's quality with its values before and
+after, not only the module's words; with `--json`, the client's own lines
+go to stderr.
+`/decide ID approve` on a negotiated request is refused locally with a hint
+to use `offer`. Every ID and preview is read from the host again after a
+reconnect; nothing is kept on disk.
+
 ## 5. Inspecting and administering
 
 The campaign host needs no character for any of this, and can do it while
