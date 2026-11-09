@@ -201,6 +201,83 @@ the campaign host, and everything read under one role is dropped when the
 role changes. Another guest's page shows none of it, and the host panels
 close the moment the page's player is no longer the campaign host.
 
+### Consent, notices and what ends a request
+
+What the negotiation guarantees, from both clients:
+
+- **Nothing applies before acceptance.** An offer or counteroffer changes
+  nothing on the draft. Only the requester's acceptance of that exact offer
+  applies it, by the digest of the preview they were shown, and only while
+  it still holds. A referee job accepts only on the player's explicit word.
+  The campaign host's own referee job may offer or deny on the host's
+  explicit word; a guest's job cannot.
+- **Notices.** Each step tells the requester's and the current host's
+  connections (`[request] ID is now STATE.`, or the Console and Requests
+  panels). A host may deny straight from the notice
+  (`/decide ID deny NOTE`).
+- **When an offer no longer holds** it shows why, and the request waits for
+  the host again:
+  - `preview_changed`: a relevant change, such as another applied override
+    on the same quality;
+  - `host_changed`: the host was transferred;
+  - `intent_invalid`: the draft can no longer take it.
+
+  The host reviews it and offers again; the player never asks twice.
+  Unrelated creation steps, other players' turns and new settings leave an
+  offer current.
+- **Host transfer.** A request waiting for a verdict waits for the new host.
+  An offer the former host made no longer holds; the new host offers again.
+- **Withdrawal** ends the request (`withdrawn`); the player asks again if
+  they still want it. An offer accepted first cannot be withdrawn, and
+  nothing applied is ever rolled back: a later change is a new override.
+- **Completion and archiving.** Completing a draft ends its open requests
+  (`stale`) and expires unused creation-only allowances, such as Trailhead's
+  gear picks. The expiry is recorded with what remained; what was used stays,
+  with its authorization history. A ready character cannot spend a leftover
+  allowance. Archiving a draft cancels its open requests.
+- **Access loss.** While a player's access is revoked they cannot accept,
+  and their client leaves the campaign. Nothing of the offer applies. With
+  access restored, the same offer can still be accepted if it holds.
+- **Direct changes.** The campaign host applies a change with no character
+  and no request (`/override apply`, or **Settings, Override**). Category
+  policy never limits the host. Each change is recorded as `direct`, with
+  its reason and receipt, in the character's override history.
+
+### Upgrading an existing campaign
+
+Back up the registry and the campaign files first (section 7). An
+installation with negotiated overrides upgrades a campaign file in place
+the first time it serves it (schema 10). The module state, every settings
+revision and every decided request are kept as they were: a legacy
+exception already applied to a draft stays applied. A request for a draft
+still pending is superseded, with the note "Negotiated creation overrides
+replace this request; ask again"; nothing of it is applied, and the player
+asks again as an override. From then on a legacy exception or operation
+request for a draft is refused (`override_required`). Ready characters, NPCs,
+the world and campaign-wide settings keep the legacy requests above. In a
+campaign whose module does not negotiate overrides, nothing changes: the
+override messages are refused (`override_unsupported`).
+
+Run `tesserae referee setup --referee-dir DIR` again with the new
+installation, so the referee's bridge is the new one.
+
+### When an override is refused
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `override_required` | A legacy request for a draft | Ask with `/override request` (or the referee) instead |
+| `override_blocked` | The request names a category the campaign's settings block | Ask about another quality, or ask the host to change the settings; the host can still apply it directly |
+| `override_unsupported` | The module does not negotiate overrides, or has no such quality, action or parameter | `/overrides` lists what can be asked |
+| `invalid_intent` | The module cannot do that as asked: the problems are shown | Change the intent; a change that changes nothing is refused too |
+| `stale_preview` | The preview confirmed is no longer what the change would do | Review it again; the client shows what it would do now |
+| `offer_stale` | The offer no longer holds (its reason is shown) | Wait for the host's fresh offer |
+| `offer_unavailable` | No such open offer: withdrawn, accepted, or someone else's | `/requests overrides` shows its state |
+| `proposal_unavailable` | Not your request (or none by that ID) | |
+| `proposal_decided` | Another decision landed first | Read the request again |
+| `request_conflict` | A request ID reused for something else | Use a new request ID |
+| `not_campaign_host` | A host-only step from a guest, or from a former host | |
+| `context_too_large` | A module's context alone is over one tool result | The module's budgets need lowering; see the [creation overrides contract](designs/creation_overrides_contract.md) section 11 |
+
 ## 5. Inspecting and administering
 
 The campaign host needs no character for any of this, and can do it while
