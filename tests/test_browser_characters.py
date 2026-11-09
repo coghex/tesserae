@@ -319,8 +319,11 @@ class ActorTests(CharacterCase):
         page = self.open()
         valve = Valve(page, self.host.uri)
         self.entered("alice", page)
+        play = page.locator("#character-list").get_by_role("button", name="Play Mara")
+        # Hold only once the join's own reads are in (the list among them).
+        expect(play).to_be_visible()
         valve.hold = True  # Play Mara's reply arrives only after leaving Trail
-        page.locator("#character-list").get_by_role("button", name="Play Mara").click()
+        play.click()
         page.locator("#console-leave").click()
         valve.release()
         self.expect_status(page, "Logged in as Alice")

@@ -163,6 +163,44 @@ go to stderr.
 to use `offer`. Every ID and preview is read from the host again after a
 reconnect; nothing is kept on disk.
 
+### Creation overrides in the browser
+
+The same negotiation, in the panels players and the host already use:
+
+- **Console, "Your override requests"** (every player): each request with
+  whose response it waits for ("Waiting for the host", "Offer N waiting for
+  you: offered, not applied yet", "Applied", or why it ended) and the host's
+  note. An open offer is shown in full under **Offered, not applied yet**:
+  its headline, each change with its values before and after, waivers,
+  allowances (they end at approval), later steps, consequences and what the
+  module cannot do. **Accept…** asks to confirm, naming the offer revision,
+  and sends the digest of what was shown; **Decline** takes an optional
+  note. An open request has **Withdraw request**; an ended one **Revise**,
+  which starts a new request from its intent, linked to the old one.
+  Approving the whole character stays the separate **Approve**.
+- **Settings, "This campaign"**: which kinds of change the host may be asked
+  for, and which are not taken.
+- **Settings, Requests** (the campaign host): the open override requests.
+  **Review** shows what each would do now; then **Offer**,
+  **Counteroffer…** (the intent as one JSON object, prefilled from the
+  request, then **Review**, a note, and **Send the counteroffer**), **Deny**
+  (with a note) or, on an open offer, **Withdraw the offer** (with a note).
+  Editing a reviewed counteroffer drops its review.
+- **Settings, Override** (the campaign host, no character needed): a draft's
+  ID, **What can change** (optionally in one category, or a quality's
+  parameter options, with a match; **Show more** continues the same
+  lookup), the intent, **Review**, a reason, then **Apply**. No request or
+  acceptance is involved. Editing the draft or the intent while a review
+  loads drops it: only the change shown is ever applied.
+
+A change since the review is refused with nothing applied, and the page
+says to look again. Every request, offer and preview is read from the host
+on joining, after a refresh and whenever a request changes; nothing is kept
+in the browser. The Console lists only the player's own requests, even for
+the campaign host, and everything read under one role is dropped when the
+role changes. Another guest's page shows none of it, and the host panels
+close the moment the page's player is no longer the campaign host.
+
 ## 5. Inspecting and administering
 
 The campaign host needs no character for any of this, and can do it while

@@ -102,6 +102,11 @@ const state = {
   role: null, // "host" or "guest" in a campaign with a campaign host
   rules: null, // the rules as this connection's character sees them (rules_view)
   requestsNote: "", // the Console's note on the player's own requests
+  // Negotiated creation overrides: the campaign's categories and their
+  // policy (null in a campaign that has none), and the player's own
+  // requests and the exact offers on them.
+  overrides: null,
+  own: emptyOwn(),
   host: emptyHost(), // the campaign host's data: never shown to anyone else
 };
 
@@ -122,6 +127,30 @@ function emptyHost() {
     confirmTransfer: null, // the player ID awaiting Hand it over
     note: "",
     retry: null, // {message, describe, onReply}: a change to resend exactly
+    overrides: null, // open override requests (override_requests)
+    overridesNext: null, // the next page's cursor, or null at the end
+    reviews: new Map(), // proposal ID to the request as last reviewed
+    counter: null, // {proposalId, characterId, intent, preview, digest} being drafted
+    discovery: null, // {characterId, query, items, next}: the Override panel's last lookup
+    plan: null, // {characterId, intent, preview, digest}: a reviewed direct override
+    // Bumped by every edit of the Override panel's draft or intent, and of
+    // the counteroffer's intent, so a preview that arrives after an edit is
+    // dropped: only what is shown when Apply or Send is pressed is sent.
+    planEdits: 0,
+    counterEdits: 0,
+    version: 0, // bumped whenever an override list or review changes
+  };
+}
+
+function emptyOwn() {
+  return {
+    items: null, // the player's override requests, as read so far
+    next: null, // the next page's cursor, or null at the end
+    offers: new Map(), // offer ID to the exact offer, for open offers
+    confirm: null, // {offerId, revision, digest} awaiting Accept
+    revise: null, // {proposalId, characterId} for a deliberate revision
+    note: "",
+    version: 0, // bumped whenever any of these change
   };
 }
 
@@ -141,6 +170,7 @@ let entryGeneration = 0; // bumped on every clear, so an older file read is drop
 let hostScope = {}; // replaced whenever the host data is cleared
 let renderedHost = {}; // the host objects each list shows
 let renderedOwnRequests = null; // the requests the Console shows
+let renderedOwn = null; // the override requests' version the Console shows
 
 const $ = (id) => document.getElementById(id);
 
@@ -228,6 +258,7 @@ async function entered(current, snapshot, again) {
   if (state.actor) listCharacters();
   if (LOBBY) {
     loadRules();
+    loadOwnOverrides();
     if (state.role === "host") loadHostOverview();
   }
   if (!again) $(state.referee ? "composer-text" : "console-leave").focus();
@@ -460,11 +491,17 @@ function clearGame() {
     noteIsBusy: false,
     rules: null,
     requestsNote: "",
+    overrides: null,
+    own: emptyOwn(),
   });
   statusRead = null;
   syncRead = null;
   $("composer-text").value = "";
   $("composer-private").checked = false;
+  $("override-revise-intent").value = "";
+  $("override-revise-explanation").value = "";
+  $("console-override-list").replaceChildren();
+  renderedOwn = null;
   clearHost();
 }
 
@@ -545,6 +582,9 @@ function applySnapshot(snapshot) {
   state.view = snapshot.view ?? null;
   state.revision = snapshot.revision;
   state.role = snapshot.role ?? null; // the campaign role, with a campaign host
+  state.overrides = Array.isArray(snapshot.override_categories)
+    ? snapshot.override_categories
+    : null;
 }
 
 function receive(message) {
@@ -577,6 +617,12 @@ function receive(message) {
   } else if (message.type === "role") {
     const was = state.role;
     state.role = message.role;
+    if (was !== message.role) {
+      // Anything read under the old role is dropped and read again.
+      state.own = emptyOwn();
+      renderedOwn = null;
+      loadOwnOverrides();
+    }
     if (message.role !== "host") {
       clearHost(was === "host" ? "You are no longer this campaign's host." : "");
     } else if (was !== "host") {
@@ -590,6 +636,8 @@ function receive(message) {
     if (state.actor && state.actor.mode === "creation") readView();
     if (state.role === "host") loadRequests();
     loadRules();
+    loadOwnOverrides();
+    if (state.role === "host") loadHostOverrides();
   }
   render();
 }
@@ -629,6 +677,8 @@ function becameIdle() {
     state.composerNote = "";
     state.noteIsBusy = false;
   }
+  // A job may have asked the host for an override: read the list again.
+  loadOwnOverrides();
 }
 
 // Conversation messages are kept by seq: duplicates are ignored and arrival
@@ -967,8 +1017,14 @@ function clearHost(note = "") {
   $("host-admin-args").value = "";
   $("host-rules-file").value = "";
   $("host-transfer-player").value = "";
+  for (const id of ["host-counter-intent", "host-counter-note", "host-override-character",
+    "host-override-intent", "host-override-reason", "host-override-quality",
+    "host-override-parameter", "host-override-match"]) {
+    $(id).value = "";
+  }
   for (const id of ["host-request-list", "host-revision-list", "host-inspect-body",
-    "host-message-list", "host-admin-operation", "host-audit-list"]) {
+    "host-message-list", "host-admin-operation", "host-audit-list", "host-override-list",
+    "host-counter-preview", "host-override-qualities", "host-override-preview"]) {
     $(id).replaceChildren();
   }
 }
@@ -1016,6 +1072,7 @@ async function loadRules() {
 function loadHostOverview() {
   loadRequests();
   loadRevisions();
+  loadHostOverrides();
 }
 
 async function loadRequests() {
@@ -1316,6 +1373,439 @@ async function withdraw(proposalId) {
   render();
 }
 
+// ---- Negotiated creation overrides (creation overrides contract section 12)
+// The player's requests and the exact offers on them live in `state.own`;
+// the host's reviews, counteroffer and direct override in `state.host`,
+// cleared with the rest of its data. Every acceptance, offer and direct
+// override sends the digest of the preview this page showed, so a change
+// meanwhile is refused and shown, never applied in its place.
+
+function overrideRefusal(reply) {
+  if (!reply || reply.type !== "error") return "";
+  const problems = Array.isArray(reply.problems) && reply.problems.length
+    ? ` ${reply.problems.map(String).join(" ")}`
+    : "";
+  if (reply.code === "offer_stale" || reply.code === "offer_unavailable") {
+    return "That offer is no longer open, so nothing was applied. Look at the request " +
+      "again.";
+  }
+  if (reply.code === "stale_preview") {
+    return "What it would do changed since you reviewed it, so nothing was applied. " +
+      "Review it again.";
+  }
+  return `${reply.message}${problems}`;
+}
+
+function parseIntent(text) {
+  try {
+    const intent = JSON.parse(text);
+    if (intent && typeof intent === "object" && !Array.isArray(intent)) return intent;
+  } catch {
+    // shown below
+  }
+  return null;
+}
+
+// Whose response a request waits for, in words: an offer is never applied.
+function awaitedText(request, asHost) {
+  const offer = request.offer;
+  if (request.state === "pending_host") return "Waiting for the host";
+  if (request.state === "awaiting_player" && offer) {
+    if (!offer.current) {
+      return `Offer ${offer.offer_revision} no longer holds (${offer.stale_reason || "stale"})`;
+    }
+    return `Offer ${offer.offer_revision} waiting for ${asHost ? "the player" : "you"}: ` +
+      "offered, not applied yet";
+  }
+  if (request.state === "applied") return "Applied";
+  return `${request.state[0].toUpperCase()}${request.state.slice(1)}`;
+}
+
+async function loadOwnOverrides(more = false) {
+  if (!state.overrides || state.phase !== "joined") return;
+  if (more && !state.own.next) return;
+  const here = campaignScope;
+  const own = state.own; // replaced when authority changes: a late reply lands nowhere
+  const me = state.me && state.me.participantId;
+  let after = more ? own.next : null;
+  let mine = [];
+  let next = null;
+  // A campaign host's read lists everyone's requests, which belong in its
+  // host panels, never in this personal list: keep only the player's own,
+  // and read on past pages that hold none of them, so none is out of reach.
+  for (;;) {
+    const message = { version: 1, type: "override_requests", states: "all" };
+    if (after) message.after = after;
+    const reply = await ask((current) => current.request(message));
+    if (!reply || here !== campaignScope || own !== state.own) return;
+    if (reply.type !== "override_requests") return;
+    mine = reply.items.filter((r) => r.requester && r.requester.participant_id === me);
+    next = reply.next;
+    if (mine.length || !next) break;
+    after = next;
+  }
+  own.items = more ? [...(own.items || []), ...mine] : mine;
+  own.next = next;
+  own.version += 1;
+  for (const request of mine) {
+    const offer = request.offer;
+    if (request.state === "awaiting_player" && offer && offer.current) {
+      loadOwnOffer(offer.offer_id);
+    }
+  }
+  render();
+}
+
+async function loadOwnOffer(offerId) {
+  const here = campaignScope;
+  const own = state.own;
+  const reply = await ask((current) =>
+    current.request({ version: 1, type: "override_offer", offer_id: offerId }));
+  if (!reply || here !== campaignScope || own !== state.own) return;
+  if (reply.type !== "override_offer") return;
+  state.own.offers.set(offerId, reply.offer);
+  state.own.version += 1;
+  render();
+}
+
+function askAccept(offerId) {
+  const offer = state.own.offers.get(offerId);
+  if (!offer) return;
+  state.own.confirm = {
+    offerId, revision: offer.offer_revision, digest: offer.preview_digest,
+  };
+  render();
+  $("override-accept-no").focus();
+}
+
+async function acceptOffer() {
+  const confirm = state.own.confirm;
+  if (!confirm) return;
+  state.own.confirm = null;
+  render();
+  const reply = await ask((current) => current.request({
+    version: 1, type: "override_respond", request_id: newRequestId(),
+    offer_id: confirm.offerId, response: "accept", preview_digest: confirm.digest,
+  }));
+  if (!reply) return;
+  state.own.note = reply.type === "proposal" && reply.state === "applied"
+    ? `Offer ${confirm.revision} is applied to your draft.`
+    : overrideRefusal(reply);
+  state.own.version += 1;
+  loadOwnOverrides();
+  readView();
+  render();
+}
+
+async function declineOffer(offerId) {
+  const field = $("console-override-list").querySelector(
+    `input[data-decline-note="${CSS.escape(offerId)}"]`,
+  );
+  const note = field ? field.value.trim() : "";
+  const reply = await ask((current) => current.request({
+    version: 1, type: "override_respond", request_id: newRequestId(), offer_id: offerId,
+    response: "decline", note: note || null,
+  }));
+  if (!reply) return;
+  state.own.note = reply.type === "proposal" ? "You declined that offer." : overrideRefusal(reply);
+  state.own.version += 1;
+  loadOwnOverrides();
+  render();
+}
+
+async function withdrawOverride(proposalId) {
+  await withdraw(proposalId);
+  loadOwnOverrides();
+}
+
+async function startRevise(proposalId) {
+  const reply = await ask((current) =>
+    current.request({ version: 1, type: "override_detail", proposal_id: proposalId }));
+  if (!reply) return;
+  if (reply.type !== "override_detail") {
+    state.own.note = overrideRefusal(reply);
+  } else {
+    state.own.revise = { proposalId, characterId: reply.request.target.id };
+    $("override-revise-intent").value = JSON.stringify(reply.request.intent, null, 2);
+    $("override-revise-explanation").value = "";
+  }
+  state.own.version += 1;
+  render();
+  if (state.own.revise) $("override-revise-explanation").focus();
+}
+
+async function sendRevise() {
+  const revise = state.own.revise;
+  if (!revise) return;
+  const intent = parseIntent($("override-revise-intent").value);
+  const explanation = $("override-revise-explanation").value.trim();
+  if (!intent || !explanation) {
+    state.own.note = intent
+      ? "Say why you are asking."
+      : "What to change must be one JSON object.";
+    render();
+    return;
+  }
+  const reply = await ask((current) => current.request({
+    version: 1, type: "override_request", request_id: newRequestId(),
+    character_id: revise.characterId, intent, explanation, revises: revise.proposalId,
+  }));
+  if (!reply) return;
+  if (reply.type === "proposal") {
+    state.own.note = `Asked again: request ${reply.proposal_id} waits for the host.`;
+    state.own.revise = null;
+  } else {
+    state.own.note = overrideRefusal(reply);
+  }
+  state.own.version += 1;
+  loadOwnOverrides();
+  render();
+}
+
+async function loadHostOverrides(more = false) {
+  if (!state.overrides || state.role !== "host") return;
+  const message = { version: 1, type: "override_requests", states: "open" };
+  if (more) {
+    if (!state.host.overridesNext) return;
+    message.after = state.host.overridesNext;
+  }
+  const reply = await ask((current) => current.request(message), { host: true });
+  if (!reply || reply.type !== "override_requests" || state.role !== "host") return;
+  const host = state.host;
+  host.overrides = more ? [...(host.overrides || []), ...reply.items] : reply.items;
+  host.overridesNext = reply.next;
+  host.version += 1;
+  render();
+}
+
+async function reviewOverride(proposalId) {
+  const reply = await ask((current) =>
+    current.request({ version: 1, type: "override_detail", proposal_id: proposalId }),
+  { host: true });
+  if (!reply) return;
+  if (reply.type === "override_detail") state.host.reviews.set(proposalId, reply.request);
+  else state.host.note = overrideRefusal(reply);
+  state.host.version += 1;
+  render();
+}
+
+function hostNote(proposalId) {
+  const field = $("host-override-list").querySelector(
+    `input[data-override-note="${CSS.escape(proposalId)}"]`,
+  );
+  return field ? field.value.trim() : "";
+}
+
+function afterVerdict(proposalId, done) {
+  return (reply) => {
+    state.host.note = reply.type === "proposal" ? done(reply) : overrideRefusal(reply);
+    state.host.reviews.delete(proposalId);
+    state.host.version += 1;
+    loadHostOverrides();
+  };
+}
+
+function offerOverride(proposalId) {
+  const request = state.host.reviews.get(proposalId);
+  const current = request && request.current;
+  if (!current || !["same", "changed"].includes(current.status)) return;
+  const note = hostNote(proposalId);
+  const message = {
+    version: 1, type: "override_decide", request_id: newRequestId(),
+    proposal_id: proposalId, decision: "offer", preview_digest: current.preview_digest,
+    note: note || null,
+  };
+  change(message, `Offer request ${proposalId}`, afterVerdict(proposalId, (reply) =>
+    `Request ${proposalId} is offered (offer ${reply.offer_revision}). Nothing applies ` +
+    "until the player accepts."));
+}
+
+function denyOverride(proposalId) {
+  const note = hostNote(proposalId);
+  if (!note) {
+    state.host.note = "A denial says why: write a note first.";
+    render();
+    return;
+  }
+  const message = {
+    version: 1, type: "override_decide", request_id: newRequestId(),
+    proposal_id: proposalId, decision: "deny", note,
+  };
+  change(message, `Deny request ${proposalId}`,
+    afterVerdict(proposalId, () => `Request ${proposalId} is denied.`));
+}
+
+function withdrawOffer(proposalId, offerId) {
+  const note = hostNote(proposalId);
+  if (!note) {
+    state.host.note = "Withdrawing an offer says why: write a note first.";
+    render();
+    return;
+  }
+  const message = {
+    version: 1, type: "override_withdraw", request_id: newRequestId(), offer_id: offerId, note,
+  };
+  change(message, `Withdraw offer ${offerId}`, afterVerdict(proposalId, () =>
+    `Offer ${offerId} is withdrawn; anything already accepted stays applied.`));
+}
+
+function startCounter(proposalId) {
+  const request = state.host.reviews.get(proposalId);
+  if (!request) return;
+  state.host.counter = {
+    proposalId, characterId: request.target.id, intent: null, preview: null, digest: null,
+  };
+  $("host-counter-intent").value = JSON.stringify(request.intent, null, 2);
+  $("host-counter-note").value = "";
+  render();
+  $("host-counter-intent").focus();
+}
+
+async function reviewPreview(characterId, intent) {
+  return ask((current) => current.request({
+    version: 1, type: "override_preview", character_id: characterId, intent,
+  }), { host: true });
+}
+
+async function reviewCounter() {
+  const counter = state.host.counter;
+  if (!counter) return;
+  const host = state.host;
+  const edits = host.counterEdits;
+  const intent = parseIntent($("host-counter-intent").value);
+  if (!intent) {
+    state.host.note = "What to offer must be one JSON object.";
+    render();
+    return;
+  }
+  const reply = await reviewPreview(counter.characterId, intent);
+  // Edited, cancelled or cleared meanwhile: this preview is of something else.
+  if (!reply || host !== state.host || host.counter !== counter) return;
+  if (host.counterEdits !== edits) return;
+  if (reply.type === "override_preview") {
+    Object.assign(counter, { intent, preview: reply.preview, digest: reply.preview_digest });
+  } else {
+    Object.assign(counter, { intent: null, preview: null, digest: null });
+    state.host.note = overrideRefusal(reply);
+  }
+  state.host.version += 1;
+  render();
+}
+
+function sendCounter() {
+  const counter = state.host.counter;
+  if (!counter || !counter.digest) return;
+  const note = $("host-counter-note").value.trim();
+  if (!note) {
+    state.host.note = "A counteroffer says why: write it first.";
+    render();
+    return;
+  }
+  const message = {
+    version: 1, type: "override_decide", request_id: newRequestId(),
+    proposal_id: counter.proposalId, decision: "counteroffer",
+    preview_digest: counter.digest, intent: counter.intent, note,
+  };
+  state.host.counter = null;
+  change(message, `Counteroffer request ${counter.proposalId}`,
+    afterVerdict(counter.proposalId, (reply) =>
+      `Request ${counter.proposalId} has counteroffer ${reply.offer_revision}. Nothing ` +
+      "applies until the player accepts."));
+}
+
+// What can change on a draft (with a category, or a parameter's options),
+// a page at a time: "Show more" continues the same lookup.
+async function discoverOverride(more = false) {
+  const host = state.host;
+  let lookup;
+  if (more) {
+    const last = host.discovery;
+    if (!last || !last.next) return;
+    lookup = { characterId: last.characterId,
+      query: { ...last.query, after: last.next }, base: last.query };
+  } else {
+    const characterId = $("host-override-character").value.trim();
+    if (!characterId) {
+      host.note = "Name the draft first.";
+      render();
+      return;
+    }
+    const query = {};
+    const category = $("host-override-category").value;
+    const quality = $("host-override-quality").value.trim();
+    const parameter = $("host-override-parameter").value.trim();
+    const match = $("host-override-match").value.trim();
+    if (quality && parameter) {
+      Object.assign(query, { quality_id: quality, parameter });
+      if (match) query.match = match;
+    } else if (category) {
+      query.category_id = category;
+    }
+    lookup = { characterId, query, base: query };
+  }
+  const reply = await ask((current) => current.request({
+    version: 1, type: "override_discover", character_id: lookup.characterId,
+    query: lookup.query,
+  }), { host: true });
+  if (!reply || host !== state.host) return;
+  if (reply.type === "override_discover") {
+    const earlier = more && host.discovery ? host.discovery.items : [];
+    host.discovery = { characterId: lookup.characterId, query: lookup.base,
+      items: [...earlier, ...reply.items], next: reply.next };
+  } else {
+    host.note = overrideRefusal(reply);
+  }
+  host.version += 1;
+  render();
+}
+
+async function reviewOverridePlan() {
+  const host = state.host;
+  const edits = host.planEdits;
+  const characterId = $("host-override-character").value.trim();
+  const intent = parseIntent($("host-override-intent").value);
+  state.host.plan = null;
+  if (!characterId || !intent) {
+    state.host.note = "Name the draft, and give what to change as one JSON object.";
+    render();
+    return;
+  }
+  const reply = await reviewPreview(characterId, intent);
+  // Edited or cleared meanwhile: this preview is of something else.
+  if (!reply || host !== state.host || host.planEdits !== edits) return;
+  if (reply.type === "override_preview") {
+    state.host.plan = {
+      characterId, intent, preview: reply.preview, digest: reply.preview_digest,
+    };
+  } else {
+    state.host.note = overrideRefusal(reply);
+  }
+  state.host.version += 1;
+  render();
+}
+
+function applyOverridePlan() {
+  const plan = state.host.plan;
+  if (!plan) return;
+  const reason = $("host-override-reason").value.trim();
+  if (!reason) {
+    state.host.note = "A direct change says why: write a reason first.";
+    render();
+    return;
+  }
+  const message = {
+    version: 1, type: "override_apply", request_id: newRequestId(),
+    character_id: plan.characterId, intent: plan.intent, preview_digest: plan.digest, reason,
+  };
+  state.host.plan = null;
+  change(message, `Apply the change to ${plan.characterId}`, (reply) => {
+    state.host.note = reply.type === "override_applied"
+      ? `Applied to ${reply.character_id} at revision ${reply.revision}.`
+      : overrideRefusal(reply);
+    state.host.version += 1;
+  });
+}
+
 // ---- Rendering -----------------------------------------------------------
 
 function render() {
@@ -1421,6 +1911,7 @@ function renderConsole() {
   $("composer-note").textContent = state.composerNote;
   renderConversation();
   renderOwnRequests(shown);
+  renderOwnOverrides(shown);
   renderQuestion();
   renderUnconfirmed();
   renderLastInput();
@@ -1706,6 +2197,100 @@ function renderOwnRequests(shown) {
   for (const node of $("console-request-list").querySelectorAll("button")) node.disabled = !usable;
 }
 
+// A preview, every part of it, as text: what would change, from what to
+// what, and what it waives, allows, needs later, causes and cannot do.
+function previewNodes(preview, digest) {
+  if (!preview) return [];
+  const nodes = [textItem("p", String(preview.headline ?? ""), "preview-headline")];
+  const list = document.createElement("ul");
+  list.className = "preview";
+  for (const effect of preview.effects || []) {
+    list.append(textItem("li", `${effect.quality_id}: ${compact(effect.before)} → ` +
+      `${compact(effect.after)} (${effect.summary})`));
+  }
+  for (const waiver of preview.waivers || []) {
+    list.append(textItem("li", `Waives, ${waiver.creation_only ? "until approval" :
+      "lasting"}: ${waiver.quality_id}: ${waiver.summary}`));
+  }
+  for (const allowance of preview.allowances || []) {
+    list.append(textItem("li", `Allows, until approval: ${allowance.summary}`));
+  }
+  for (const step of preview.later_steps || []) {
+    list.append(textItem("li", `Later: ${step.command}: ${step.summary} (${step.stakes})`));
+  }
+  for (const text of preview.consequences || []) list.append(textItem("li", `Then: ${text}`));
+  for (const text of preview.limitations || []) {
+    list.append(textItem("li", `Cannot: ${text}`));
+  }
+  nodes.push(list);
+  if (digest) nodes.push(textItem("p", `Preview ${String(digest).slice(0, 12)}`, "note"));
+  return nodes;
+}
+
+// The Console: the player's override requests, whose response each waits
+// for, and an open offer shown exactly, under "Offered, not applied yet".
+function renderOwnOverrides(shown) {
+  const own = state.own;
+  const on = Boolean(shown && state.overrides);
+  const items = own.items || [];
+  // While more pages may hold the player's requests, the panel and its
+  // Show more stay within reach.
+  $("console-overrides").hidden =
+    !on || (!items.length && !own.note && !own.revise && !own.next);
+  $("console-overrides-note").textContent = own.note;
+  $("console-overrides-more").hidden = !own.next;
+  if (renderedOwn !== own.version) {
+    renderedOwn = own.version;
+    $("console-override-list").replaceChildren(...items.map((request) => {
+      const item = document.createElement("li");
+      const id = String(request.proposal_id);
+      item.dataset.proposalId = id;
+      item.append(textItem("p", `${awaitedText(request, false)}: ${request.target.id} ` +
+        `(${(request.categories || []).join(", ")}): “${request.explanation}”`,
+      "request-state"));
+      if (request.decision_note) {
+        item.append(textItem("p", `The host's note: ${request.decision_note}`, "note"));
+      }
+      const offer = request.offer && own.offers.get(request.offer.offer_id);
+      if (request.state === "awaiting_player" && request.offer && request.offer.current && offer) {
+        const box = document.createElement("div");
+        box.className = "offer";
+        box.append(textItem("h3", `Offered, not applied yet (offer ${offer.offer_revision}` +
+          `${offer.origin === "counteroffer" ? ", a counteroffer" : ""})`));
+        if (offer.note) box.append(textItem("p", `The host's note: ${offer.note}`, "note"));
+        box.append(...previewNodes(offer.preview, offer.preview_digest));
+        const note = document.createElement("input");
+        note.type = "text";
+        note.maxLength = 1000;
+        note.dataset.declineNote = String(offer.offer_id);
+        note.setAttribute("aria-label", `Note for declining offer ${offer.offer_revision}`);
+        box.append(button("Accept…", { accept: String(offer.offer_id) }), note,
+          button("Decline", { decline: String(offer.offer_id) }));
+        item.append(box);
+      }
+      if (request.state === "pending_host" || request.state === "awaiting_player") {
+        item.append(button("Withdraw request", { withdrawOverride: id }));
+      } else {
+        item.append(button("Revise", { revise: id }));
+      }
+      return item;
+    }));
+  }
+  const confirm = own.confirm;
+  $("override-accept-confirm").hidden = !confirm;
+  $("override-accept-text").textContent = confirm
+    ? `Accept offer ${confirm.revision} exactly as shown? It applies to your draft at ` +
+      "once; approving the whole character is still separate."
+    : "";
+  $("override-accept-yes").textContent = confirm ? `Accept offer ${confirm.revision}` : "Accept";
+  $("override-revise").hidden = !own.revise;
+  $("override-revise-title").textContent = own.revise
+    ? `Ask again, revising ${own.revise.proposalId}`
+    : "Ask again";
+  const usable = state.phase === "joined";
+  for (const node of $("console-overrides").querySelectorAll("button")) node.disabled = !usable;
+}
+
 // Settings: the role and the rules, for everyone in a campaign.
 function renderRules(joined) {
   const panel = $("settings-rules-panel");
@@ -1727,6 +2312,15 @@ function renderRules(joined) {
     body.push(viewNode(null, rules.settings));
     if (rules.exception) body.push(textItem("p", `Your exception: ${compact(rules.exception)}`));
     if (rules.guidance) body.push(textItem("p", `Guidance: ${rules.guidance}`));
+    if (Array.isArray(rules.override_categories) && rules.override_categories.length) {
+      const list = document.createElement("ul");
+      list.className = "override-categories";
+      for (const category of rules.override_categories) {
+        list.append(textItem("li", `Override requests for ${category.label}: ` +
+          (category.policy === "blocked" ? "not taken" : "taken, for the host to decide")));
+      }
+      body.push(textItem("p", "Changes to a draft the host may be asked for:"), list);
+    }
     if (Array.isArray(rules.requirements)) {
       const list = document.createElement("ul");
       list.className = "requirements";
@@ -1750,6 +2344,7 @@ function renderHost(joined) {
   for (const id of ["host-requests", "host-rules", "host-admin", "host-inspect", "host-transfer"]) {
     $(id).hidden = !isHost;
   }
+  renderHostOverrides(isHost && Boolean(state.overrides));
   $("host-retry").hidden = !host.retry;
   $("host-retry-text").textContent = host.retry
     ? `${host.retry.describe}: not done yet. Retry sends exactly the same request.`
@@ -1867,7 +2462,102 @@ function renderHost(joined) {
     : "";
   const usable = isHost && !host.retry;
   for (const node of $("host-panels").querySelectorAll("button")) {
-    if (!["host-retry-send", "host-retry-drop"].includes(node.id)) node.disabled = !usable;
+    if (["host-retry-send", "host-retry-drop"].includes(node.id)) continue;
+    if (!usable) node.disabled = true;
+    else if (node.id === "host-counter-send") node.disabled = !host.counter || !host.counter.digest;
+    else if (node.id === "host-override-apply") node.disabled = !host.plan;
+    else node.disabled = false;
+  }
+}
+
+// Settings: the host's override requests, its counteroffer and its direct
+// override, only while it is the host of a campaign that has them.
+function renderHostOverrides(on) {
+  const host = state.host;
+  $("host-overrides").hidden = !on;
+  $("host-override").hidden = !on;
+  const items = host.overrides || [];
+  $("host-overrides-empty").hidden = items.length > 0;
+  $("host-overrides-more").hidden = !host.overridesNext;
+  if (renderedHost.overrides !== host.version) {
+    renderedHost.overrides = host.version;
+    $("host-override-list").replaceChildren(...items.map((request) => {
+      const item = document.createElement("li");
+      const id = String(request.proposal_id);
+      item.dataset.proposalId = id;
+      const who = request.requester.name || request.requester.participant_id;
+      item.append(textItem("p", `${id}: ${awaitedText(request, true)}. ${who} asks for ` +
+        `${request.target.id} (${(request.categories || []).join(", ")}): ` +
+        `“${request.explanation}”`));
+      const reviewed = host.reviews.get(id);
+      if (reviewed) {
+        const current = reviewed.current || {};
+        if (["same", "changed"].includes(current.status)) {
+          item.append(textItem("p", "What it would do now:", "note"),
+            ...previewNodes(current.preview, current.preview_digest));
+        } else {
+          item.append(textItem("p", current.status === "invalid"
+            ? `It cannot be done now: ${(current.problems || []).join(" ")}`
+            : "It cannot be checked now.", "note"));
+        }
+      }
+      const note = document.createElement("input");
+      note.type = "text";
+      note.maxLength = 1000;
+      note.dataset.overrideNote = id;
+      note.setAttribute("aria-label", `Note for ${id}`);
+      item.append(note);
+      if (request.state === "pending_host") {
+        item.append(button("Review", { reviewOverride: id }));
+        if (reviewed && ["same", "changed"].includes((reviewed.current || {}).status)) {
+          item.append(button("Offer", { offerOverride: id }));
+        }
+        if (reviewed) item.append(button("Counteroffer…", { counterOverride: id }));
+        item.append(button("Deny", { denyOverride: id }));
+      } else if (request.offer && request.offer.state === "open") {
+        item.append(button("Withdraw the offer", {
+          withdrawOffer: id, offerId: String(request.offer.offer_id),
+        }));
+        item.append(button("Review", { reviewOverride: id }));
+        if (reviewed) item.append(button("Counteroffer…", { counterOverride: id }));
+      }
+      return item;
+    }));
+    const counter = host.counter;
+    $("host-counter-preview").replaceChildren(
+      ...(counter && counter.preview ? previewNodes(counter.preview, counter.digest) : []));
+    const found = host.discovery ? host.discovery.items : [];
+    $("host-override-qualities").replaceChildren(...found.map((entry) =>
+      "quality_id" in entry
+        ? textItem("li", `${entry.quality_id} (${entry.category_id}), now ` +
+          `${compact(entry.current)}: ${(entry.actions || []).map((action) =>
+            `${action.action_id} ${compact(action.parameters)}`).join("; ")}`)
+        : textItem("li", `Option: ${compact(entry.value)} (${entry.label})`)));
+    const plan = host.plan;
+    $("host-override-preview").replaceChildren(
+      ...(plan ? previewNodes(plan.preview, plan.digest) : []));
+  }
+  const counter = host.counter;
+  $("host-counter").hidden = !on || !counter;
+  $("host-counter-title").textContent = counter
+    ? `Counteroffer for ${counter.proposalId}`
+    : "Counteroffer";
+  $("host-counter-send").disabled = !counter || !counter.digest;
+  $("host-override-apply").disabled = !host.plan;
+  $("host-override-more").hidden = !host.discovery || !host.discovery.next;
+  const categories = state.overrides || [];
+  const select = $("host-override-category");
+  if (renderedHost.categories !== state.overrides) {
+    renderedHost.categories = state.overrides;
+    const any = document.createElement("option");
+    any.value = "";
+    any.textContent = "Any category";
+    select.replaceChildren(any, ...categories.map((category) => {
+      const option = document.createElement("option");
+      option.value = String(category.category_id);
+      option.textContent = String(category.label);
+      return option;
+    }));
   }
 }
 
@@ -2038,6 +2728,71 @@ function start() {
     state.host.confirmTransfer = null;
     render();
   });
+  // Creation overrides: the player's responses and revisions, the host's
+  // verdicts, counteroffer and direct override. Editing what was reviewed
+  // drops the review: only what was shown is ever sent.
+  $("console-override-list").addEventListener("click", (event) => {
+    const node = event.target.closest("button");
+    if (!node) return;
+    if (node.dataset.accept) askAccept(node.dataset.accept);
+    else if (node.dataset.decline) declineOffer(node.dataset.decline);
+    else if (node.dataset.withdrawOverride) withdrawOverride(node.dataset.withdrawOverride);
+    else if (node.dataset.revise) startRevise(node.dataset.revise);
+  });
+  $("override-accept-yes").addEventListener("click", acceptOffer);
+  $("override-accept-no").addEventListener("click", () => {
+    state.own.confirm = null;
+    render();
+  });
+  $("console-overrides-more").addEventListener("click", () => loadOwnOverrides(true));
+  $("console-overrides-refresh").addEventListener("click", () => loadOwnOverrides());
+  $("override-revise-send").addEventListener("click", sendRevise);
+  $("override-revise-cancel").addEventListener("click", () => {
+    state.own.revise = null;
+    render();
+  });
+  $("host-override-list").addEventListener("click", (event) => {
+    const node = event.target.closest("button");
+    if (!node) return;
+    if (node.dataset.reviewOverride) reviewOverride(node.dataset.reviewOverride);
+    else if (node.dataset.offerOverride) offerOverride(node.dataset.offerOverride);
+    else if (node.dataset.counterOverride) startCounter(node.dataset.counterOverride);
+    else if (node.dataset.denyOverride) denyOverride(node.dataset.denyOverride);
+    else if (node.dataset.withdrawOffer) {
+      withdrawOffer(node.dataset.withdrawOffer, node.dataset.offerId);
+    }
+  });
+  $("host-overrides-more").addEventListener("click", () => loadHostOverrides(true));
+  $("host-counter-review").addEventListener("click", reviewCounter);
+  $("host-counter-send").addEventListener("click", sendCounter);
+  $("host-counter-cancel").addEventListener("click", () => {
+    state.host.counter = null;
+    state.host.version += 1;
+    render();
+  });
+  $("host-counter-intent").addEventListener("input", () => {
+    state.host.counterEdits += 1; // a preview still loading is now obsolete
+    const counter = state.host.counter;
+    if (counter && counter.digest) {
+      Object.assign(counter, { intent: null, preview: null, digest: null });
+      state.host.version += 1;
+      render();
+    }
+  });
+  $("host-override-discover").addEventListener("click", () => discoverOverride());
+  $("host-override-more").addEventListener("click", () => discoverOverride(true));
+  $("host-override-review").addEventListener("click", reviewOverridePlan);
+  $("host-override-apply").addEventListener("click", applyOverridePlan);
+  for (const id of ["host-override-character", "host-override-intent"]) {
+    $(id).addEventListener("input", () => {
+      state.host.planEdits += 1; // a preview still loading is now obsolete
+      if (state.host.plan) {
+        state.host.plan = null;
+        state.host.version += 1;
+        render();
+      }
+    });
+  }
   $("host-retry-send").addEventListener("click", retryChange);
   $("host-retry-drop").addEventListener("click", () => {
     state.host.retry = null;

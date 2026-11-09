@@ -15,8 +15,9 @@ implements sections 3 and 4 and section 14's module; OVR-3
 ([#176](https://github.com/coghex/tesserae/issues/176)) section 11 (the
 bridge's tools, the context's `overrides` block and the prompt); OVR-5
 ([#177](https://github.com/coghex/tesserae/issues/177)) section 12's CLI
-([governance runbook](../governance-runbook.md#creation-overrides-from-the-cli)).
-The browser (section 12) is not implemented yet.
+([governance runbook](../governance-runbook.md#creation-overrides-from-the-cli));
+OVR-6 ([#178](https://github.com/coghex/tesserae/issues/178)) its browser
+([governance runbook](../governance-runbook.md#creation-overrides-in-the-browser)).
 
 It extends the [governance contract](governance_contract.md), the
 [character contract](character_contract.md) and the

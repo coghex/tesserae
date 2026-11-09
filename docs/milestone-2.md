@@ -167,7 +167,8 @@ expiry of allowances, and the private, paged client messages
 referee: the bridge's discovery, preview, request, response, verdict,
 withdrawal and direct-override tools, the context's `overrides` block and
 the prompt's rules. OVR-5 ([#177](https://github.com/coghex/tesserae/issues/177))
-adds the CLI's controls; the browser's follow in OVR-6.
+adds the CLI's controls and OVR-6
+([#178](https://github.com/coghex/tesserae/issues/178)) the browser's.
 
 ## Later browser work
 
