@@ -164,6 +164,12 @@ class _Client:
         self.queued = []
         self.cursors = {}
         self.override_ids = set()
+        # Which review may still set a confirmation: each new review, or
+        # any other confirmation, moves it on, so an older or failed review's
+        # reply can never make an earlier change confirmable again.
+        self.review = 0
+        # The last discovery (character, query, next cursor), for `more`.
+        self.discovery = None
         self.send_lock = asyncio.Lock()  # one line at a time, in deque order
 
     async def main(self) -> int:
@@ -627,15 +633,22 @@ class _Client:
         if not player:
             return self._note("[role] Type /transfer and the player's ID (u_...).")
         if confirm != "confirm" or self.pending != ("transfer", player):
+            self._begin_review()
             self.pending = ("transfer", player)
             return self._note(
                 f"[role] Hand this campaign to {player}? You become a guest at once. "
                 f"Type /transfer {player} confirm to do it."
             )
-        self.pending = None
+        self._begin_review()
         return self._mutation("campaign_host_transfer", player_id=player)
 
     # --- creation overrides (creation overrides contract section 12) ---------
+
+    def _begin_review(self) -> int:
+        """A new review (or confirmation) supersedes any earlier one."""
+        self.pending = None
+        self.review += 1
+        return self.review
 
     def _read(self, kind: str, context: tuple, **fields) -> str:
         """An override read, with what its reply is for: shown, a step of a
@@ -683,10 +696,11 @@ class _Client:
                         f"[offer] Look at it first: /accept {target} shows the offer."
                     )
                 _, offer_id, digest = self.pending
-                self.pending = None
+                self._begin_review()
                 return self._mutation("override_respond", offer_id=offer_id,
                                       response="accept", preview_digest=digest)  # fmt: skip
-            return self._read("override_offer", ("accept", target), offer_id=target)
+            return self._read("override_offer", ("accept", target, self._begin_review()),
+                              offer_id=target)  # fmt: skip
         if command == "/decline":
             if not target:
                 return self._note("[offer] Type /decline, an offer's ID, and a note.")
@@ -709,12 +723,19 @@ class _Client:
         return draft, words
 
     def _overrides_discover(self, words: list) -> str | None:
+        if words == ["more"]:  # the next page of the last discovery
+            if self.discovery is None or self.discovery[2] is None:
+                return self._note("[overrides] There is no more to show.")
+            character, query, after = self.discovery
+            return self._read("override_discover", ("discover", character, query),
+                              character_id=character, query={**query, "after": after})  # fmt: skip
         if not words and self._draft() is None:
             return _message("override_categories")
         categories = {c["category_id"] for c in self.categories}
         if len(words) == 1 and words[0] in categories and self._draft() is not None:
-            return self._read("override_discover", ("show",), character_id=self._draft(),
-                              query={"category_id": words[0]})  # fmt: skip
+            query = {"category_id": words[0]}
+            return self._read("override_discover", ("discover", self._draft(), query),
+                              character_id=self._draft(), query=query)  # fmt: skip
         character, words = self._character_or_draft(words)
         if character is None:
             return None
@@ -725,8 +746,8 @@ class _Client:
             query.update(quality_id=words[0], parameter=words[1])
             if len(words) > 2:
                 query["match"] = " ".join(words[2:])
-        return self._read("override_discover", ("show",), character_id=character,
-                          query=query)  # fmt: skip
+        return self._read("override_discover", ("discover", character, query),
+                          character_id=character, query=query)  # fmt: skip
 
     def _override_action(self, action: str, rest: str) -> str | None:
         if action == "record":
@@ -752,7 +773,7 @@ class _Client:
                 return self._note("[override] There is nothing to confirm; type /override "
                                   "apply CHARACTER INTENT-JSON REASON first.")  # fmt: skip
             _, character, intent, digest, reason = self.pending
-            self.pending = None
+            self._begin_review()
             return self._mutation("override_apply", character_id=character,
                                   intent=intent, preview_digest=digest, reason=reason)  # fmt: skip
         if action not in ("preview", "request", "apply"):
@@ -776,8 +797,11 @@ class _Client:
         if action == "apply":
             if not after:
                 return self._note("[override] Give a reason after the intent.")
-            return self._read("override_preview", ("apply", character, intent, after),
-                              character_id=character, intent=intent)  # fmt: skip
+            return self._read(
+                "override_preview",
+                ("apply", character, intent, after, self._begin_review()),
+                character_id=character, intent=intent,
+            )  # fmt: skip
         revises = None
         if " --revises " in f" {after} ":
             after, _, revises = f" {after} ".partition(" --revises ")
@@ -818,7 +842,7 @@ class _Client:
                     f"[request] Review it first: /decide {proposal_id} offer or counter."
                 )
             _, _, kind, digest, intent, note = self.pending
-            self.pending = None
+            self._begin_review()
             fields = {"proposal_id": proposal_id, "decision": kind,
                       "preview_digest": digest, "note": note}  # fmt: skip
             if intent is not None:
@@ -835,15 +859,21 @@ class _Client:
             return self._mutation("override_decide", proposal_id=proposal_id,
                                   decision="deny", note=rest)  # fmt: skip
         if decision == "offer":
-            return self._read("override_detail", ("offer", proposal_id, rest or None),
-                              proposal_id=proposal_id)  # fmt: skip
+            return self._read(
+                "override_detail",
+                ("offer", proposal_id, rest or None, self._begin_review()),
+                proposal_id=proposal_id,
+            )  # fmt: skip
         if decision == "counter":
             parsed = _with_intent(rest)
             if parsed is None or parsed[0] or not parsed[2]:
                 return self._note("[request] Type /decide ID counter INTENT-JSON NOTE.")
             _, intent, note = parsed
-            return self._read("override_detail", ("counter", proposal_id, intent, note),
-                              proposal_id=proposal_id)  # fmt: skip
+            return self._read(
+                "override_detail",
+                ("counter", proposal_id, intent, note, self._begin_review()),
+                proposal_id=proposal_id,
+            )  # fmt: skip
         return self._note("[request] Type /decide ID offer|counter|deny.")
 
     def _override_reply(self, message: dict, sent: str, sent_type: str):
@@ -859,8 +889,10 @@ class _Client:
             self.override_ids.add(message["request"]["proposal_id"])
         if kind == "proposal" and sent_type in _OVERRIDE_MUTATIONS:
             self.override_ids.add(message["proposal_id"])
-        if context[0] == "page" and kind == message.get("type") and kind != "error":
+        if context[0] == "page" and kind != "error":
             self.cursors[context[1]] = message["next"]
+        if context[0] == "discover" and kind != "error":
+            self.discovery = (context[1], context[2], message["next"])
         if self.json_output:
             _print(message)
         else:
@@ -878,13 +910,19 @@ class _Client:
                         print(line, flush=True)
             if context[0] == "page" and message.get("next"):
                 self._note(_MORE[context[1][0]])
+            if context[0] == "discover" and message.get("next"):
+                self._note("[overrides] More: /overrides more")
         if kind == "error":
             return
         self._confirmation(context, message)
 
     def _confirmation(self, context: tuple, message: dict):
-        """After a review read: what confirming will send, exactly."""
+        """After a review read: what confirming will send, exactly. A reply
+        to a review that a later one (or another confirmation) superseded
+        sets nothing."""
         step = context[0]
+        if step in _REVIEWS and context[-1] != self.review:
+            return None
         if step == "accept":
             offer = message["offer"]
             if offer["state"] != "open" or not offer.get("current"):
@@ -916,9 +954,10 @@ class _Client:
                     "or counter with another intent."
                 )
             if current["status"] == "same":
-                print(*override_lines.preview_lines(current["preview"],
-                                                    current["preview_digest"], "[now]"),
-                      sep="\n", flush=True)  # fmt: skip
+                for line in override_lines.preview_lines(
+                    current["preview"], current["preview_digest"], "[now]"
+                ):
+                    self._note(line)  # stderr with --json
             self.pending = ("decide", context[1], "offer", current["preview_digest"],
                             None, context[2])  # fmt: skip
             return self._note(
@@ -926,7 +965,7 @@ class _Client:
                 f"applies until the player accepts. Type /decide {context[1]} confirm."
             )
         if step == "counter-preview":
-            _, proposal_id, intent, note = context
+            _, proposal_id, intent, note, _ = context
             self.pending = ("decide", proposal_id, "counteroffer",
                             message["preview_digest"], intent, note)  # fmt: skip
             return self._note(
@@ -934,7 +973,7 @@ class _Client:
                 f"the player accepts. Type /decide {proposal_id} confirm."
             )
         if step == "apply":
-            _, character, intent, reason = context
+            _, character, intent, reason, _ = context
             self.pending = ("apply", character, intent, message["preview_digest"],
                             reason)  # fmt: skip
             return self._note(
@@ -985,13 +1024,14 @@ class _Client:
                     "the settings revision you saw."
                 )
             if confirm != "confirm" or self.pending != ("activate", int(number), seen):
+                self._begin_review()
                 self.pending = ("activate", int(number), seen)
                 return self._note(
                     f"[rules] Make revision {number} the campaign's settings, replacing "
                     f"revision {seen}? Drafts it changes must be approved again. Type "
                     f"/rules activate {number} confirm to do it."
                 )
-            self.pending = None
+            self._begin_review()
             return self._mutation("rules_activate", revision=int(number),
                                   expected_policy_revision=seen)  # fmt: skip
         return self._note(
@@ -1010,7 +1050,7 @@ class _Client:
                 return self._note("[admin] There is nothing to confirm; type /admin "
                                   "COMMAND ARGS-JSON first.")  # fmt: skip
             _, command, args, revision = self.pending
-            self.pending = None
+            self._begin_review()
             return self._mutation("host_command", expected_revision=revision,
                                   command=command, args=args)  # fmt: skip
         command, _, raw = rest.partition(" ")
@@ -1022,6 +1062,7 @@ class _Client:
             return self._note("[admin] The arguments must be one JSON object.")
         if self.revision is None:
             return self._note("[admin] Look at the game first (/sync or /inspect).")
+        self._begin_review()
         self.pending = ("admin", command, args, self.revision)
         shown = json.dumps(args, separators=(", ", ": "))
         return self._note(
@@ -1094,7 +1135,8 @@ class _Client:
         if role != self.role:
             # A confirmation or a retry was made under the old role, and is
             # never sent under any later one, even if it is the same again.
-            self.pending, self.mutation_retry = None, None
+            self._begin_review()
+            self.mutation_retry = None
         self.role = role
 
     def _saw_revision(self, revision: int):
@@ -1238,7 +1280,8 @@ class _Client:
         self.roster, self.shown_revision, self.confirming = [], None, None
         self.overrides_on = isinstance(snapshot.get("override_categories"), list)
         self.categories = snapshot.get("override_categories") or []
-        self.cursors, self.override_ids = {}, set()
+        self.cursors, self.override_ids, self.discovery = {}, set(), None
+        self._begin_review()
         self.sending, self.last_say, self.reported_input = self.saved.pop(
             self._retry_key(), ({}, None, None)
         )
@@ -1281,7 +1324,8 @@ class _Client:
         self.pending, self.mutation_retry = None, None
         self.roster, self.shown_revision, self.confirming = [], None, None
         self.overrides_on, self.categories = False, []
-        self.cursors, self.override_ids = {}, set()
+        self.cursors, self.override_ids, self.discovery = {}, set(), None
+        self._begin_review()
         if not quiet:
             self._note(
                 f"[lobby] You are back in the lobby, out of {campaign['name']}; "
@@ -1495,6 +1539,7 @@ _OVERRIDE_HELP = """\
 [help] Creation overrides (a change to a draft is asked, offered, then accepted):
 [help] /overrides [CHARACTER] [CATEGORY]   what can be changed on a draft
 [help] /overrides CHARACTER QUALITY PARAM [MATCH]   a parameter's options
+[help] /overrides more   the next page of the last /overrides, same query
 [help] /override preview [CHARACTER] INTENT-JSON   what it would do, exactly
 [help] /override request [CHARACTER] INTENT-JSON WHY [--revises ID]   ask the host
 [help] /requests overrides [CHARACTER] [open|terminal] [more]   your requests (host: all)
@@ -2081,6 +2126,8 @@ _OVERRIDE_READS = ("override_categories", "override_discover", "override_preview
 _OVERRIDE_MUTATIONS = ("override_request", "override_decide", "override_withdraw",
                        "override_respond", "override_apply")  # fmt: skip
 _OVERRIDE_TYPES = _OVERRIDE_READS + _OVERRIDE_MUTATIONS
+# Reads that review a change for confirmation; each carries its review.
+_REVIEWS = ("accept", "offer", "counter", "counter-preview", "apply")
 _MORE = {
     "requests": "[override] More: /requests overrides [CHARACTER] [open|terminal] more",
     "offers": "[offer] More: /offers ID more",

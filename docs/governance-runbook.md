@@ -130,6 +130,7 @@ settings keep the requests above.
 |---|---|
 | `/overrides [CHARACTER] [CATEGORY]` | What can be changed on a draft (the selected one by default), or with no draft the categories and their policy |
 | `/overrides CHARACTER QUALITY PARAM [MATCH]` | A parameter's options |
+| `/overrides more` | The next page of the last `/overrides`, with the same query |
 | `/override preview [CHARACTER] INTENT-JSON` | Exactly what an intent would do now; nothing changes |
 | `/override request [CHARACTER] INTENT-JSON WHY [--revises ID]` | Ask the host; it waits for the host |
 | `/requests overrides [CHARACTER] [open\|terminal] [more]` | Your requests, saying whose response is awaited ("waiting for the host", "offer N waiting for you, not applied yet") |
@@ -152,8 +153,12 @@ settings keep the requests above.
 A confirmation sends the digest of the preview it showed. If the draft
 changed meanwhile, the host refuses it (`stale_preview` or `offer_stale`),
 the client shows what it would do now, and nothing is applied or resent:
-review it and confirm again. Each confirmation waits for the next review
-command of its kind; another review (or a change of role) replaces it.
+review it and confirm again. Only the latest review can be confirmed:
+starting another review, another confirmation, or a change of role clears
+it, and a reply to an older or failed review never makes it confirmable
+again. Previews show each effect's quality with its values before and
+after, not only the module's words; with `--json`, the client's own lines
+go to stderr.
 `/decide ID approve` on a negotiated request is refused locally with a hint
 to use `offer`. Every ID and preview is read from the host again after a
 reconnect; nothing is kept on disk.

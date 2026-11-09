@@ -54,11 +54,21 @@ def request_line(request: dict, role: str | None) -> str:
 def preview_lines(preview: dict, digest, tag="[preview]") -> list[str]:
     """A preview, every part of it: what would happen, exactly."""
     lines = [f"{tag} {preview['headline']} (digest {short(digest)})"]
-    for effect in preview["effects"]:
-        lines.append(f"{tag}   effect: {effect['summary']}")
-    for name in ("waivers", "allowances"):
-        for entry in preview[name]:
-            lines.append(f"{tag}   {name[:-1]}: {entry['summary']}")
+    for effect in preview["effects"]:  # the mechanical values, not only words
+        lines.append(
+            f"{tag}   effect: {effect.get('quality_id')}: {compact(effect.get('before'))}"
+            f" -> {compact(effect.get('after'))} ({effect['summary']})"
+        )
+    for entry in preview["waivers"]:
+        lasting = "until approval" if entry.get("creation_only") else "lasting"
+        lines.append(
+            f"{tag}   waiver: {entry.get('quality_id')} ({lasting}): {entry['summary']}"
+        )
+    for entry in preview["allowances"]:
+        lines.append(
+            f"{tag}   allowance: {entry.get('allowance_id')} on "
+            f"{entry.get('quality_id')}, until approval: {entry['summary']}"
+        )
     for step in preview["later_steps"]:
         lines.append(
             f"{tag}   later: {step['command']}: {step['summary']} ({step['stakes']})"
@@ -104,8 +114,6 @@ def lines(message: dict, role: str | None = None) -> list[str]:
                 )
             else:
                 found.append(f"[overrides] option: {compact(item['value'])}")
-        if message["next"] is not None:
-            found.append("[overrides] More options exist: narrow with a match.")
         return found or ["[overrides] Nothing here."]
     if kind == "override_preview":
         return preview_lines(message["preview"], message["preview_digest"])

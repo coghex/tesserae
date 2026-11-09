@@ -7,6 +7,8 @@ stale confirmation is refused with nothing applied, and history shows what
 applied. Trail is an original Trailhead campaign; nothing calls a model.
 docs/designs/creation_overrides_contract.md section 12."""
 
+import contextlib
+import io
 import json
 import re
 import tempfile
@@ -112,6 +114,102 @@ class ParsingTests(unittest.TestCase):
         )
         self.assertIsNone(client._translate_lobby("/override apply confirm"))
         self.assertIsNone(client._translate_lobby(f"/override apply {ROPE} Gift."))
+
+    def reply(self, client, sent, message):
+        """The host's answer to `sent` arriving, as the receive loop routes it."""
+        message = {"version": 1, **message}
+        client._override_reply(message, sent, json.loads(sent)["type"])
+
+    def preview_reply(self, digest, item="x"):
+        return {"type": "override_preview", "character_id": "c_1",
+                "preview_digest": digest, "preview": {
+                    "headline": f"Grant {item}.", "affected": [], "plan": {},
+                    "effects": [{"quality_id": "starting_gear", "before": None,
+                                 "after": item, "summary": f"Adds {item}."}],
+                    "waivers": [], "allowances": [], "later_steps": [],
+                    "consequences": [], "limitations": [], "dependencies": {}}}  # fmt: skip
+
+    def test_a_failed_or_superseded_review_never_confirms_an_older_change(self):
+        client = self.client(role="host")
+        with contextlib.redirect_stdout(io.StringIO()):
+            review_a = client._translate_lobby(f"/override apply c_1 {ROPE} Gift.")
+            self.reply(client, review_a, self.preview_reply("a" * 64))
+            self.assertEqual(client.pending[0], "apply")
+            # Review B begins and fails: A is no longer confirmable.
+            review_b = client._translate_lobby(f"/override apply c_2 {ROPE} Other.")
+            self.assertIsNone(client.pending)
+            self.reply(client, review_b, {"type": "error", "code": "invalid_intent",
+                                          "message": "No.", "request_id": None,
+                                          "revision": None, "problems": ["No."]})  # fmt: skip
+            self.assertIsNone(client._translate_lobby("/override apply confirm"))
+            # An older review's late reply does not make it confirmable again.
+            review_c = client._translate_lobby(f"/override apply c_3 {ROPE} Third.")
+            client._translate_lobby(f"/override apply c_4 {ROPE} Fourth.")
+            self.reply(client, review_c, self.preview_reply("c" * 64))
+            self.assertIsNone(client.pending)
+            # Another kind of confirmation supersedes a review in flight too.
+            review_e = client._translate_lobby(f"/override apply c_5 {ROPE} Fifth.")
+            client.revision = 3
+            client._translate_lobby('/admin trailhead.describe {"character_id": "c_5"}')
+            self.reply(client, review_e, self.preview_reply("e" * 64))
+            self.assertEqual(client.pending[0], "admin")
+
+    def test_previews_show_the_mechanical_values(self):
+        preview = {"headline": "Update the budget.", "effects": [
+            {"quality_id": "budget", "before": 70, "after": 75,
+             "summary": "Update the budget."}],
+            "waivers": [{"quality_id": "budget", "creation_only": True,
+                         "summary": "No cap."}],
+            "allowances": [{"allowance_id": "picks", "quality_id": "gear",
+                            "creation_only": True, "summary": "Two picks."}],
+            "later_steps": [], "consequences": [], "limitations": []}  # fmt: skip
+        shown = "\n".join(override_lines.preview_lines(preview, "f" * 64))
+        self.assertIn("effect: budget: 70 -> 75 (Update the budget.)", shown)
+        self.assertIn("waiver: budget (until approval): No cap.", shown)
+        self.assertIn("allowance: picks on gear, until approval: Two picks.", shown)
+
+    def test_discovery_continues_with_its_query(self):
+        client = self.client()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            first = client._translate_lobby("/overrides c_1 starting_gear item rope")
+            self.reply(client, first, {"type": "override_discover", "character_id": "c_1",
+                                       "items": [{"value": "rope", "label": "rope"}],
+                                       "next": "5"})  # fmt: skip
+        self.assertIn("[overrides] More: /overrides more", out.getvalue())
+        more = json.loads(client._translate_lobby("/overrides more"))
+        self.assertEqual(
+            (more["character_id"], more["query"]),
+            ("c_1", {"quality_id": "starting_gear", "parameter": "item",
+                     "match": "rope", "after": "5"}),
+        )  # fmt: skip
+        last = client._translate_lobby("/overrides more")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.reply(client, last, {"type": "override_discover", "character_id": "c_1",
+                                      "items": [], "next": None})  # fmt: skip
+        self.assertIsNone(client._translate_lobby("/overrides more"))
+        qualities = json.loads(client._translate_lobby("/overrides"))
+        self.assertEqual(qualities["query"], {})  # the draft's qualities, page 1
+
+    def test_json_output_stays_json(self):
+        client = self.client(role="host")
+        client.json_output = True
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            review = client._translate_lobby("/decide hp-0123456789ab offer")
+            preview = self.preview_reply("a" * 64)["preview"]
+            self.reply(client, review, {
+                "type": "override_detail", "offer": None,
+                "request": {"proposal_id": "hp-0123456789ab", "state": "pending_host",
+                            "target": {"kind": "character", "id": "c_1"},
+                            "requester": {"participant_id": ALICE, "name": "Alice"},
+                            "explanation": "Please.", "categories": ["supplies"],
+                            "offer": None, "preview": preview, "preview_digest": "a" * 64,
+                            "current": {"status": "same", "preview": preview,
+                                        "preview_digest": "a" * 64}}})  # fmt: skip
+        for line in out.getvalue().splitlines():
+            json.loads(line)  # every stdout line is JSON
+        self.assertIn("[now]", err.getvalue())
+        self.assertEqual(client.pending[:3], ("decide", "hp-0123456789ab", "offer"))
 
     def test_intent_parsing(self):
         self.assertEqual(_with_intent(f"c_1 {ONE} why not"),
