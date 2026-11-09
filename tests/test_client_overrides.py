@@ -115,6 +115,21 @@ class ParsingTests(unittest.TestCase):
         self.assertIsNone(client._translate_lobby("/override apply confirm"))
         self.assertIsNone(client._translate_lobby(f"/override apply {ROPE} Gift."))
 
+    def test_a_notice_of_a_negotiated_request_routes_its_verdict(self):
+        # The host sees a guest's request only as a notice, then denies it
+        # straight away, as the runbook says, without listing it first.
+        client = self.client(role="host")
+        client._noticed({"proposal_id": "hp-0123456789ab", "state": "pending_host"})
+        denied = self.sent(client, "/decide hp-0123456789ab deny Not here.")
+        self.assertEqual(
+            (denied["type"], denied["decision"]), ("override_decide", "deny")
+        )
+        client._noticed(
+            {"proposal_id": "hp-ffffffffffff", "state": "pending"}
+        )  # legacy
+        legacy = self.sent(client, "/decide hp-ffffffffffff deny Not here.")
+        self.assertEqual(legacy["type"], "request_decide")
+
     def reply(self, client, sent, message):
         """The host's answer to `sent` arriving, as the receive loop routes it."""
         message = {"version": 1, **message}

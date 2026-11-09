@@ -428,6 +428,7 @@ class _Client:
                         and message.get("state") in PROPOSAL_STATES
                     ):
                         raise _Failure("the host sent a malformed proposal notice")
+                    self._noticed(message)
                     self._show(message)
                     continue
                 if message.get("type") == "actor" and self.actor is not None:
@@ -838,6 +839,13 @@ class _Client:
                 return self._note("[override] There are no more requests to show.")
             fields["after"] = self.cursors[key]
         return self._read("override_requests", ("page", key), **fields)
+
+    def _noticed(self, message: dict):
+        """A proposal notice in a state only negotiated requests have marks
+        its ID as negotiated, so `/decide ID deny NOTE` right after it goes
+        to override_decide, not to the legacy request_decide."""
+        if message["state"] in _NEGOTIATED_STATES:
+            self.override_ids.add(message["proposal_id"])
 
     def _override_decide(self, proposal_id: str, decision: str, rest: str):
         if decision not in ("confirm", "deny", "approve"):
@@ -2128,6 +2136,10 @@ _GOVERNANCE_READS = ("requests", "rules_view", "rules_list", "rules_export",
 _HOST_MUTATIONS = ("rules_import", "rules_activate", "rules_reject", "request_decide",
                    "request_cancel", "host_command", "campaign_host_transfer")  # fmt: skip
 # Creation overrides (creation overrides contract section 12).
+# States only a negotiated request reaches (creation overrides contract section 7).
+_NEGOTIATED_STATES = frozenset(override_lines.OVERRIDE_STATES) - frozenset(
+    override_lines.LEGACY_STATES
+)
 _OVERRIDE_COMMANDS = ("/overrides", "/override", "/offer", "/offers", "/accept",
                       "/decline", "/withdraw")  # fmt: skip
 _OVERRIDE_READS = ("override_categories", "override_discover", "override_preview",
