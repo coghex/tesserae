@@ -187,13 +187,18 @@ The same negotiation, in the panels players and the host already use:
   (with a note) or, on an open offer, **Withdraw the offer** (with a note).
   Editing a reviewed counteroffer drops its review.
 - **Settings, Override** (the campaign host, no character needed): a draft's
-  ID, **What can change**, the intent, **Review**, a reason, then **Apply**.
-  No request or acceptance is involved.
+  ID, **What can change** (optionally in one category, or a quality's
+  parameter options, with a match; **Show more** continues the same
+  lookup), the intent, **Review**, a reason, then **Apply**. No request or
+  acceptance is involved. Editing the draft or the intent while a review
+  loads drops it: only the change shown is ever applied.
 
 A change since the review is refused with nothing applied, and the page
 says to look again. Every request, offer and preview is read from the host
 on joining, after a refresh and whenever a request changes; nothing is kept
-in the browser. Another guest's page shows none of it, and the host panels
+in the browser. The Console lists only the player's own requests, even for
+the campaign host, and everything read under one role is dropped when the
+role changes. Another guest's page shows none of it, and the host panels
 close the moment the page's player is no longer the campaign host.
 
 ## 5. Inspecting and administering

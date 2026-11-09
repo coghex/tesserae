@@ -131,8 +131,13 @@ function emptyHost() {
     overridesNext: null, // the next page's cursor, or null at the end
     reviews: new Map(), // proposal ID to the request as last reviewed
     counter: null, // {proposalId, characterId, intent, preview, digest} being drafted
-    qualities: null, // what can change on the override panel's draft
+    discovery: null, // {characterId, query, items, next}: the Override panel's last lookup
     plan: null, // {characterId, intent, preview, digest}: a reviewed direct override
+    // Bumped by every edit of the Override panel's draft or intent, and of
+    // the counteroffer's intent, so a preview that arrives after an edit is
+    // dropped: only what is shown when Apply or Send is pressed is sent.
+    planEdits: 0,
+    counterEdits: 0,
     version: 0, // bumped whenever an override list or review changes
   };
 }
@@ -612,6 +617,12 @@ function receive(message) {
   } else if (message.type === "role") {
     const was = state.role;
     state.role = message.role;
+    if (was !== message.role) {
+      // Anything read under the old role is dropped and read again.
+      state.own = emptyOwn();
+      renderedOwn = null;
+      loadOwnOverrides();
+    }
     if (message.role !== "host") {
       clearHost(was === "host" ? "You are no longer this campaign's host." : "");
     } else if (was !== "host") {
@@ -1007,7 +1018,8 @@ function clearHost(note = "") {
   $("host-rules-file").value = "";
   $("host-transfer-player").value = "";
   for (const id of ["host-counter-intent", "host-counter-note", "host-override-character",
-    "host-override-intent", "host-override-reason"]) {
+    "host-override-intent", "host-override-reason", "host-override-quality",
+    "host-override-parameter", "host-override-match"]) {
     $(id).value = "";
   }
   for (const id of ["host-request-list", "host-revision-list", "host-inspect-body",
@@ -1417,13 +1429,18 @@ async function loadOwnOverrides(more = false) {
     message.after = state.own.next;
   }
   const here = campaignScope;
+  const own = state.own; // replaced when authority changes: a late reply lands nowhere
   const reply = await ask((current) => current.request(message));
-  if (!reply || here !== campaignScope || reply.type !== "override_requests") return;
-  const own = state.own;
-  own.items = more ? [...(own.items || []), ...reply.items] : reply.items;
+  if (!reply || here !== campaignScope || own !== state.own) return;
+  if (reply.type !== "override_requests") return;
+  // The player's own requests only: a campaign host's read lists everyone's,
+  // which belongs in its host panels, never in this personal list.
+  const me = state.me && state.me.participantId;
+  const mine = reply.items.filter((r) => r.requester && r.requester.participant_id === me);
+  own.items = more ? [...(own.items || []), ...mine] : mine;
   own.next = reply.next;
   own.version += 1;
-  for (const request of reply.items) {
+  for (const request of mine) {
     const offer = request.offer;
     if (request.state === "awaiting_player" && offer && offer.current) {
       loadOwnOffer(offer.offer_id);
@@ -1434,9 +1451,11 @@ async function loadOwnOverrides(more = false) {
 
 async function loadOwnOffer(offerId) {
   const here = campaignScope;
+  const own = state.own;
   const reply = await ask((current) =>
     current.request({ version: 1, type: "override_offer", offer_id: offerId }));
-  if (!reply || here !== campaignScope || reply.type !== "override_offer") return;
+  if (!reply || here !== campaignScope || own !== state.own) return;
+  if (reply.type !== "override_offer") return;
   state.own.offers.set(offerId, reply.offer);
   state.own.version += 1;
   render();
@@ -1644,6 +1663,8 @@ async function reviewPreview(characterId, intent) {
 async function reviewCounter() {
   const counter = state.host.counter;
   if (!counter) return;
+  const host = state.host;
+  const edits = host.counterEdits;
   const intent = parseIntent($("host-counter-intent").value);
   if (!intent) {
     state.host.note = "What to offer must be one JSON object.";
@@ -1651,7 +1672,9 @@ async function reviewCounter() {
     return;
   }
   const reply = await reviewPreview(counter.characterId, intent);
-  if (!reply || state.host.counter !== counter) return;
+  // Edited, cancelled or cleared meanwhile: this preview is of something else.
+  if (!reply || host !== state.host || host.counter !== counter) return;
+  if (host.counterEdits !== edits) return;
   if (reply.type === "override_preview") {
     Object.assign(counter, { intent, preview: reply.preview, digest: reply.preview_digest });
   } else {
@@ -1683,20 +1706,55 @@ function sendCounter() {
       "applies until the player accepts."));
 }
 
-async function discoverOverride() {
-  const characterId = $("host-override-character").value.trim();
-  if (!characterId) return;
+// What can change on a draft (with a category, or a parameter's options),
+// a page at a time: "Show more" continues the same lookup.
+async function discoverOverride(more = false) {
+  const host = state.host;
+  let lookup;
+  if (more) {
+    const last = host.discovery;
+    if (!last || !last.next) return;
+    lookup = { characterId: last.characterId,
+      query: { ...last.query, after: last.next }, base: last.query };
+  } else {
+    const characterId = $("host-override-character").value.trim();
+    if (!characterId) {
+      host.note = "Name the draft first.";
+      render();
+      return;
+    }
+    const query = {};
+    const category = $("host-override-category").value;
+    const quality = $("host-override-quality").value.trim();
+    const parameter = $("host-override-parameter").value.trim();
+    const match = $("host-override-match").value.trim();
+    if (quality && parameter) {
+      Object.assign(query, { quality_id: quality, parameter });
+      if (match) query.match = match;
+    } else if (category) {
+      query.category_id = category;
+    }
+    lookup = { characterId, query, base: query };
+  }
   const reply = await ask((current) => current.request({
-    version: 1, type: "override_discover", character_id: characterId, query: {},
+    version: 1, type: "override_discover", character_id: lookup.characterId,
+    query: lookup.query,
   }), { host: true });
-  if (!reply) return;
-  if (reply.type === "override_discover") state.host.qualities = reply.items;
-  else state.host.note = overrideRefusal(reply);
-  state.host.version += 1;
+  if (!reply || host !== state.host) return;
+  if (reply.type === "override_discover") {
+    const earlier = more && host.discovery ? host.discovery.items : [];
+    host.discovery = { characterId: lookup.characterId, query: lookup.base,
+      items: [...earlier, ...reply.items], next: reply.next };
+  } else {
+    host.note = overrideRefusal(reply);
+  }
+  host.version += 1;
   render();
 }
 
 async function reviewOverridePlan() {
+  const host = state.host;
+  const edits = host.planEdits;
   const characterId = $("host-override-character").value.trim();
   const intent = parseIntent($("host-override-intent").value);
   state.host.plan = null;
@@ -1706,7 +1764,8 @@ async function reviewOverridePlan() {
     return;
   }
   const reply = await reviewPreview(characterId, intent);
-  if (!reply) return;
+  // Edited or cleared meanwhile: this preview is of something else.
+  if (!reply || host !== state.host || host.planEdits !== edits) return;
   if (reply.type === "override_preview") {
     state.host.plan = {
       characterId, intent, preview: reply.preview, digest: reply.preview_digest,
@@ -2457,10 +2516,13 @@ function renderHostOverrides(on) {
     const counter = host.counter;
     $("host-counter-preview").replaceChildren(
       ...(counter && counter.preview ? previewNodes(counter.preview, counter.digest) : []));
-    $("host-override-qualities").replaceChildren(...(host.qualities || []).map((quality) =>
-      textItem("li", `${quality.quality_id} (${quality.category_id}), now ` +
-        `${compact(quality.current)}: ${(quality.actions || []).map((action) =>
-          `${action.action_id} ${compact(action.parameters)}`).join("; ")}`)));
+    const found = host.discovery ? host.discovery.items : [];
+    $("host-override-qualities").replaceChildren(...found.map((entry) =>
+      "quality_id" in entry
+        ? textItem("li", `${entry.quality_id} (${entry.category_id}), now ` +
+          `${compact(entry.current)}: ${(entry.actions || []).map((action) =>
+            `${action.action_id} ${compact(action.parameters)}`).join("; ")}`)
+        : textItem("li", `Option: ${compact(entry.value)} (${entry.label})`)));
     const plan = host.plan;
     $("host-override-preview").replaceChildren(
       ...(plan ? previewNodes(plan.preview, plan.digest) : []));
@@ -2472,6 +2534,21 @@ function renderHostOverrides(on) {
     : "Counteroffer";
   $("host-counter-send").disabled = !counter || !counter.digest;
   $("host-override-apply").disabled = !host.plan;
+  $("host-override-more").hidden = !host.discovery || !host.discovery.next;
+  const categories = state.overrides || [];
+  const select = $("host-override-category");
+  if (renderedHost.categories !== state.overrides) {
+    renderedHost.categories = state.overrides;
+    const any = document.createElement("option");
+    any.value = "";
+    any.textContent = "Any category";
+    select.replaceChildren(any, ...categories.map((category) => {
+      const option = document.createElement("option");
+      option.value = String(category.category_id);
+      option.textContent = String(category.label);
+      return option;
+    }));
+  }
 }
 
 function inspectNodes(view) {
@@ -2684,6 +2761,7 @@ function start() {
     render();
   });
   $("host-counter-intent").addEventListener("input", () => {
+    state.host.counterEdits += 1; // a preview still loading is now obsolete
     const counter = state.host.counter;
     if (counter && counter.digest) {
       Object.assign(counter, { intent: null, preview: null, digest: null });
@@ -2691,11 +2769,13 @@ function start() {
       render();
     }
   });
-  $("host-override-discover").addEventListener("click", discoverOverride);
+  $("host-override-discover").addEventListener("click", () => discoverOverride());
+  $("host-override-more").addEventListener("click", () => discoverOverride(true));
   $("host-override-review").addEventListener("click", reviewOverridePlan);
   $("host-override-apply").addEventListener("click", applyOverridePlan);
   for (const id of ["host-override-character", "host-override-intent"]) {
     $(id).addEventListener("input", () => {
+      state.host.planEdits += 1; // a preview still loading is now obsolete
       if (state.host.plan) {
         state.host.plan = null;
         state.host.version += 1;

@@ -353,10 +353,22 @@
             <label>Draft (character ID)
               <input type="text" id="host-override-character" spellcheck="false">
             </label>
+            <label>Category
+              <select id="host-override-category"></select>
+            </label>
+            <fieldset class="override-options">
+              <legend>Or a parameter's options</legend>
+              <label>Quality <input type="text" id="host-override-quality" spellcheck="false"></label>
+              <label>Parameter <input type="text" id="host-override-parameter" spellcheck="false"></label>
+              <label>Matching <input type="text" id="host-override-match"></label>
+            </fieldset>
             <div class="actions">
               <button type="button" id="host-override-discover">What can change</button>
             </div>
             <ul class="override-qualities" id="host-override-qualities"></ul>
+            <div class="actions">
+              <button type="button" id="host-override-more" hidden>Show more</button>
+            </div>
             <label>What to change (one JSON object)
               <textarea id="host-override-intent" rows="4" spellcheck="false"></textarea>
             </label>

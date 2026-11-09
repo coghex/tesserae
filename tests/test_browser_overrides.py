@@ -10,6 +10,8 @@ docs/designs/creation_overrides_contract.md section 12."""
 
 import asyncio
 import json
+import re
+import time
 import unittest
 
 from tesserae.credentials import new_token
@@ -101,6 +103,25 @@ class OverrideCase(CharacterCase):
                        if c.phase == "draft"]  # fmt: skip
             return store.inspect_state()["walkers"][draft], draft
 
+    def holding_previews(self, page):
+        """Route the page's socket so the host's override previews wait in
+        `held` until released: a slow host, deterministically."""
+        held = []
+
+        def route(socket):
+            server = socket.connect_to_server()
+
+            def from_server(message):
+                if '"type": "override_preview"' in str(message):
+                    held.append(lambda: socket.send(message))
+                else:
+                    socket.send(message)
+
+            server.on_message(from_server)
+
+        page.route_web_socket(re.compile(".*"), route)
+        return held
+
     def host_item(self, page):
         return page.locator("#host-override-list li").first
 
@@ -124,6 +145,86 @@ class OverrideCase(CharacterCase):
         expect(bob.locator("#host-note")).to_contain_text(
             "Nothing applies until the player accepts."
         )
+
+
+class ReviewTests(OverrideCase):
+    def test_a_preview_arriving_after_an_edit_never_enables_the_old_change(self):
+        alice = self.entered("alice")
+        self.creating(alice, 2)
+        _, draft = self.walker()
+        bob = self.open()
+        held = self.holding_previews(bob)
+        self.entered("bob", bob)
+        self.settings(bob)
+        bob.locator("#host-override-character").fill(draft)
+        bob.locator("#host-override-intent").fill(json.dumps(modifier(1)))
+        bob.locator("#host-override-review").click()
+        self.wait_until(bob, lambda: held)
+        bob.locator("#host-override-intent").fill(json.dumps(modifier(2)))  # meanwhile
+        held.pop(0)()  # the preview of 1 arrives now
+        bob.locator("#host-override-reason").fill("The trail is hard.")
+        expect(bob.locator("#host-override-apply")).to_be_disabled()
+        expect(bob.locator("#host-override-preview")).to_be_empty()
+        # Reviewed again, it is the change shown that applies.
+        bob.locator("#host-override-review").click()
+        self.wait_until(bob, lambda: held)
+        held.pop(0)()
+        expect(bob.locator("#host-override-preview")).to_contain_text("0 → 2")
+        bob.locator("#host-override-apply").click()
+        expect(bob.locator("#host-note")).to_contain_text("Applied to")
+        walker, _ = self.walker()
+        self.assertEqual(walker["overrides"]["max_stamina_modifier"]["amount"], 2)
+
+        # The counteroffer's review, likewise.
+        item = self.host_item(bob)
+        item.get_by_role("button", name="Review").click()  # it asks for +2: done now
+        expect(item).to_contain_text("It cannot be done now")
+        item.get_by_role("button", name="Counteroffer…").click()
+        bob.locator("#host-counter-intent").fill(json.dumps(modifier(-1)))
+        bob.locator("#host-counter-review").click()
+        self.wait_until(bob, lambda: held)
+        bob.locator("#host-counter-intent").fill(json.dumps(modifier(1)))
+        held.pop(0)()
+        bob.locator("#host-counter-note").fill("Why not.")
+        expect(bob.locator("#host-counter-send")).to_be_disabled()
+        expect(bob.locator("#host-counter-preview")).to_be_empty()
+        self.assertEqual(self.errors, [])
+
+    def wait_until(self, page, condition, timeout=10.0):
+        """Poll with the page's own waits, so Playwright keeps delivering
+        the routed socket's frames meanwhile."""
+        deadline = time.monotonic() + timeout
+        while not condition():
+            if time.monotonic() > deadline:
+                raise AssertionError("timed out")
+            page.wait_for_timeout(20)
+
+    def test_discovery_pages_on_and_looks_up_options(self):
+        alice = self.entered("alice")
+        self.creating(alice, 2)
+        _, draft = self.walker()
+        bob = self.entered("bob")
+        self.settings(bob)
+        bob.locator("#host-override-character").fill(draft)
+        bob.locator("#host-override-category").select_option("endurance")
+        bob.locator("#host-override-discover").click()
+        expect(bob.locator("#host-override-qualities li")).to_have_count(2)
+        expect(bob.locator("#host-override-more")).to_be_hidden()
+        bob.locator("#host-override-quality").fill("starting_gear")
+        bob.locator("#host-override-parameter").fill("item")
+        bob.locator("#host-override-discover").click()
+        expect(bob.locator("#host-override-qualities li")).to_have_count(5)
+        for shown in (10, 12):
+            bob.locator("#host-override-more").click()
+            expect(bob.locator("#host-override-qualities li")).to_have_count(shown)
+        expect(bob.locator("#host-override-more")).to_be_hidden()
+        expect(bob.locator("#host-override-qualities")).to_contain_text(
+            'Option: "water filter"'
+        )
+        bob.locator("#host-override-match").fill("trail")
+        bob.locator("#host-override-discover").click()
+        expect(bob.locator("#host-override-qualities li")).to_have_count(2)
+        self.assertEqual(self.errors, [])
 
 
 class NegotiationTests(OverrideCase):
@@ -240,11 +341,18 @@ class NegotiationTests(OverrideCase):
         self.assertNotIn("mountain guide", dora.content())
         bob = self.entered("bob")
         self.offer(bob)
+        # Bob's own list is his own: none of Alice's requests, host or not.
+        self.console(bob)
+        self.assertEqual(bob.locator("#console-override-list li").count(), 0)
+        self.settings(bob)
         bob.locator("#host-transfer-player").fill(self.players["alice"])
         bob.locator("#host-transfer-ask").click()
         bob.locator("#host-transfer-yes").click()
         expect(bob.locator("#host-overrides")).to_be_hidden()
         self.assertEqual(bob.locator("#host-override-list li").count(), 0)
+        self.console(bob)
+        self.assertEqual(bob.locator("#console-override-list li").count(), 0)
+        self.assertNotIn("mountain guide", bob.content())
         # Alice, host now, sees her own request, its offer no longer current.
         offered = alice.locator("#console-override-list li").first
         expect(offered).to_contain_text("no longer holds (host_changed)")
