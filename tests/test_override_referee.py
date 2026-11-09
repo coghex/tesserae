@@ -29,7 +29,12 @@ from tesserae.referee import runner
 from tesserae.referee.bridge import TOOLS
 from tesserae.referee.orchestrator import CodexReferee, job_prompt
 from tesserae.referee.store import RESULT_BYTES, RefereeStore
-from tesserae.referee.tools import TOOL_ARGUMENTS, AccessEnded, NotCampaignHost
+from tesserae.referee.tools import (
+    OVERRIDES_FLOOR_BYTES,
+    TOOL_ARGUMENTS,
+    AccessEnded,
+    NotCampaignHost,
+)
 from tesserae.store import Actor, Decider, GameStore, ParticipantContext
 from tesserae.trailhead import TRAILHEAD_MODULE
 
@@ -588,9 +593,104 @@ class WorstContextTests(OverrideTable):
             [16, 3, 2, 2],
         )
         self.assertLessEqual(result_bytes(block), 10240)
+        self.assertLessEqual(result_bytes(floor(block, 10**6)), OVERRIDES_FLOOR_BYTES)
         self.assertLessEqual(result_bytes(context), RESULT_BYTES)
         for entry in block["mine"] + block["recent"] + block["pending_host"]:
             self.assertLessEqual(result_bytes(entry), 1024)
+
+
+def floor(block: dict, count: int = None) -> dict:
+    """The block with no entry: what an adopting module must leave room for.
+    `count` stands in for every count (the widest numbers it may hold)."""
+    out = {"categories": block["categories"]}
+    for name in ("mine", "recent", "pending_host"):
+        if name in block:
+            listed = len(block[name]) + block[f"{name}_more"]
+            out[name], out[f"{name}_more"] = [], listed if count is None else count
+    return out
+
+
+PADDING = {"text": ""}  # RoomTests' extra referee context
+
+
+def _padded_runtime():
+    def referee_context(state):
+        return {**TRAILHEAD_MODULE.referee_context(state), "padding": PADDING["text"]}
+
+    module = replace(TRAILHEAD_MODULE, referee_context=referee_context)
+    return Catalog([module], [DICE_PROVIDER]).resolve("trailhead")
+
+
+class RoomTests(OverrideTable):
+    """The block holds only what the rest of get_context leaves room for
+    (#190): a prefix of each list in priority order, exact counts, and the
+    floor always; a context whose floor does not fit is refused."""
+
+    RUNTIME = None  # set below
+
+    def setUp(self):
+        super().setUp()
+        PADDING["text"] = ""
+        self.addCleanup(PADDING.update, text="")
+        self.drafts = [self.draft(name=f"W{i}") for i in range(4)]
+        self.asked_ids = [
+            self.asked(d, step=f"p-{i}") for i, d in enumerate(self.drafts)
+        ]
+
+    def host_context(self):
+        job, token = self.job(self.bob)
+        return job, token, self.ok(token, "get_context")
+
+    def room_for(self, extra: int):
+        """Pad the referee context so that, after the rest of get_context
+        and the block's floor, `extra` bytes are left for entries."""
+        PADDING["text"] = ""
+        job, token, context = self.host_context()
+        self.answer(job, ("sender", "Measured."))
+        block = context["overrides"]
+        rest = dict(context, overrides=floor(block),
+                    transcript={"messages": [], "next_after_seq": None})  # fmt: skip
+        PADDING["text"] = "x" * (RESULT_BYTES - result_bytes(rest) - extra)
+        return block
+
+    def test_a_host_job_lists_its_pending_decisions_as_room_allows(self):
+        block = self.room_for(0)  # measures the unpadded block too
+        self.assertEqual(
+            (len(block["pending_host"]), block["pending_host_more"]), (3, 1)
+        )
+        first, second = block["pending_host"][:2]
+        # Room for the first entry and half the second: one is listed.
+        self.room_for(result_bytes(first) + (2 + result_bytes(second)) // 2)
+        _, token, context = self.host_context()
+        block = context["overrides"]
+        self.assertEqual(block["pending_host"], [first])
+        self.assertEqual(block["pending_host_more"], 3)
+        self.assertLessEqual(result_bytes({k: v for k, v in context.items() if k != "transcript"}),
+                             RESULT_BYTES)  # fmt: skip
+
+    def test_only_the_floor_still_names_every_request(self):
+        self.room_for(0)
+        _, token, context = self.host_context()
+        block = context["overrides"]
+        self.assertEqual(block, floor(block))  # no entry, every count
+        self.assertEqual(block["pending_host_more"], 4)
+        listed, after = [], None
+        while True:
+            page = self.ok(token, "override_requests", character_id=None,
+                           states=None, after=after)  # fmt: skip
+            listed += page["items"]
+            if page["next"] is None:
+                break
+            after = page["next"]
+        self.assertEqual([r["proposal_id"] for r in listed], self.asked_ids)
+
+    def test_a_floor_that_does_not_fit_is_refused(self):
+        self.room_for(-1)
+        _, token = self.job(self.bob)
+        self.refused("context_too_large", token, "get_context")
+
+
+RoomTests.RUNTIME = _padded_runtime()
 
 
 def _worst_runtime():

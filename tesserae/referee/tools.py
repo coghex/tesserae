@@ -97,9 +97,14 @@ OVERRIDE_READS = frozenset(
     {"override_discover", "override_preview", "override_requests", "override_detail",
      "override_offers", "override_offer", "override_history", "override_record"}
 )  # fmt: skip
-# The context's `overrides` block (creation overrides contract section 11).
+# The context's `overrides` block (creation overrides contract section 11):
+# at most this many entries of each list and this many bytes, and only as
+# many entries as the rest of get_context leaves room for. Its floor, the
+# category policies and every count, is within OVERRIDES_FLOOR_BYTES: what an
+# adopting module must leave free.
 MINE, RECENT_OVERRIDES, PENDING_HOST = 3, 2, 3
 OVERRIDES_BLOCK_BYTES = 10240
+OVERRIDES_FLOOR_BYTES = 2048
 # A refusal that settles a step. A stale revision does not: nothing ran, and
 # the same step ID may be retried at the new revision.
 RETRYABLE = frozenset({"stale_revision"})
@@ -580,7 +585,7 @@ class BridgeTools:
                 r for r in requests.listing() if r["state"] == "pending"
             ]
         if runtime.creation_overrides is not None:
-            result["overrides"] = _overrides_block(store, job, viewer)
+            result["overrides"] = _overrides_block(store, job, viewer, result)
         return _with_first_page(result, referee)
 
     def _get_view(self, store, referee, job, args) -> dict:
@@ -720,41 +725,57 @@ def _host_override(store, by, step, tool, content, check):
     return negotiated.message("override_applied", result, step.request_id), applied
 
 
-def _overrides_block(store: GameStore, job: Job, viewer) -> dict:
+def _overrides_block(store: GameStore, job: Job, viewer, result: dict) -> dict:
     """The context's `overrides` block (creation overrides contract section
     11): the categories' policy; the sender's open requests (newest first)
     and terminal ones (most recently decided first); in a host job, the
-    requests waiting for the host (oldest first). Each list is short, and
-    its `…_more` counts the rest: `override_requests` pages them all."""
+    requests waiting for the host (oldest first). Each list holds a prefix of
+    its kind, and its `…_more` counts the rest: `override_requests` pages
+    them all. Entries are added only while the block stays within its bound
+    and `result` with it within one tool result, in priority order (a host's
+    pending decisions first), stopping at the first that does not fit."""
     reads = negotiated.Overrides(store)
     categories = [{"category_id": c["category_id"], "policy": c["policy"]}
                   for c in reads.categories()]  # fmt: skip
 
-    def listed(where, parameters, order, limit):
-        rows = store.query(
+    def rows(where, parameters, order, limit):
+        found = store.query(
             "SELECT proposal_id FROM host_requests WHERE kind = ? AND "
             f"{where} ORDER BY {order}",
             (negotiated.KIND, *parameters),
         )
-        entries = [reads.context_entry(viewer, reads._request_row(r[0]))
-                   for r in rows[:limit]]  # fmt: skip
-        return entries, len(rows) - len(entries)
+        return [r[0] for r in found[:limit]], len(found)
 
     open_states = "state IN ('pending_host', 'awaiting_player')"
-    mine, mine_more = listed(f"requester_participant = ? AND {open_states}",
-                             (job.participant_id,), "rowid DESC", MINE)  # fmt: skip
-    recent, recent_more = listed(
-        f"requester_participant = ? AND NOT ({open_states})", (job.participant_id,),
-        "decided_at DESC, rowid DESC", RECENT_OVERRIDES,
-    )  # fmt: skip
-    block = {"categories": categories, "mine": mine, "mine_more": mine_more,
-             "recent": recent, "recent_more": recent_more}  # fmt: skip
+    lists = {
+        "mine": rows(f"requester_participant = ? AND {open_states}",
+                     (job.participant_id,), "rowid DESC", MINE),
+        "recent": rows(f"requester_participant = ? AND NOT ({open_states})",
+                       (job.participant_id,), "decided_at DESC, rowid DESC",
+                       RECENT_OVERRIDES),
+    }  # fmt: skip
     if viewer.host:
-        block["pending_host"], block["pending_host_more"] = listed(
+        lists["pending_host"] = rows(
             "state = 'pending_host'", (), "rowid", PENDING_HOST
         )
-    if result_bytes(block) > OVERRIDES_BLOCK_BYTES:
-        raise RuntimeError("The context's overrides block is over its bound.")
+    block = {"categories": categories}
+    for name, (_, total) in lists.items():  # the floor: every count, no entry
+        block[name], block[f"{name}_more"] = [], total
+    if result_bytes(block) > OVERRIDES_FLOOR_BYTES:
+        raise RuntimeError("The context's overrides block is over its floor.")
+    order = ("pending_host", "mine", "recent") if viewer.host else ("mine", "recent")
+    for name in order:
+        for proposal_id in lists[name][0]:
+            block[name].append(
+                reads.context_entry(viewer, reads._request_row(proposal_id))
+            )
+            block[f"{name}_more"] -= 1
+            if result_bytes(block) > OVERRIDES_BLOCK_BYTES or (
+                result_bytes({**result, "overrides": block}) > RESULT_BYTES
+            ):
+                block[name].pop()
+                block[f"{name}_more"] += 1
+                return block
     return block
 
 

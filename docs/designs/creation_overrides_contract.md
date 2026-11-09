@@ -815,6 +815,7 @@ part at its limit:
 | `override_record` | 29,320 | 45,056 |
 | A 32,768-byte page of summaries | 32,241 | 45,056 |
 | The context's `overrides` block | 8,109 | 10,240 |
+| Its floor (no entry; 16 categories, counts of 1,000,000) | 1,738 | 2,048 |
 
 The implementation must build every view under these rules and check its
 size. A view over its bound is a host failure (`internal_error`, logged),
@@ -931,9 +932,20 @@ Legacy kinds keep their places in `requests` and `pending_requests`; a
 - The block is at most 10,240 result bytes: 8,109 measured at its worst,
   with 16 categories. It is absent in a game whose module lacks the
   capability.
-- It counts in "everything but the transcript" (governance section 11), so
-  an adopting module must leave 10,240 bytes of that budget free in its
-  worst case. OVR-7/8 measure the private module against this.
+- **It holds what fits** (#190). Its floor is always present: the category
+  policies and every count, with each list empty. Entries are then added
+  while the block stays within 10,240 bytes and the whole context within
+  one tool result. A host job adds `pending_host` first, then `mine`, then
+  `recent`; another job adds `mine`, then `recent`. Adding stops at the
+  first entry that does not fit. Each list is a prefix in its documented
+  order, and its `…_more` counts everything it leaves out. The transcript's
+  first page takes what room is left after the block, as before.
+- It counts in "everything but the transcript" (governance section 11).
+  Only its floor must fit, so an adopting module must leave 2,048 bytes of
+  that budget free in its worst case, the floor's bound (1,738 measured
+  with 16 categories at their longest). A context whose floor does not fit
+  is refused as `context_too_large`, as a context over the result always
+  was.
 - **Nothing is cut silently.** Every request is reachable:
   - the counts say how many are not listed;
   - `override_requests` pages them all, terminal verdicts included;
