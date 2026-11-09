@@ -13,8 +13,10 @@ implements sections 3 and 4 and section 14's module; OVR-3
 ([#175](https://github.com/coghex/tesserae/issues/175)) sections 5 to 10
 (`tesserae/overrides.py`, schema 10 and the client messages); OVR-4
 ([#176](https://github.com/coghex/tesserae/issues/176)) section 11 (the
-bridge's tools, the context's `overrides` block and the prompt). The
-clients (section 12) are not implemented yet.
+bridge's tools, the context's `overrides` block and the prompt); OVR-5
+([#177](https://github.com/coghex/tesserae/issues/177)) section 12's CLI
+([governance runbook](../governance-runbook.md#creation-overrides-from-the-cli)).
+The browser (section 12) is not implemented yet.
 
 It extends the [governance contract](governance_contract.md), the
 [character contract](character_contract.md) and the
