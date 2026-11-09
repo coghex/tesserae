@@ -296,3 +296,28 @@ code { overflow-wrap: anywhere; }
   display: block;
   width: 100%;
 }
+
+/* Negotiated creation overrides (creation overrides contract section 12). */
+.offer {
+  border-inline-start: 0.25rem solid currentColor;
+  padding-inline-start: 0.75rem;
+  margin-block: 0.5rem;
+}
+.offer h3 { margin-block: 0.25rem; font-size: 1rem; }
+.preview,
+.override-qualities,
+.override-categories {
+  padding-left: 1.25rem;
+}
+.revise label,
+.revise textarea,
+.revise input,
+.counter label,
+.counter textarea,
+.counter input,
+.host-override label,
+.host-override textarea,
+.host-override input {
+  display: block;
+  width: 100%;
+}

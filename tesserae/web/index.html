@@ -110,6 +110,37 @@
             <p class="note">The campaign host decides these. Nothing changes until it
               approves, and other players keep playing meanwhile.</p>
           </div>
+          <div class="panel overrides" id="console-overrides" aria-live="polite" hidden>
+            <h2>Your override requests</h2>
+            <p class="note">A change to a draft is asked of the campaign host, who may
+              offer it. Nothing changes until you accept an offer.</p>
+            <ul class="request-list" id="console-override-list"></ul>
+            <p class="note" id="console-overrides-note"></p>
+            <div class="actions">
+              <button type="button" id="console-overrides-more" hidden>Show more</button>
+              <button type="button" id="console-overrides-refresh">Refresh</button>
+            </div>
+            <div class="panel confirm" id="override-accept-confirm" hidden>
+              <p id="override-accept-text"></p>
+              <div class="actions">
+                <button type="button" id="override-accept-yes">Accept</button>
+                <button type="button" id="override-accept-no">Not now</button>
+              </div>
+            </div>
+            <fieldset class="revise" id="override-revise" hidden>
+              <legend id="override-revise-title">Ask again</legend>
+              <label>What to change (one JSON object)
+                <textarea id="override-revise-intent" rows="4" spellcheck="false"></textarea>
+              </label>
+              <label>Why
+                <input type="text" id="override-revise-explanation" maxlength="1000">
+              </label>
+              <div class="actions">
+                <button type="button" id="override-revise-send">Send the request</button>
+                <button type="button" id="override-revise-cancel">Not now</button>
+              </div>
+            </fieldset>
+          </div>
           <div class="panel unconfirmed" id="console-unconfirmed" aria-live="polite" hidden>
             <h2>Not confirmed</h2>
             <p>The connection dropped before the host answered, so it is not known
@@ -235,6 +266,33 @@
             <div class="actions">
               <button type="button" id="host-requests-refresh">Refresh requests</button>
             </div>
+            <div id="host-overrides" hidden>
+              <h3>Override requests</h3>
+              <p class="note">Offering does not change the draft: only the player's
+                acceptance applies it.</p>
+              <ul class="request-list" id="host-override-list"></ul>
+              <p class="note" id="host-overrides-empty">No override requests waiting.</p>
+              <div class="actions">
+                <button type="button" id="host-overrides-more" hidden>Show more</button>
+              </div>
+              <fieldset class="counter" id="host-counter" hidden>
+                <legend id="host-counter-title">Counteroffer</legend>
+                <label>What to offer instead (one JSON object)
+                  <textarea id="host-counter-intent" rows="4" spellcheck="false"></textarea>
+                </label>
+                <div class="actions">
+                  <button type="button" id="host-counter-review">Review</button>
+                </div>
+                <div id="host-counter-preview"></div>
+                <label>Why (required)
+                  <input type="text" id="host-counter-note" maxlength="1000">
+                </label>
+                <div class="actions">
+                  <button type="button" id="host-counter-send" disabled>Send the counteroffer</button>
+                  <button type="button" id="host-counter-cancel">Not now</button>
+                </div>
+              </fieldset>
+            </div>
           </div>
           <div class="panel host-rules" id="host-rules">
             <h2>Rules</h2>
@@ -286,6 +344,31 @@
                 <button type="button" id="host-admin-run">Run it</button>
                 <button type="button" id="host-admin-cancel">Not now</button>
               </div>
+            </div>
+          </div>
+          <div class="panel host-override" id="host-override" hidden>
+            <h2>Override</h2>
+            <p class="note">Change a draft directly, as host: no request and no
+              acceptance. Review it first; nothing changes until Apply.</p>
+            <label>Draft (character ID)
+              <input type="text" id="host-override-character" spellcheck="false">
+            </label>
+            <div class="actions">
+              <button type="button" id="host-override-discover">What can change</button>
+            </div>
+            <ul class="override-qualities" id="host-override-qualities"></ul>
+            <label>What to change (one JSON object)
+              <textarea id="host-override-intent" rows="4" spellcheck="false"></textarea>
+            </label>
+            <div class="actions">
+              <button type="button" id="host-override-review">Review</button>
+            </div>
+            <div id="host-override-preview"></div>
+            <label>Reason (required)
+              <input type="text" id="host-override-reason" maxlength="1000">
+            </label>
+            <div class="actions">
+              <button type="button" id="host-override-apply" disabled>Apply</button>
             </div>
           </div>
           <div class="panel host-inspect" id="host-inspect">
