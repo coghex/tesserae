@@ -154,6 +154,38 @@ class ParsingTests(unittest.TestCase):
             self.reply(client, review_e, self.preview_reply("e" * 64))
             self.assertEqual(client.pending[0], "admin")
 
+    def test_a_locally_refused_review_still_replaces_the_last_one(self):
+        client = self.client(role="host")
+        client.override_ids.add("hp-0123456789ab")
+        malformed = (
+            "/override apply c_B {not json} Gift B.",
+            "/override apply {}",  # no character
+            f"/override apply c_B {ROPE}",  # no reason
+            "/decide hp-0123456789ab counter {not json} Note.",
+            f"/decide hp-0123456789ab counter {ROPE}",  # no note
+            "/decide hp-0123456789ab maybe",
+            "/accept",
+        )
+        for line in malformed:
+            with self.subTest(line), contextlib.redirect_stdout(io.StringIO()):
+                review_a = client._translate_lobby(
+                    f"/override apply c_A {ROPE} Gift A."
+                )
+                self.reply(client, review_a, self.preview_reply("a" * 64))
+                self.assertEqual(client.pending[:2], ("apply", "c_A"))
+                self.assertIsNone(client._translate_lobby(line))  # refused here
+                self.assertIsNone(client.pending)
+                self.assertIsNone(client._translate_lobby("/override apply confirm"))
+                # A review still in flight when one is refused here: its reply,
+                # arriving late, makes nothing confirmable either.
+                in_flight = client._translate_lobby(
+                    f"/override apply c_A {ROPE} Again."
+                )
+                self.assertIsNone(client._translate_lobby(line))
+                self.reply(client, in_flight, self.preview_reply("b" * 64))
+                self.assertIsNone(client.pending)
+                self.assertIsNone(client._translate_lobby("/override apply confirm"))
+
     def test_previews_show_the_mechanical_values(self):
         preview = {"headline": "Update the budget.", "effects": [
             {"quality_id": "budget", "before": 70, "after": 75,

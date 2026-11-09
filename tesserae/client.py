@@ -688,6 +688,8 @@ class _Client:
                 fields["after"] = self.cursors[key]
             return self._read("override_offers", ("page", key), **fields)
         if command == "/accept":
+            if extra != "confirm":  # a review, even a malformed one, replaces any
+                self._begin_review()
             if not target:
                 return self._note("[offer] Type /accept and an offer's ID.")
             if extra == "confirm":
@@ -699,7 +701,7 @@ class _Client:
                 self._begin_review()
                 return self._mutation("override_respond", offer_id=offer_id,
                                       response="accept", preview_digest=digest)  # fmt: skip
-            return self._read("override_offer", ("accept", target, self._begin_review()),
+            return self._read("override_offer", ("accept", target, self.review),
                               offer_id=target)  # fmt: skip
         if command == "/decline":
             if not target:
@@ -750,6 +752,10 @@ class _Client:
                           character_id=character, query=query)  # fmt: skip
 
     def _override_action(self, action: str, rest: str) -> str | None:
+        if action == "apply" and rest != "confirm":
+            # A new review, even one refused below, replaces any earlier one
+            # before anything else is checked.
+            self._begin_review()
         if action == "record":
             if not rest:
                 return self._note("[override] Type /override record and its ID.")
@@ -799,7 +805,7 @@ class _Client:
                 return self._note("[override] Give a reason after the intent.")
             return self._read(
                 "override_preview",
-                ("apply", character, intent, after, self._begin_review()),
+                ("apply", character, intent, after, self.review),
                 character_id=character, intent=intent,
             )  # fmt: skip
         revises = None
@@ -834,6 +840,10 @@ class _Client:
         return self._read("override_requests", ("page", key), **fields)
 
     def _override_decide(self, proposal_id: str, decision: str, rest: str):
+        if decision not in ("confirm", "deny", "approve"):
+            # A review (offer, counter, or a malformed one) replaces any
+            # earlier one before anything else is checked.
+            self._begin_review()
         if not proposal_id:
             return self._note("[request] Type /decide ID offer|counter|deny.")
         if decision == "confirm":
@@ -861,7 +871,7 @@ class _Client:
         if decision == "offer":
             return self._read(
                 "override_detail",
-                ("offer", proposal_id, rest or None, self._begin_review()),
+                ("offer", proposal_id, rest or None, self.review),
                 proposal_id=proposal_id,
             )  # fmt: skip
         if decision == "counter":
@@ -871,7 +881,7 @@ class _Client:
             _, intent, note = parsed
             return self._read(
                 "override_detail",
-                ("counter", proposal_id, intent, note, self._begin_review()),
+                ("counter", proposal_id, intent, note, self.review),
                 proposal_id=proposal_id,
             )  # fmt: skip
         return self._note("[request] Type /decide ID offer|counter|deny.")
