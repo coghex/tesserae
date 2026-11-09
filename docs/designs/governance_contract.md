@@ -659,7 +659,7 @@ players keep playing; the referee is busy only while a job actually runs.
 > Creation overrides add an `overrides` context block and their own tools:
 > [creation overrides contract](creation_overrides_contract.md) section 11.
 > The block holds only what fits; an adopting module leaves room for its
-> 2,048-byte floor.
+> floor (at most 2,048 bytes).
 
 **Context.** In a game whose module has settings, or that has an active
 document, `get_context` adds `policy` (the revision, the effective settings

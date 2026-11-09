@@ -941,11 +941,12 @@ Legacy kinds keep their places in `requests` and `pending_requests`; a
   order, and its `…_more` counts everything it leaves out. The transcript's
   first page takes what room is left after the block, as before.
 - It counts in "everything but the transcript" (governance section 11).
-  Only its floor must fit, so an adopting module must leave 2,048 bytes of
-  that budget free in its worst case, the floor's bound (1,738 measured
-  with 16 categories at their longest). A context whose floor does not fit
-  is refused as `context_too_large`, as a context over the result always
-  was.
+  Only its floor must fit, so an adopting module must leave room for its
+  own floor in its worst case: its categories' policies and the six counts,
+  measured with counts of 1,000,000. That is at most 2,048 bytes, the
+  floor's bound (1,738 measured with 16 categories at their longest). A
+  context whose floor does not fit is refused as `context_too_large`, as a
+  context over the result always was.
 - **Nothing is cut silently.** Every request is reachable:
   - the counts say how many are not listed;
   - `override_requests` pages them all, terminal verdicts included;
