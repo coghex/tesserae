@@ -21,8 +21,10 @@ from unittest import mock
 from tesserae.builtin import DICE_PROVIDER
 from tesserae.campaign_rules import CampaignRules
 from tesserae.credentials import new_token
+from tesserae.host_requests import proposal_message
 from tesserae.modules import Catalog, Category, result_bytes
 from tesserae.overrides import Overrides
+from tesserae.overrides import message as override_message
 from tesserae.referee import runner
 from tesserae.referee.bridge import TOOLS
 from tesserae.referee.orchestrator import CodexReferee, job_prompt
@@ -66,7 +68,31 @@ class OverrideTable(Table):
         self.host_participant = self.bob.participant_id
         self.host_player = HOST.player_id
         self.tools.host_authority = self.authority
-        self.tools.campaign_host = lambda job: self.host_player
+        self.tools.campaign_host = self.designation
+        self.held = 0  # how many steps hold the registry guard now
+        self.deferred = []  # transfers waiting for the guard, as the registry's do
+
+    @contextmanager
+    def designation(self, job):
+        """The stand-in registry guard: while held, a transfer waits."""
+        self.held += 1
+        try:
+            yield self.host_player
+        finally:
+            self.held -= 1
+            if not self.held:
+                for transfer in self.deferred:
+                    transfer()
+                self.deferred.clear()
+
+    def transfer_to(self, participant, player):
+        def transfer():
+            self.host_participant, self.host_player = participant, player
+
+        if self.held:
+            self.deferred.append(transfer)
+        else:
+            transfer()
 
     @contextmanager
     def authority(self, job):
@@ -284,9 +310,13 @@ class RecoveryTests(OverrideTable):
 
     def test_respond_and_host_steps_are_recovered_where_they_are_recorded(self):
         ash, birch = self.draft(name="Ash"), self.draft(name="Birch")
+        cedar, dove = self.draft(name="Cedar"), self.draft(name="Dove")
         accepted_offer = self.offered(self.asked(ash), ash)
         declined_offer = self.offered(self.asked(birch, step="p-2"), birch, step="o-2")
+        withdrawn_offer = self.offered(self.asked(cedar, step="p-3"), cedar, step="o-3")
+        waiting = self.asked(dove, step="p-4")
         job, token = self.job(self.alice)
+        guest_job = job.job_id
         self.crash_recording(token, "override_respond", step_id="r-1",
                              offer_id=accepted_offer["offer_id"], response="accept",
                              preview_digest=offer_digest(self.store,
@@ -297,17 +327,51 @@ class RecoveryTests(OverrideTable):
                              preview_digest=None, note="Not now.")  # fmt: skip
         self.fail(job)
         job, token = self.job(self.bob)
+        host_job = job.job_id
         self.crash_recording(token, "host_override_apply", step_id="h-1",
                              character_id=birch, intent=ROPE,
                              preview_digest=self.digest(token, birch, ROPE),
                              reason="A gift.")  # fmt: skip
+        self.crash_recording(token, "host_override_withdraw", step_id="h-2",
+                             offer_id=withdrawn_offer["offer_id"], note="Withdrawn.")  # fmt: skip
+        self.crash_recording(token, "host_override_decide", step_id="h-3",
+                             proposal_id=waiting, decision="offer",
+                             preview_digest=self.digest(token, dove, MODIFIER),
+                             intent=None, note=None)  # fmt: skip
         self.fail(job)
-        settled = {
-            (s.step_id, s.status): s.result for s in self.referee.reconcile_steps()
-        }
-        self.assertEqual(settled[("r-1", "committed")]["state"], "applied")
-        self.assertEqual(settled[("r-2", "committed")]["state"], "declined")
-        self.assertEqual(settled[("h-1", "committed")]["type"], "override_applied")
+        settled = {s.step_id: s for s in self.referee.reconcile_steps()}
+        self.assertEqual({s.status for s in settled.values()}, {"committed"})
+        reads = Overrides(self.store)
+        record = reads._request_row(reads._offer_row(accepted_offer["offer_id"])
+                                    ["proposal_id"])["effect"]  # fmt: skip
+        [direct] = [r for r in reads.history(reads_host(self), birch)["items"]]
+        [new_offer] = reads.offers(reads_host(self), waiting)["items"]
+        # Each result is the whole reply the tool would have given.
+        expected = {
+            "r-1": proposal_message(
+                {"proposal_id": reads._offer_row(accepted_offer["offer_id"])["proposal_id"],
+                 "state": "applied", "offer_id": accepted_offer["offer_id"],
+                 "record_id": record["record_id"], "revision": record["revision"]},
+                f"ref:{guest_job}:r-1"),
+            "r-2": proposal_message(
+                {"proposal_id": reads._offer_row(declined_offer["offer_id"])["proposal_id"],
+                 "state": "declined", "offer_id": declined_offer["offer_id"]},
+                f"ref:{guest_job}:r-2"),
+            "h-1": override_message(
+                "override_applied",
+                {"character_id": birch, "record_id": direct["record_id"],
+                 "revision": direct["revision"], "draft_revision": direct["draft_revision"]},
+                f"ref:{host_job}:h-1"),
+            "h-2": proposal_message(
+                {"proposal_id": reads._offer_row(withdrawn_offer["offer_id"])["proposal_id"],
+                 "state": "withdrawn", "offer_id": withdrawn_offer["offer_id"]},
+                f"ref:{host_job}:h-2"),
+            "h-3": proposal_message(
+                {"proposal_id": waiting, "state": "awaiting_player",
+                 "offer_id": new_offer["offer_id"], "offer_revision": 1},
+                f"ref:{host_job}:h-3"),
+        }  # fmt: skip
+        self.assertEqual({k: settled[k].result for k in expected}, expected)
         # Each later job of its owner is told; nothing ran twice.
         job, token = self.job(self.alice)
         results = {
@@ -319,10 +383,57 @@ class RecoveryTests(OverrideTable):
         results = [
             r["step_id"] for r in self.ok(token, "get_context")["earlier_results"]
         ]
-        self.assertEqual(results, ["h-1"])
+        self.assertEqual(results, ["h-1", "h-2", "h-3"])
         self.assertEqual(
             self.store.query("SELECT count(*) FROM override_records")[0][0], 2
         )
+
+
+def reads_host(case):
+    from tesserae.overrides import Viewer
+
+    return Viewer(case.bob.participant_id, True, case.host_player)
+
+
+class RaceAndReplayTests(OverrideTable):
+    def test_an_acceptance_holds_the_designation_through_its_commit(self):
+        ash, birch = self.draft(name="Ash"), self.draft(name="Birch")
+        first = self.offered(self.asked(ash), ash)
+        second = self.offered(self.asked(birch, step="p-2"), birch, step="o-2")
+        original = Overrides._offer_problem
+
+        def transfer_midway(reads, runtime, offer, row, campaign_host):
+            # The registry tries to move the campaign to Alice right here.
+            self.assertTrue(self.held)
+            self.transfer_to(self.alice.participant_id, NEW_HOST)
+            return original(reads, runtime, offer, row, campaign_host)
+
+        job, token = self.job(self.alice)
+        with mock.patch.object(Overrides, "_offer_problem", transfer_midway):
+            accepted = self.ok(token, "override_respond", step_id="r-1",
+                               offer_id=first["offer_id"], response="accept",
+                               preview_digest=offer_digest(self.store, first["offer_id"]),
+                               note=None)  # fmt: skip
+        # The acceptance was ordered first: it applied, then the transfer.
+        self.assertEqual(accepted["result"]["state"], "applied")
+        self.assertEqual(self.host_player, NEW_HOST)
+        # The next acceptance sees the new designation: the former host's
+        # offer is stale.
+        self.refused("offer_stale", token, "override_respond", step_id="r-2",
+                     offer_id=second["offer_id"], response="accept",
+                     preview_digest=offer_digest(self.store, second["offer_id"]),
+                     note=None)  # fmt: skip
+
+    def test_a_retried_request_returns_its_record_whatever_has_changed(self):
+        ash = self.draft(name="Ash")
+        job, token = self.job(self.alice)  # setup: names its target
+        args = ask("p-1", MODIFIER, target={"kind": "character", "id": ash})
+        proposal = self.ok(token, "propose_host_decision", **args)
+        archived, committed = self.store.archive_character(self.alice, self.rid(), ash)
+        self.assertTrue(committed, archived)
+        self.assertEqual(self.ok(token, "propose_host_decision", **args), proposal)
+        changed = dict(args, explanation="Something else.")
+        self.refused("request_conflict", token, "propose_host_decision", **changed)
 
 
 class FreshSessionTests(OverrideTable):

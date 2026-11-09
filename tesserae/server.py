@@ -333,16 +333,19 @@ class CampaignService:
             "campaign_host": self._campaign_host,
         }
 
-    def _campaign_host(self, job) -> str | None:
-        """On a bridge thread: the campaign's host player now, read under the
-        registry guard of the session the job's input came from; None with
-        no campaign host, no lobby, or access gone."""
+    @contextmanager
+    def _campaign_host(self, job):
+        """On a bridge thread: the registry guard of the session the job's
+        input came from, held until exit, yielding the campaign's host player
+        now; None with no campaign host, no lobby, or access gone. A transfer
+        waits for it, so a step it is held through sees one designation."""
         session = self._job_sessions.get(job.job_id)
         if session is None or session.guard is None:
-            return None
+            yield None
+            return
         checked = session.guard()
         with checked as allowed:
-            return getattr(checked, "campaign_host", None) if allowed else None
+            yield getattr(checked, "campaign_host", None) if allowed else None
 
     @contextmanager
     def _host_authority(self, job):

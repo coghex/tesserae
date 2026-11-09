@@ -128,9 +128,11 @@ class BridgeTools:
     the host can notify players; `log(entry)` receives every call and result
     (never a token). Safe to call from several threads.
 
-    `campaign_host(job)`, given by a lobby host, returns the campaign's
-    host player now, read under the registry guard of the job's session (None
-    with none), so an offer by a former host is found stale.
+    `campaign_host(job)`, given by a lobby host, returns a context manager
+    that holds the registry guard of the job's session and yields the
+    campaign's host player (None with none, or with access gone). It is held
+    through a whole override step, so a transfer is ordered against it and an
+    offer by a former host is found stale.
 
     `host_authority(job)`, given by a lobby host, returns a context manager
     that takes the registry guard for the job's sender's session and yields
@@ -234,11 +236,11 @@ class BridgeTools:
         if tool == "override_respond":
             return self._respond(store, referee, grant, job, args)
         if tool in OVERRIDE_READS:
-            with self._host(job, optional=True) as by:
+            with self._host(job, optional=True) as by, self._viewer(job, by) as viewer:
                 with store.snapshot():
                     if by is not None and not _participant_holds(store, by):
-                        by = None
-                    viewer = self._viewer(job, by)
+                        viewer = negotiated.Viewer(job.participant_id, False,
+                                                   viewer.campaign_host)  # fmt: skip
                     return _override_read(store, job, viewer, tool, args)
         if tool in HOST_TOOLS:
             with self._host(job) as by:
@@ -265,19 +267,24 @@ class BridgeTools:
                 with store.snapshot():
                     if by is not None and not _participant_holds(store, by):
                         by = None  # no longer in this game: a guest's view
-                    return self._get_context(store, referee, job, args, by)
+                    with self._viewer(job, by) as viewer:
+                        return self._get_context(store, referee, job, args, by, viewer)
         with store.snapshot():  # one committed state for every read below
             return getattr(self, f"_{tool}")(store, referee, job, args)
 
-    def _viewer(self, job: Job, by) -> "negotiated.Viewer":
-        """Who a job reads and acts as (section 11): the host while its
-        sender is the campaign host at this call, else its own sender."""
-        campaign_host = None
+    @contextmanager
+    def _viewer(self, job: Job, by):
+        """Who a job reads and acts as (section 11), held for the call: the
+        host while its sender is the campaign host (`by`, whose guard the
+        caller holds), else its own sender, with the campaign's host player
+        read under a guard held until this exits."""
         if by is not None:
-            campaign_host = by.player_id
-        elif self.campaign_host is not None:
-            campaign_host = self.campaign_host(job)
-        return negotiated.Viewer(job.participant_id, by is not None, campaign_host)
+            yield negotiated.Viewer(job.participant_id, True, by.player_id)
+        elif self.campaign_host is None:
+            yield negotiated.Viewer(job.participant_id, False, None)
+        else:
+            with self.campaign_host(job) as campaign_host:
+                yield negotiated.Viewer(job.participant_id, False, campaign_host)
 
     def _propose_override(self, store, referee, grant, job: Job, args: dict) -> dict:
         """`propose_host_decision` of kind `creation_override`: checked before
@@ -306,43 +313,45 @@ class BridgeTools:
                 "invalid_request", 'The payload is {"intent", "revises" (optional)}.'
             )
         intent, revises = payload["intent"], payload.get("revises")
-        with self._host(job, optional=True) as by:
-            viewer = self._viewer(job, by)
-        requests = negotiated.Overrides(store)
-        with store.snapshot():
-            requests.check_request(viewer, character_id, intent, args["explanation"],
-                                   revises)  # fmt: skip
         content = {k: v for k, v in args.items() if k != "step_id"}
-        step = referee.intend_step(job.job_id, args["step_id"], "propose",
-                                   job.participant_id, "propose_host_decision", content)  # fmt: skip
-        recorded = _recorded(step)
-        if recorded is not None:
-            return {
-                "step_id": step.step_id,
-                "status": "committed",
-                "proposal": recorded,
-            }
-        with self._acting:
-            view, _ = requests.request_from_step(
-                viewer, step.request_id, job.job_id, character_id, intent,
-                args["explanation"], revises,
-                check=self._still_running(referee, grant, job),
-            )  # fmt: skip
-            referee.record_step(job.job_id, step.step_id, "committed", view)
+        requests = negotiated.Overrides(store)
+        # An exact retry first: its recorded request, whatever has changed.
+        earlier = referee.recorded_step(job.job_id, args["step_id"])
+        with self._host(job, optional=True) as by, self._viewer(job, by) as viewer:
+            if earlier is None:  # a new request is checked before it is journaled
+                with store.snapshot():
+                    requests.check_request(viewer, character_id, intent,
+                                           args["explanation"], revises)  # fmt: skip
+            step = referee.intend_step(job.job_id, args["step_id"], "propose",
+                                       job.participant_id, "propose_host_decision",
+                                       content)  # fmt: skip
+            recorded = _recorded(step)
+            if recorded is not None:
+                return {"step_id": step.step_id, "status": "committed",
+                        "proposal": recorded}  # fmt: skip
+            with self._acting:
+                view, _ = requests.request_from_step(
+                    viewer, step.request_id, job.job_id, character_id, intent,
+                    args["explanation"], revises,
+                    check=self._still_running(referee, grant, job),
+                )  # fmt: skip
+                referee.record_step(job.job_id, step.step_id, "committed", view)
         return {"step_id": step.step_id, "status": "committed", "proposal": view}
 
     def _respond(self, store, referee, grant, job: Job, args: dict) -> dict:
         """`override_respond`: the owner's accept or decline of an exact
         offer, a step of kind `respond` in the sender's namespace, from any
         of its jobs. It never selects the draft."""
-        viewer = self._viewer(job, None)  # a requester's own act, never a host's
         content = {k: v for k, v in args.items() if k != "step_id"}
         step = referee.intend_step(job.job_id, args["step_id"], "respond",
                                    job.participant_id, "override_respond", content)  # fmt: skip
         recorded = _recorded(step)
         if recorded is not None:
             return {"step_id": step.step_id, "status": "committed", "result": recorded}
-        with self._acting:
+        # A requester's own act, never a host's: the campaign's host is read,
+        # and held, through validation and commit, so a transfer cannot slip
+        # between them.
+        with self._viewer(job, None) as viewer, self._acting:
             try:
                 result, applied = negotiated.Overrides(store).respond(
                     viewer, step.request_id, args["offer_id"], args["response"],
@@ -400,10 +409,21 @@ class BridgeTools:
         step in the sender's namespace. It never waits: the job replies and
         ends, and the proposal stays pending."""
         requests = HostRequests(store)
+        content = {k: v for k, v in args.items() if k != "step_id"}
+        earlier = referee.recorded_step(job.job_id, args["step_id"])
+        if (
+            earlier is not None
+            and earlier.status == "committed"
+            and (
+                (earlier.kind, earlier.context, earlier.command, earlier.args)
+                == ("propose", job.participant_id, "propose_host_decision", content)
+            )
+        ):  # an exact retry: its recorded proposal, whatever has changed
+            return {"step_id": earlier.step_id, "status": "committed",
+                    "proposal": earlier.result}  # fmt: skip
         with store.snapshot():
             proposal = requests.check(job, args["kind"], args["scope"], args["target"],
                                       args["payload"], args["explanation"])  # fmt: skip
-        content = {k: v for k, v in args.items() if k != "step_id"}
         step = referee.intend_step(job.job_id, args["step_id"], "propose",
                                    job.participant_id, "propose_host_decision", content)  # fmt: skip
         recorded = _recorded(step)
@@ -496,7 +516,7 @@ class BridgeTools:
             )  # fmt: skip
         return rules_message(result, step.request_id), applied
 
-    def _get_context(self, store, referee, job, args, by=None) -> dict:
+    def _get_context(self, store, referee, job, args, by=None, viewer=None) -> dict:
         state, runtime = store.inspect_state(), store.runtime()
         names = _names(store, job)
         context = runtime.referee_context(state)
@@ -542,7 +562,7 @@ class BridgeTools:
                 r for r in requests.listing() if r["state"] == "pending"
             ]
         if runtime.creation_overrides is not None:
-            result["overrides"] = _overrides_block(store, job, self._viewer(job, by))
+            result["overrides"] = _overrides_block(store, job, viewer)
         return _with_first_page(result, referee)
 
     def _get_view(self, store, referee, job, args) -> dict:
