@@ -2,9 +2,12 @@
 
 Status: **rough draft for refinement**, 2026-11-12. It records the owner's
 direction and a first proposal for how the framework could carry it. Nothing
-here is a contract yet, no tracker or issues exist, and no runtime behavior
-is changed by this document. Public baseline:
+here changes runtime behavior. Public baseline:
 `d76deddb94cccedfb7c59b62808359d8f1e77577`.
+
+The [MS-1 contract proposal](missions_contract.md), under
+[#199](https://github.com/coghex/tesserae/issues/199), specifies the proposed
+hooks, records, tools, messages and migration for the next delivery slices.
 
 It would extend the [referee contract](referee_contract.md), the
 [character contract](character_contract.md) and the

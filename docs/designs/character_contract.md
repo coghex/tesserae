@@ -1,5 +1,10 @@
 # M2-3 character contract (CHR-1)
 
+The [MS-1 missions contract proposal](missions_contract.md) adds an optional
+Missions capability beside CharacterRules, with player-owned commitments,
+participation history and character eligibility checks. It is proposed under
+#199 and awaits implementation.
+
 Status: specification for [#111](https://github.com/coghex/tesserae/issues/111)
 under tracker [#110](https://github.com/coghex/tesserae/issues/110), written
 before any implementation. It turns the
