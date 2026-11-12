@@ -70,7 +70,10 @@ The owner has agreed:
 
 Implementation defaults in this draft, not owner decisions: one active
 mission per campaign; at most five open offers; equal tone weights; the
-tripwire counts per tone; every size bound. The owner intends to read about
+tripwire counts per tone; every size bound; that an offer states what a
+roster must be able to do instead of naming a fixed roster; that a
+consequence ends with its mission unless its entry says it outlasts it; and
+the rules for threads' boundaries. The owner intends to read about
 ten generated missions before settling weights and counts, so the first
 delivery includes a way to produce them without touching a campaign.
 
@@ -182,10 +185,17 @@ primaries can be paired and how they depend on each other.
 
 The rules that keep tripwires fair:
 
-- Nothing is in motion when a mission starts, in any tone.
-- Every tripwire has at least one clean way through that needs no roll.
+- No consequence is in motion when a mission starts, in any tone. A
+  deadline that is a disclosed, ordinary term of the job is not a
+  consequence and may exist from the start.
+- Every tripwire has at least one clean way through that needs no roll. The
+  generator attaches a tripwire only where the mission actually has such a
+  way: an obstacle with a listed approach that calls for no roll.
 - A tripped consequence has a prepared sign the players can perceive, so
-  they can connect it to what they did, and a prepared way to stop it.
+  they can connect it to what they did.
+- A consequence either has a prepared way to stop it, or its entry declares
+  it a **trade**: it cannot be undone, and its cost must be perceivable
+  before the choice is made, not only afterwards.
 - A failed check trips a tripwire only where the entry says so.
 - An offer does not state the tone. "Known risks" are what the client knows
   and says.
@@ -193,18 +203,21 @@ The rules that keep tripwires fair:
 ## Requests, offers and expansion
 
 **Request.** The referee asks for one mission: a length for a generated one,
-or a premade's name, optionally narrowed by template or theme. Anything left
+or a premade's name, optionally narrowed by template or theme, and the
+characters it is meant for (by default every ready character). Anything left
 open is drawn by Python. For a generated mission the host:
 
-1. records the compact inputs the generator will use: policy, the roster's
-   capabilities, the people and places already established;
+1. records the compact inputs the generator will use: policy, those
+   characters' capabilities, the people and places already established;
 2. draws a seed from its journaled random source;
 3. runs the whole generator in memory, with bounded backtracking, and
    refuses clearly if nothing compatible exists;
 4. validates the result: references, dependency cycles, count bounds, clue
    coverage, declared effects, the tripwire rules, size;
 5. stores only the offer: its ID, length, seed, generator and library
-   versions, recorded inputs, a digest of the full result and the summary.
+   versions, recorded inputs, a digest of the full result, the summary and
+   its **requirements**: the capabilities the mission relies on and any
+   character a thread is bound to.
 
 For a premade the offer stores its name and version. A premade is refused if
 the campaign has already played it or lacks what it declares it needs.
@@ -233,11 +246,35 @@ inputs without touching any campaign, so an author can read a batch.
 
 ## Commitment
 
-The referee opens a proposal: one offer and a roster. Each player on the
-roster commits their own character, in their own job or with a control in
-their client; the host checks the commitment against the authenticated
-player. A player can withdraw before the mission starts. Offers not chosen
-are withdrawn when it does. The roster need not include every character.
+An offer does not name a fixed roster. It states its requirements, and any
+roster that meets them can take it.
+
+The referee opens a proposal: one published offer and a roster. The host
+refuses a roster that does not meet the offer's requirements, such as one
+missing a capability the mission relies on or the character a thread is
+bound to. A proposal has a revision, which changes whenever its roster or
+the offer's terms change.
+
+Each player on the roster commits their own character, in their own job or
+with a control in their client. A commitment names the offer and the
+proposal revision it was made to, and the host checks it against the
+authenticated player. A commitment to an earlier revision does not count:
+when the roster or the terms change, everyone still on it is asked again.
+Activity that changes neither, such as a character spending money, leaves
+commitments standing.
+
+The host checks the roster again at expansion and again when the mission
+starts: each character is still owned by the player who committed it, still
+ready and able to take part, and the roster still meets the requirements. A
+player can withdraw at any point before the start, including while the
+referee is filling the prompts. A withdrawal makes a new proposal revision.
+If the remaining roster still meets the requirements, the prepared mission
+is kept and the remaining players are asked again. If not, the offer is
+withdrawn with the reason; facts already disclosed about it stay disclosed,
+and a replacement is a new offer with fresh commitments.
+
+Offers not chosen are withdrawn when a mission starts. The roster need not
+include every character.
 
 ## Play
 
@@ -271,6 +308,12 @@ the due events in the command's result and in the referee's context, and
 refuses to resolve an objective while an earlier one is outstanding. Real
 elapsed time and disconnected clients advance nothing.
 
+When one advance of the clock passes several due times, the events resolve
+in order of their due times. A follow-up armed by an event is timed from
+that event's due time, not from the moment the referee resolved it, so a
+long wait cannot postpone a chain. If that makes the follow-up already
+overdue, it is due at once and takes its place in the order.
+
 **Twists** use the same mechanism. Their underlying truth is prepared before
 play. A changed assignment or reward is put to the players and needs their
 agreement; every branch keeps the objective bounds.
@@ -301,24 +344,50 @@ can play out over many missions. A thread never supplies a player
 character's decision, feeling or consent, and a game that reports no history
 simply has no threads.
 
+An established person keeps their established nature. For each person, the
+game's hook reports the relationship, the stakeholder roles they may fill,
+the roles they must not, and anything that may not be disclosed. A campaign
+may record, for instance, that a character's settled family is never to be
+made a hostage, a debtor or a hidden opponent; such a person can still be a
+client or a bystander with something useful. The generator binds only
+permitted roles, the validator refuses a mission that breaks a restriction,
+and the referee's refinement is checked against the same restrictions. A
+game can also limit how often one character's people are drawn, so not every
+job involves them.
+
 ## Close and reveal
 
 A mission can close when every primary objective has a terminal status or
-the party abandons it. Closing records each objective's outcome, releases
-the campaign for a new mission and enables the reveal for its players: the
-tone, tripwires never tripped and what they would have started, secrets and
-discoveries missed, routes not taken, eggs found with their details, and a
-count of egg slots that went unfound. A fuller completion report is separate
-later work.
+the party abandons it. Close first settles what is outstanding:
+
+- An event that is already **overdue** must be resolved, or lapsed with a
+  recorded reason, before the mission can close.
+- A consequence scheduled for later ends with the mission unless its entry
+  says it **outlasts** the mission. One that ends is recorded as lapsed, with
+  its due time and the reason.
+- A consequence that outlasts the mission is carried into the campaign: it
+  stays on the game's clock, appears in the referee's context when due, and
+  is resolved then, whatever mission is running. It may attach to a thread.
+  The number carried at once is bounded.
+- Abandoning a mission follows the same rules; an entry can say what
+  abandonment itself sets off.
+
+Closing then records each objective's outcome, releases the campaign for a
+new mission and enables the reveal for its players: the tone, tripwires
+never tripped and what they would have started, consequences that lapsed,
+secrets and discoveries missed, routes not taken, eggs found with their
+details, and a count of egg slots that went unfound. A consequence still
+carried is a spoiler until it resolves, so the reveal gives only how many
+remain in motion. A fuller completion report is separate later work.
 
 ## Records
 
 The host keeps mission records in the campaign file beside its other
 records, not inside the module's state: offers, the active mission,
-commitments, observations, event resolutions, the egg and premade
-checklists, threads and closed missions. A module's state limits therefore
-do not bound them, and an upgrade of existing campaign files is needed.
-Every list is bounded by the preparation or by a fixed count, so a long
+commitments, observations, event resolutions, carried consequences, the egg
+and premade checklists, threads and closed missions. A module's state limits
+therefore do not bound them, and an upgrade of existing campaign files is
+needed. Every list is bounded by the preparation or by a fixed count, so a long
 mission cannot fill up and be unable to finish. The command and step
 journals keep full history.
 
@@ -358,7 +427,9 @@ ground someone controls), `told_a_lie` (deceives a witness they need again),
 `left_a_mark` (leaves signs of a visit), `bought_the_answer` (pays for
 information), `secondary_first` (does an optional goal first),
 `showed_steel` (displays a weapon), `stopped_to_help` (helps a bystander),
-`failed_quietly` (fails while trying to go unnoticed).
+`failed_quietly` (fails while trying to go unnoticed). `secondary_first` and
+`stopped_to_help` are trades: nothing undoes them, and what they cost is
+plain before the choice.
 
 Clients, stakeholders, places, secrets, obstacles, clue kinds, rewards,
 discoveries and twists follow the same pattern and are written with the
@@ -394,14 +465,21 @@ All tests use Python fixtures or a scripted referee. No model runs.
   the game's clock and the other does not. Nothing is in motion at the start.
 - A fact a primary needs has two independent routes, one needing no roll.
 - A player can commit only their own character; the mission waits for the
-  whole roster.
+  whole roster. A roster missing a required capability, or the character a
+  thread is bound to, is refused. A withdrawal while the referee is filling
+  prompts makes earlier commitments stale; the mission is kept if the rest
+  still qualify and withdrawn if not.
 - An event's effects and status stay coherent after duplicate requests,
   stale revisions, interruption, restart and a refused effect.
 - Slots follow the length rule. Opening one draws an unmet egg, records it
   and never repeats it. The reveal shows found eggs and only a count of
   unfound slots.
 - A thread binds a stakeholder to a person from a participating character's
-  history and can be continued by a later mission.
+  history and can be continued by a later mission. A role a person is
+  excluded from is never bound to them.
+- A mission cannot close over an overdue event. A consequence scheduled for
+  later lapses with a record, or is carried and resolves during a later
+  mission. A chain crossed by one long wait resolves in due-time order.
 - Offers and player views contain no spoilers; the host sees everything.
 - Existing campaign files upgrade with their contents intact. A module
   without the capability behaves as before.
