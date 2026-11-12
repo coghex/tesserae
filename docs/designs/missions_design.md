@@ -8,6 +8,8 @@ here changes runtime behavior. Public baseline:
 The [MS-1 contract proposal](missions_contract.md), under
 [#199](https://github.com/coghex/tesserae/issues/199), specifies the proposed
 hooks, records, tools, messages and migration for the next delivery slices.
+The [delivery roadmap](missions_delivery.md) links public tracker #202, private
+integration tracker #203 and their dependency-ordered children.
 
 It would extend the [referee contract](referee_contract.md), the
 [character contract](character_contract.md) and the
@@ -64,8 +66,13 @@ The owner has agreed:
   players. For eggs it shows how many were found, with the found ones'
   details, and only a count of slots that went unfound. Everyone who
   actually took part keeps access to the reveal while they keep access to
-  the campaign, including a participant who left before the end.
+  the campaign, including a participant who left before the end. Found eggs
+  reveal all layers, including unexamined ones, subject to continuing-story
+  and unresolved-consequence redactions.
 - **Commitment.** Each player commits their own character.
+- **Collective abandonment.** Every active player confirms abandonment through
+  the proposal mechanism. They can confirm conversationally through the referee.
+  Individual departure remains that player's action.
 - **Joining in progress.** A character can join a mission that is already
   under way, by their player's own commitment to stated terms. This is part
   of the first delivery.

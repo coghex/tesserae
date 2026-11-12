@@ -5,6 +5,8 @@ for manual review, 2026-11-12. Public baseline
 `2a3b18a163f6f3336411ef3e040c62d4d500b13a`. The
 [missions design](missions_design.md) records the owner's direction.
 This contract specifies the capability and behavior for MS-2 through MS-7.
+The [delivery roadmap](missions_delivery.md) maps those slices to trackers and
+implementation issues. Their runtime work depends on review and merge of MS-1.
 It extends the [referee](referee_contract.md), [character](character_contract.md),
 [governance](governance_contract.md) and [protocol](../protocol.md) contracts.
 
@@ -26,9 +28,10 @@ to the post-mission reveal while they retain campaign access, including a
 participant who left the mission before its end. A commitment withdrawn before
 start is not participation.
 
-**Open owner decision — abandonment.** The authority for closing a mission
-as voluntarily abandoned while members remain is unsettled. Section 8 records
-the choice that must be made. This draft does not select a fallback rule.
+The owner additionally selected player-owned collective abandonment: every
+active player confirms an abandonment proposal. They can confirm through the
+referee in natural language. The reveal of a found egg includes all its layers,
+including unexamined ones, subject to ongoing-consequence/future-story redactions.
 
 This contract proposes these engineering choices.
 
@@ -450,8 +453,8 @@ An initial `mission_propose` names one published offer and a nonempty roster. Ch
 ownership, ready phase, campaign access, required capabilities and bound
 characters. At most one proposal can be open/preparing for a campaign. The
 proposal stores `{proposal_id, kind, mission_id, revision, offer_revision,
-roster, required_committers, branch_id, terms, state}`. Kind is initial, join or
-terms_change.
+roster, required_committers, branch_id, terms, state}`. Kind is initial, join,
+terms_change or abandon.
 Roster entries are `{character_id, participant_id}` built by the host.
 State is open, ready, preparing, started or cancelled.
 `terms` maps each affected character ID to `{text, effects}`, with the normal
@@ -459,8 +462,8 @@ validated effect references. Initial terms derive from the published summary.
 Compare a new proposal with each existing member's accepted terms to determine
 whose commitment is required. The game validates its effects against those
 promises. A new participant's share cannot reduce an existing share silently.
-For a join or terms_change, the mission must be active. Join character_ids
-names the new members; the host builds the proposed roster from them and the
+For a join, terms_change or abandon proposal, the mission must be active. Join
+character_ids names the new members; the host builds the proposed roster from them and the
 existing members. Terms_change names affected existing members and retains
 the roster. Negotiated terms are the per-character map above. A prepared
 branch may instead supply those terms and any changed objective IDs.
@@ -474,6 +477,8 @@ An initial proposal requires every roster entry. A join requires the joining
 characters. A terms change requires every participant whose assignment or
 promised reward changes. The host derives that set from the declared branch
 and current roster and checks it through game compatibility validation.
+An abandon proposal uses every active player's confirmation as specified in
+section 8; one confirmation covers that player's active characters.
 
 A changed roster or offer revision increments the proposal revision and
 requires fresh commitments from everyone retained. Unrelated activity leaves
@@ -714,14 +719,22 @@ and refinement while previous established events remain in history.
 
 ## 8. Closure and reveal
 
-Close is allowed when all primaries are terminal. A mission with no members
-after their own recorded departures may also close as abandoned, as the design
-states. **OPEN-1:** voluntary abandonment while members remain needs an owner
-decision about authority. The options are a player-owned abandonment proposal
-requiring the affected members' commitments, or a referee operation recording
-their established agreement. This contract does not choose between them.
-The abandoned objective transition and `mission_close` with active members
-remain unsettled to that extent; a reason string alone does not select a rule.
+Close is allowed when all primaries are terminal. Voluntary abandonment while
+members remain requires a current ready proposal of kind abandon. The host
+builds its roster from every active membership. Each active participant must
+confirm through their own authenticated commitment. One confirmation covers
+that participant's current characters in this abandonment proposal, with
+separate commitment rows tied to the same receipt and source actor. The referee
+cannot supply another player's confirmation. A reason alone is insufficient.
+
+The last confirmation makes the proposal ready. `mission_close` then checks it
+and settles due events before closing. A player may withdraw confirmation
+before close. Changes to active membership invalidate the proposal revision
+and require renewed confirmation from remaining players. A mission with no
+members after their own recorded departures can close as abandoned without a
+proposal, as the design states. Abandoning objective transitions that would
+end the party's assignment use the same authority. A failed objective supported
+by established world facts is distinct from a voluntary party decision.
 Resolve or validly lapse every earlier
 due occurrence first. Apply any prepared completion/abandonment effects in
 one batch with the closure receipt.
@@ -744,9 +757,9 @@ withhold its definition and any connected secret that would reveal its
 unresolved future effect. Show only the count of continuing consequences.
 Those entries can become visible after the corresponding occurrence resolves.
 Cross-mission thread preparation remains outside this mission's reveal.
-For a found egg, the proposed reveal includes its unexamined layers as well as
+For a found egg, the owner-selected reveal includes its unexamined layers as well as
 the examined ones, subject to the same continuing-consequence and future-thread
-redactions. This is a reviewable default for found-egg details. Undiscovered
+redactions. Undiscovered
 slots still reveal only their count.
 
 Any participant recorded during actual play may read the reveal while their
@@ -917,7 +930,7 @@ module command names or shell execution permission.
 | `mission_request` | `length` or `premade_id`, optional `template_id`, `theme_id`, `character_ids` | Referee preparation. Exactly one origin selector. |
 | `mission_refine` | `mission_id`, `target`, `expected_record_revision`, `summary`, `answers` | Referee; target summary or preparation. Exactly the relevant summary or answers field. Answers map prompt IDs to their validated values. |
 | `mission_publish` | `mission_id`, `expected_record_revision` | Referee freezes a valid draft offer. |
-| `mission_propose` | `mission_id`, `kind`, `character_ids`, optional `branch_id`, `terms`, `proposal_id`, `proposal_revision` | Referee creates/revises an initial, join or terms_change proposal. Last two fields occur together on revision. Terms are required for a negotiated join/change; branch may instead reference a prepared alternate assignment. |
+| `mission_propose` | `mission_id`, `kind`, `character_ids`, optional `branch_id`, `terms`, `proposal_id`, `proposal_revision` | Referee creates/revises an initial, join, terms_change or abandon proposal. Last two fields occur together on revision. Abandon must match all current active members. Terms are required for a negotiated join/change; branch may instead reference a prepared alternate assignment. |
 | `mission_commit` | `proposal_id`, `proposal_revision` | Job sender's frozen ready character. |
 | `mission_withdraw` | `proposal_id`, `proposal_revision` | Job sender's frozen ready character, before the proposal applies. Initial proposals remain withdrawable through preparation. |
 | `mission_leave` | `mission_id`, `reason` | Job sender's own active membership. |
@@ -929,7 +942,7 @@ module command names or shell execution permission.
 | `mission_event` | `mission_id`, `event_id`, `occurrence`, `outcome`, `adjudications`, `reason` | Referee resolves, avoids or expires an occurrence against its declared when/stop/expiry condition. A stop may occur before its due time. |
 | `mission_open_egg` | `mission_id`, `slot_id`, `character_ids`, `reason` | Referee records established discovery. |
 | `mission_egg_layer` | `mission_id`, `slot_id`, `layer_id`, `character_ids`, `reason` | Referee reveals an established subsequent examination. |
-| `mission_close` | `mission_id`, `outcome`, `reason` | Referee; outcome completed, or abandoned with no members. Authority for voluntary abandonment with members remains OPEN-1. |
+| `mission_close` | `mission_id`, `outcome`, `reason`, optional `proposal_id`, `proposal_revision` | Referee; outcome completed or abandoned. Voluntary abandonment with active members requires the ready abandon proposal. |
 | `mission_thread` | `action`, `reason`, and the action-specific fields in section 7 | Referee opens, records progress, closes or reopens a person/aspiration thread from an established source. |
 | `mission_list` | optional `states`, `after` | Sender's normal projected list. |
 | `mission_inspect` | `mission_id`, `section`, optional `after` | Referee-only bounded private read. Section is summary, objectives, people, places, facts, clues, obstacles, events, eggs, prompts, receipts or threads. |
@@ -1036,9 +1049,8 @@ specific handoff and checks against its actual pins.
 ## 14. MS-1 review and downstream acceptance
 
 This contract is complete when owner and independent review resolve its
-proposed API, lifecycle, bounds and message choices, including OPEN-1. The
-abandonment question remains open for the owner; this revision does not settle
-it by adding an implicit referee or player authority. It needs no live AI run.
+proposed API, lifecycle, bounds and message choices. The owner's abandonment
+and found-egg reveal choices are now recorded above. It needs no live AI run.
 Later slices demonstrate the following cases using original game fixtures.
 
 1. An opting-out module retains behavior through schema upgrade. Upgrades
@@ -1097,8 +1109,10 @@ Later slices demonstrate the following cases using original game fixtures.
 16. Late joining applies only the required players' commitments and preserves
     old terms, objectives, events and discoveries. A player's departure keeps
     the remaining mission active even if its original requirements no longer
-    hold. Test the owner-chosen collective-abandonment rule after OPEN-1 is
-    settled; no implementation should infer its answer from a reason string.
+    hold. Collective abandonment checks each active player's confirmation,
+    including one player controlling several characters, withdrawal of a vote,
+    changed membership, a pending due event and retry/restart. A reason string
+    cannot substitute for those confirmations.
 
 MS-2 owns generation and library validation. MS-3 owns the lifecycle, tables,
 tools and context. MS-4 owns observation/event/clock behavior, eggs, threads and
