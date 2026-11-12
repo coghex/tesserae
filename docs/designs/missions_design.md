@@ -59,8 +59,13 @@ The owner has agreed:
   everything, as today.
 - **Reveal at close.** A closed mission's spoilers can be shown to its
   players. For eggs it shows how many were found, with the found ones'
-  details, and only a count of slots that went unfound.
+  details, and only a count of slots that went unfound. Everyone who
+  actually took part keeps access to the reveal while they keep access to
+  the campaign, including a participant who left before the end.
 - **Commitment.** Each player commits their own character.
+- **Joining in progress.** A character can join a mission that is already
+  under way, by their player's own commitment to stated terms. This is part
+  of the first delivery.
 - **Personal threads.** A mission can bind one of its stakeholders to someone
   from a participating character's recorded history. Threads can carry a
   character's longer story across many missions.
@@ -278,6 +283,36 @@ and a replacement is a new offer with fresh commitments.
 Offers not chosen are withdrawn when a mission starts. The roster need not
 include every character.
 
+### Joining and leaving a mission in progress
+
+A character can join a mission that has already started. The referee
+proposes the join: which ready characters, and on what terms, such as their
+share of a reward and what they are told on arrival. The host checks them as
+it checks any roster member: owned by their player, ready, and able to take
+part. A join applies only when each joining player has committed their own
+character to that proposal.
+
+Existing members keep the terms they agreed. If a join would change those
+terms, for example how a fee is divided, every member whose terms change
+must commit to the change as well, and until they do the mission carries on
+as it was. A proposal that is withdrawn or cancelled changes nothing.
+
+Joining does not restart anything. Objectives keep their statuses, events
+keep theirs, and consequences already in motion stay in motion. A joiner is
+not credited with what was discovered before they arrived: they learn it
+when a character who knows shares it, as an established action, and that
+sharing is recorded like any other. Their participation is recorded from the
+moment the join applies.
+
+A player can take their own character out of a mission in progress. Leaving
+is that player's action, never the referee's on their behalf; the host can
+end a membership as a recorded correction. A character who leaves keeps
+their participation history and their access to the reveal. Leaving does not
+end the mission for those who remain, even when the roster no longer meets
+the offer's original requirements; what the remaining party can still
+achieve is for play to decide. A mission with no members left can be closed
+as abandoned (see Close and reveal).
+
 ## Play
 
 **Obstacles.** An obstacle states where it is, which objective it affects,
@@ -403,7 +438,7 @@ journals keep full history.
 | Who | Can |
 |---|---|
 | Referee, in a play job | Request, refine and publish offers; open a proposal; expand and start; read preparation in bounded sections; record observations; resolve objectives and events; open an egg slot; close. |
-| A player | Read offers and their own discoveries; commit or withdraw their own character; read the reveal of a mission they took part in. |
+| A player | Read offers and their own discoveries; commit or withdraw their own character, including to join a mission in progress or to agree to changed terms; take their own character out of a mission; read the reveal of a mission they took part in. |
 | The host | Everything the campaign holds, as today, and corrections with a reason. Policy: which library, tone weights, whether eggs are enabled. |
 
 The referee cannot add code or patch state: preparation is data for trusted
@@ -449,7 +484,7 @@ published until someone writes original ones for the example game.
 |---|---|
 | MS-1 | The contract: exact hooks, shapes, records, states, tools, client messages, bounds and the upgrade of existing campaign files. |
 | MS-2 | The mission form and validator, the generator with seeds and digests, premade loading, the dry run, and the example library. |
-| MS-3 | Offers, refinement, publication, commitment, expansion and start; the referee's tools and context; authority, privacy, retries and stale offers. |
+| MS-3 | Offers, refinement, publication, commitment, expansion and start; joining and leaving a mission in progress; the referee's tools and context; authority, privacy, retries and stale offers. |
 | MS-4 | Observations, atomic event effects through a game's handlers, consequences on a game's clock, twists, eggs and checklists, threads, close and reveal. |
 | MS-5 | CLI controls for offers, commitment, the active mission and the reveal. |
 | MS-6 | The same in the browser. |
@@ -477,6 +512,11 @@ All tests use Python fixtures or a scripted referee. No model runs.
   thread is bound to, is refused. A withdrawal while the referee is filling
   prompts makes earlier commitments stale; the mission is kept if the rest
   still qualify and withdrawn if not.
+- A character joins a mission in progress only by their player's own
+  commitment. Existing members' terms change only by their own commitments.
+  The joiner gains no earlier discoveries except by recorded sharing, and
+  nothing restarts. A member who leaves keeps their history and can read the
+  reveal; one who only committed and withdrew before the start cannot.
 - An event's effects and status stay coherent after duplicate requests,
   stale revisions, interruption, restart and a refused effect.
 - Slots follow the length rule. Opening one draws an unmet egg, records it
