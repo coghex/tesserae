@@ -46,8 +46,10 @@ This contract proposes these engineering choices.
 - Framework defaults are five open offers, one preparing/active mission, eight
   proposed characters, equal tone weights and the design's length profiles.
   These are reviewable defaults. Games can supply stricter content constraints.
-- Deliberate host corrections use a preview and explicit confirmation. Routine
-  referee preparation does not require individual host approvals.
+- Deliberate host corrections use a preview and explicit confirmation, including
+  cancellation of pending proposals and administrative closure of stuck missions.
+  Administrative closure records host authority, never invented player consent.
+  Routine referee preparation does not require individual host approvals.
 
 The proposal mechanism also covers joining a mission in progress and agreeing
 to a prepared alternate contract. Existing participants keep their agreed terms
@@ -451,7 +453,7 @@ negotiated joining terms, with the affected players' own commitments.
 
 An initial `mission_propose` names one published offer and a nonempty roster. Check
 ownership, ready phase, campaign access, required capabilities and bound
-characters. At most one proposal can be open/preparing for a campaign. The
+characters. At most one proposal can be open, ready or preparing for a campaign. The
 proposal stores `{proposal_id, kind, mission_id, revision, offer_revision,
 roster, required_committers, branch_id, terms, state}`. Kind is initial, join,
 terms_change or abandon.
@@ -504,6 +506,19 @@ increments proposal revision. Preserve a prepared mission if the remaining
 nonempty roster remains eligible, then ask them to commit again. Otherwise
 withdraw the offer with a recorded reason. Preserve disclosed facts and
 release the preparing slot. New missions never replace it implicitly.
+
+The referee may cancel any unapplied proposal with `mission_cancel`, naming its
+current revision and a reason. The current campaign host can do the same through
+the guarded `cancel_proposal` correction. Open, ready and preparing proposals
+are cancellable; an applied/started proposal is not. Cancellation is atomic:
+mark it cancelled, retain its commitments and revisions as inactive history,
+and release the proposal slot. Cancelling an initial proposal also withdraws
+its unstarted mission, preserves disclosed preparation, and releases the
+preparing slot. It does not consume a premade or apply begin effects. Cancelling
+a join, terms_change or abandon proposal leaves the active mission, membership
+and accepted terms unchanged. A subsequent commitment to a cancelled proposal
+refuses; an exact retry of a committed cancellation replays its receipt. It
+does not withdraw any actual member or claim that a player agreed to abandon.
 
 Participation starts at begin or an explicit later join. Record its owning
 participant and character at that moment. A later ownership change does not
@@ -731,13 +746,32 @@ The last confirmation makes the proposal ready. `mission_close` then checks it
 and settles due events before closing. A player may withdraw confirmation
 before close. Changes to active membership invalidate the proposal revision
 and require renewed confirmation from remaining players. A mission with no
-members after their own recorded departures can close as abandoned without a
-proposal, as the design states. Abandoning objective transitions that would
+members after recorded departures, including audited host-ended memberships,
+can close as abandoned without a proposal. Abandoning objective transitions that would
 end the party's assignment use the same authority. A failed objective supported
 by established world facts is distinct from a voluntary party decision.
 Resolve or validly lapse every earlier
 due occurrence first. Apply any prepared completion/abandonment effects in
 one batch with the closure receipt.
+
+The current campaign host also has an administrative `close_mission` correction
+for an active mission, previewed and explicitly confirmed with a reason. It may
+close as abandoned despite open primaries, missing player confirmations or
+remaining members. This is a host override, not the referee's ordinary close or
+a claim of unanimous abandonment. Record the authority, author, reason and
+before/after states. End remaining memberships with that host reason and mark
+still-open objectives abandoned; preserve prior outcomes and participation.
+
+Administrative closure uses the same effect preview, transaction, consequence
+persistence, reward-receipt and reveal rules as ordinary abandoned closure.
+It never marks a primary completed, invents a player choice, grants a completion
+reward or silently drops a scheduled effect. Already-due occurrences must first
+resolve or be explicitly lapsed using the host's existing event correction;
+preview identifies those blockers. The host may record a lapse even when the
+normal stop condition is unmet, with that separate audited reason. Future
+campaign-scoped occurrences remain scheduled. Failed or stale confirmation
+releases no slot and changes nothing; successful closure releases the active
+slot atomically and survives retry/restart.
 
 Future consequences with persistence `mission` expire with recorded due time
 and reason. Those with persistence `campaign` keep the same occurrence and
@@ -746,7 +780,9 @@ remain scheduled through closure and restart. There is no count limit on
 durable carried rows. Context and reads remain paged even when many are due.
 
 Record terminal objective outcomes, participation history, reward receipts
-and links to continuing threads. Release the active mission slot only after
+and links to continuing threads. Every closure path cancels any unapplied
+proposal for that mission in the same transaction, retaining its history.
+Release the active mission slot only after
 that transaction succeeds. Full reports and downtime are later features.
 
 The reveal is an on-demand historical view of the closed mission. It includes
@@ -781,7 +817,7 @@ and replay content retain their original values.
 |---|---|
 | `mission_policy` | One row: revision, document. |
 | `missions` | mission_id PK; state, origin, binding, offer_revision, preparation_revision, data, created_revision, updated_revision. |
-| `mission_proposals` | proposal_id PK; kind, mission_id, revision, offer_revision, state, roster, required_committers, branch_id nullable, terms. One open/preparing proposal per campaign. |
+| `mission_proposals` | proposal_id PK; kind, mission_id, revision, offer_revision, state, roster, required_committers, branch_id nullable, terms. One open/ready/preparing proposal per campaign. |
 | `mission_commitments` | proposal_id, proposal_revision, character_id, participant_id, state, receipt_id. Unique first three columns. |
 | `mission_members` | mission_id, character_id, participant_id, joined_revision, left_revision, accepted_terms, reason. Unique mission_id/character_id/joined_revision. Terms changes retain the old values in an immutable receipt. |
 | `mission_observations` | mission_id, clue_id, level_id, character_id, participant_id, observed_at, source, receipt_id. Unique mission_id/clue_id/level_id/character_id/participant_id. Improvised clue IDs occupy a separate namespace. |
@@ -905,9 +941,11 @@ response. Normal clients do not receive an existence oracle for hidden records.
 Host correction targets are exactly `{kind, id}` where kind is mission,
 proposal, consequence or membership. Intents are exactly `{operation, values}`.
 Operations are amend_terms, replace_prompt_answers, revise_roster, end_member,
-lapse_event, reschedule_event and withdraw_offer. Values are respectively
+lapse_event, reschedule_event, withdraw_offer, cancel_proposal and close_mission. Values are respectively
 `{summary}`, `{answers}`, `{character_ids}`, `{character_id}`, `{event_id,
-occurrence, outcome}`, `{event_id, occurrence, domain, due_tick}`, and `{}`.
+occurrence, outcome}`, `{event_id, occurrence, domain, due_tick}`, `{}`,
+`{proposal_revision}`, and `{}`. Cancel_proposal targets a proposal;
+close_mission targets an active mission and always closes as abandoned.
 Targets name the mission or proposal, or a carried consequence ID. Amendments
 are pre-start only; an active assignment change uses a prepared branch and
 the normal terms_change proposal. Replace_prompt_answers is preparing only.
@@ -931,6 +969,7 @@ module command names or shell execution permission.
 | `mission_refine` | `mission_id`, `target`, `expected_record_revision`, `summary`, `answers` | Referee; target summary or preparation. Exactly the relevant summary or answers field. Answers map prompt IDs to their validated values. |
 | `mission_publish` | `mission_id`, `expected_record_revision` | Referee freezes a valid draft offer. |
 | `mission_propose` | `mission_id`, `kind`, `character_ids`, optional `branch_id`, `terms`, `proposal_id`, `proposal_revision` | Referee creates/revises an initial, join, terms_change or abandon proposal. Last two fields occur together on revision. Abandon must match all current active members. Terms are required for a negotiated join/change; branch may instead reference a prepared alternate assignment. |
+| `mission_cancel` | `proposal_id`, `proposal_revision`, `reason` | Referee cancels an unapplied proposal, preserving history and releasing its slot. Initial cancellation also withdraws its unstarted mission. |
 | `mission_commit` | `proposal_id`, `proposal_revision` | Job sender's frozen ready character. |
 | `mission_withdraw` | `proposal_id`, `proposal_revision` | Job sender's frozen ready character, before the proposal applies. Initial proposals remain withdrawable through preparation. |
 | `mission_leave` | `mission_id`, `reason` | Job sender's own active membership. |
@@ -1113,6 +1152,17 @@ Later slices demonstrate the following cases using original game fixtures.
     including one player controlling several characters, withdrawal of a vote,
     changed membership, a pending due event and retry/restart. A reason string
     cannot substitute for those confirmations.
+17. Referee and guarded host cancellation release an unanswered initial, join,
+    terms-change or abandonment proposal. Test open/ready/preparing states,
+    stale revision, guest denial, concurrent commitment, retry/restart and a
+    subsequent proposal. Applied proposals cannot be cancelled; active terms,
+    prior participation and disclosed facts survive.
+18. A host can preview and confirm administrative abandoned closure with absent
+    players or unresolvable primaries. Guests and the ordinary referee close
+    cannot use this exception. A host-ended last membership permits empty
+    closure. Due blockers require explicit resolution/lapse; carried effects,
+    prior rewards and reveal rights survive. Failure/staleness rolls back;
+    successful replay/restart permits another mission without forged consent.
 
 MS-2 owns generation and library validation. MS-3 owns the lifecycle, tables,
 tools and context. MS-4 owns observation/event/clock behavior, eggs, threads and

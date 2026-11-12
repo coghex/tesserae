@@ -20,6 +20,7 @@ to evaluate using the generated batch.
 | [#205](https://github.com/coghex/tesserae/issues/205) | implement seeded generation, premades and read-only dry runs | #204 |
 | [#206](https://github.com/coghex/tesserae/issues/206) | add transactional records, policy and bounded reads | #204 |
 | [#207](https://github.com/coghex/tesserae/issues/207) | implement offers, initial commitment and mission start | #205, #206 |
+| [#225](https://github.com/coghex/tesserae/issues/225) | prove the initial referee bridge lifecycle early | #207 |
 | [#208](https://github.com/coghex/tesserae/issues/208) | implement active joins, changed terms, departures and abandonment voting | #207 |
 | [#209](https://github.com/coghex/tesserae/issues/209) | implement clue observations, visits and objective outcomes | #207 |
 | [#210](https://github.com/coghex/tesserae/issues/210) | implement atomic event effects, clock integration and stopping | #209 |
@@ -27,7 +28,7 @@ to evaluate using the generated batch.
 | [#212](https://github.com/coghex/tesserae/issues/212) | implement Easter egg discovery, layers and campaign checklist | #210 |
 | [#213](https://github.com/coghex/tesserae/issues/213) | implement closure, carried consequences and participant reveals | #208, #210, #211, #212 |
 | [#214](https://github.com/coghex/tesserae/issues/214) | add client protocol messages and guarded host controls | #213 |
-| [#215](https://github.com/coghex/tesserae/issues/215) | add referee tools and bounded context integration | #213 |
+| [#215](https://github.com/coghex/tesserae/issues/215) | complete referee tools and bounded context integration | #213, #225 |
 | [#216](https://github.com/coghex/tesserae/issues/216) | add thin CLI offer, commitment and reveal controls | #214 |
 | [#217](https://github.com/coghex/tesserae/issues/217) | add browser offers, participation and reveal controls | #214 |
 | [#218](https://github.com/coghex/tesserae/issues/218) | accept the complete model-free CLI and browser lifecycle | #215, #216, #217 |
@@ -40,18 +41,33 @@ source references, private code and evidence stay in the local workspace.
 | Issue | Scope | Prerequisites |
 |---|---|---|
 | [#222](https://github.com/coghex/tesserae/issues/222) | compact legacy scene-correction audit records safely | Independent |
-| [#219](https://github.com/coghex/tesserae/issues/219) | implement capability adapters and canonical state adoption | #210, #211, #208 |
-| [#220](https://github.com/coghex/tesserae/issues/220) | build the approved library and review a generated batch | #205, #219 |
-| [#221](https://github.com/coghex/tesserae/issues/221) | implement the first agreed premade mission | #220 |
+| [#224](https://github.com/coghex/tesserae/issues/224) | add private read-only authoring adapters | #204 |
+| [#219](https://github.com/coghex/tesserae/issues/219) | complete runtime adapters and canonical state adoption | #210, #211, #208, #224 |
+| [#220](https://github.com/coghex/tesserae/issues/220) | build the approved library and review a generated batch | #205, #224 |
+| [#221](https://github.com/coghex/tesserae/issues/221) | implement the first agreed premade mission | #220, #219, #213 |
 | [#223](https://github.com/coghex/tesserae/issues/223) | accept integration and prepare the coordinated live handoff | #202, #222, #219, #220, #221 |
 
 ## Suggested working order
 
 Finish #199 first. Then #204 establishes shared types and validation. Generator
-#205 and store #206 can proceed separately. The remaining core steps follow
-their dependency table. Protocol #214 and bridge #215 can proceed separately
-after the core is ready. CLI #216 and browser #217 follow the protocol, then
-#218 exercises the public system end to end.
+#205, store #206 and private authoring adapters #224 can proceed separately.
+As soon as #205 and #224 are ready, #220 builds the library and presents about
+ten generated missions for owner feedback on content, tone weights and counts.
+It does not wait for runtime effect handlers, event clocks or adoption in #219.
+Authoring uses pure hooks, declared effect schemas and read-only inputs only.
+
+The initial lifecycle #207 is followed by early bridge #225, which exercises
+request through begin, authenticated commitments, cancellation and bounded job
+context using scripted referee output. The remaining core steps follow their
+dependency table. Protocol #214 and remaining bridge #215 can proceed separately
+after the core is ready; #215 reuses #225. CLI #216 and browser #217 follow the
+protocol, then #218 exercises the public system end to end.
+
+Shared proposal cancellation is implemented by #207/#208 and exposed through
+#225/#215 and the host controls in #214. The administrative host-close transition
+belongs to #213 and its guarded transport/bridge exposure to #214/#215. Full
+acceptance tests both recovery paths without inventing player agreement or
+discarding due/carried consequences.
 
 The cleanup #222 is independent. Private adapters/content follow their listed
 public prerequisites. #223 checks the complete private integration and prepares

@@ -293,6 +293,12 @@ and a replacement is a new offer with fresh commitments.
 Offers not chosen are withdrawn when a mission starts. The roster need not
 include every character.
 
+The referee can cancel an unapplied proposal with a reason; the host can also
+cancel through a guarded correction. Cancellation releases the proposal slot
+and retains its history. Cancelling initial preparation withdraws that unstarted
+mission without consuming a premade; cancelling an active-change proposal
+leaves current membership and accepted terms intact.
+
 ### Joining and leaving a mission in progress
 
 A character can join a mission that has already started. The referee
@@ -405,7 +411,11 @@ job involves them.
 ## Close and reveal
 
 A mission can close when every primary objective has a terminal status or
-the party abandons it. Close first settles what is outstanding:
+the party abandons it. The host also has a previewed, confirmed administrative
+close for a stuck active mission, recorded as a host override to abandoned,
+with its reason. It does not claim player agreement, complete objectives or
+grant completion rewards. Empty-mission closure also permits memberships ended
+by an audited host correction. All closure paths first settle what is outstanding:
 
 - An event that is already **overdue** must be resolved, or lapsed with a
   recorded reason, before the mission can close.
