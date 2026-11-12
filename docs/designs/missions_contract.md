@@ -2,7 +2,7 @@
 
 Status: proposed specification for [MS-1, #199](https://github.com/coghex/tesserae/issues/199),
 for manual review, 2026-11-12. Public baseline
-`c6053b6a09fd1969fe6c55ca4bd98b29283bccb1`. The
+`2a3b18a163f6f3336411ef3e040c62d4d500b13a`. The
 [missions design](missions_design.md) records the owner's direction.
 This contract specifies the capability and behavior for MS-2 through MS-7.
 It extends the [referee](referee_contract.md), [character](character_contract.md),
@@ -17,10 +17,18 @@ generated and premade missions, 1–2 primary and 0–4 secondary objectives,
 independent tone selection, egg slots by length, player-owned commitments,
 personal threads and post-mission reveals.
 
+Joining a mission in progress is part of the first delivery. The merged
+design also states that leaving does not cancel the mission for those who
+remain, even if the party now lacks a capability the original offer required.
+
 The owner additionally decided that every actual participant retains access
 to the post-mission reveal while they retain campaign access, including a
 participant who left the mission before its end. A commitment withdrawn before
 start is not participation.
+
+**Open owner decision — abandonment.** The authority for closing a mission
+as voluntarily abandoned while members remain is unsettled. Section 8 records
+the choice that must be made. This draft does not select a fallback rule.
 
 This contract proposes these engineering choices.
 
@@ -72,6 +80,7 @@ class MissionContext:
     characters: tuple[dict, ...]
     policies: dict
     mission_policy: dict
+    threads: tuple[dict, ...]
 
 
 @dataclass(frozen=True)
@@ -118,16 +127,25 @@ and `ActionRejected` for state-dependent refusals.
 - `library()` returns the complete versioned library of section 4. Load and
   validate it once per runtime. Its content digest is checked independently
   of the author's version label.
-- `inputs(ctx)` returns exactly `capabilities`, `people`, `facts`. Capabilities
+- `inputs(ctx)` returns exactly `capabilities`, `people`, `facts`, `aspirations`. Capabilities
   map each requested character ID to a sorted list of module-defined tags.
   People are `{id, character_id, relationship, allowed_roles, excluded_roles,
   disclosure, facts}`. Facts are `{id, value}`. People and facts carry only
   needed preparation data, within the input budget. Existing boundaries must
   be translated into roles and disclosure constraints here.
+  Aspirations are `{id, character_id, statement, requires, excludes,
+  completion, disclosure}` records of already-established player goals.
+  Completion is null or a declared typed condition. Missing game support
+  returns an empty aspirations list. The hook does not invent character goals.
 - `ctx.characters` contains host-built `{character_id, participant_id, name,
   phase}` metadata for the requested roster. `policies` maps those IDs to the
   host's current effective game policy or null. `mission_policy` is section 5.
   The caller cannot supply ownership or authorization through these values.
+  `ctx.threads` contains up to 32 eligible open-thread summaries, also limited
+  to 8 KiB total, ordered by least recently touched revision then thread ID.
+  Each has stable IDs, kind, owner/source and a short progress excerpt with a
+  `cut` marker if shortened. Full progress remains in paged thread receipts.
+  The chosen summaries and selection history are captured in generation inputs.
 - `clock(state)` returns null or `{domain, tick, unit}`. `domain` is a stable
   module-defined ID. `tick` is a monotone integer in 0..2^63−1. `unit` is a
   display label such as `minute` or `turn`. Arithmetic uses ticks. Null makes
@@ -151,6 +169,15 @@ and `ActionRejected` for state-dependent refusals.
   internal mechanics. Expected refusals occur before the first draw. Any
   failure rolls back the whole state/event transaction.
 
+`MissionEffectsAction.action` always has `participant_id == "referee"` and
+`character_id is None`. Its operations are the module's selected operations
+bound to this execution's random source. Its policy is the campaign's effective
+game policy or null; per-character policies were supplied during preview.
+Its args are exactly `{effects, reason}`. The host constructs this execution
+context even when a final player commitment authorizes the batch. The actual
+initiating player/job remains the receipt author. Effect targets come from
+the accepted, validated plan and never from an assumed frozen referee actor.
+
 Effect previews are recomputed inside the execution transaction. Each batch
 is checked before its first draw. The callback cannot write a database or
 install code. An effect describing a fight can return a narrative cue and
@@ -167,7 +194,7 @@ Each collection has at most 512 entries. Library size is at most 2 MiB.
 
 Each component has `{id, kind, weight, requires, provides, excludes, bindings,
 body}`. `kind` is one of `client`, `stakeholder`, `place`, `secret`, `obstacle`,
-`clue`, `reward`, `discovery`, `tripwire`, `twist`. `weight` is an integer
+`clue`, `reward`, `deadline`, `discovery`, `tripwire`, `twist`. `weight` is an integer
 0..1,000,000. The three property lists contain unique tag strings. Requirements
 are conjunctions, exclusions forbid overlap, and provided properties add to
 the chosen set. Tags describe compatibility rather than activating mechanics.
@@ -191,6 +218,7 @@ A fully assembled mission has these sections.
 | `requirements` | `{capabilities, bound_characters}`. Capabilities are `{tag, count}` records counted across distinct roster characters. Bound characters include every selected personal-thread owner. |
 | `objectives` | `{id, role, target, complete_when, depends_on, disclosure, evidence, effects}` records. Role is primary or secondary. Evidence names acceptable clue observations or referee-adjudicated conditions. |
 | `branches` | `{id, replaces, objectives, summary, requirements, effects}` records for prepared alternate assignments. The initial branch is `initial`. Each branch names the objective IDs it activates and the old ones it supersedes. |
+| `threads` | At most one `{kind, character_id, source_id, existing_thread_id, bindings}` selection. Kind is person or aspiration; existing_thread_id is null for a new thread. |
 | `people`, `places`, `targets` | Stable-ID records with structured bindings and description prompts. History people retain their source ID and restrictions. |
 | `facts` | `{id, truth, required_by, disclosure}`. Facts and witness claims remain distinguishable. |
 | `clues` | `{id, origin, place, supports, contradicts, access, levels, disclosure}`. Levels are ordered `{id, observation, access}` entries. |
@@ -206,11 +234,14 @@ from the history hook. Referee observation recipients never override an explicit
 restriction. Public summaries contain only disclosed facts.
 
 Events are exactly `{id, kind, when, signs, effects, schedule, repeat,
-exclusive_group, persistence, trade, stop, disclosure}`. Kind is discovery,
+exclusive_group, persistence, trade, stop, expiry, disclosure}`. Kind is discovery,
 tripwire or twist. Schedule is null or `{delay_ticks, followup_id}`.
 Persistence is `mission` or `campaign`. Repeat is `{max_occurrences}` with
 1..16. A trade has its perceivable cost declared before the triggering choice.
 Every other consequence declares a stop condition and its resulting outcome.
+`stop` and `expiry` are null or `{condition, effects}`. A trade has no stop
+path that reverses its declared irreversible cost. The event's ordinary
+effects, stop effects and expiry effects are distinct declared batches.
 
 Conditions are exactly one of these objects, or `{all:[conditions]}` or
 `{any:[conditions]}`. Nesting is at most three and each list has 1..8 items.
@@ -247,8 +278,10 @@ resolution. A descriptive location-summary change never records a visit.
 The validator enforces objective counts, permitted pairs, a DAG of objective
 dependencies and reachable declared routes for essential evidence. Essential
 facts have two origins and independently accessible paths, one with a no-roll
-approach. The referee reviews the actual plausibility. Calm has no tripwires,
-reactive 1–2 and volatile 3–4. All tripwires have a real no-roll clean route.
+approach. The referee reviews the actual plausibility. Objective ranges per
+length and tripwire ranges per tone come from the captured policy. The fixed
+outer objective bounds are 1–2 primaries and 0–4 secondaries per active branch.
+All tripwires have a real no-roll clean route.
 Timed consequences start only after their tripwire. Disclosed deadlines may
 exist from the start. Branches declared by twists retain objective bounds.
 
@@ -258,16 +291,45 @@ Eggs contain `{id, version, kind, first_sight, layers, object, effects,
 aftermath, threads, restrictions}`. Layers are `{id, access, text}`. An object
 is null or a descriptive definition understood by an implemented effect.
 Effects and restrictions must be supported before an egg is eligible.
+Egg selection is uniform among eligible entries; eggs have no weight field.
+A deadline component supplies the same `{text, domain, tick}` shape used in
+summary.deadline, with any declared consequence represented by an event.
+Templates may also supply that deadline directly. It is disclosed before
+commitment and is rechecked for compatibility before begin.
 
 ## 5. Policy, randomness and reconstruction
 
 Campaign mission policy is exactly `{enabled, library_id, tone_weights,
-eggs_enabled, history_enabled, max_open_offers}`. Defaults enable missions
+length_profiles, tone_profiles, thread_policy, eggs_enabled, history_enabled,
+max_open_offers}`. Defaults enable missions
 when the capability is present, use the module's library ID, set calm/reactive/
 volatile weights to 1 each, enable eggs/history, and allow five open offers.
 Weights are 0..1,000,000 with at least one positive. Offer count is 1..5.
 The host changes policy with a reason and expected policy revision. Disabling
 new requests does not strand a preparing mission, active mission or consequence.
+
+`length_profiles` maps short/medium/long to `{primaries:{min,max},
+secondaries:{min,max}}`. Every range must fit the fixed outer bounds above.
+Initial values are short 1/0–1, medium 1–2/1–2 and long 2/2–4, where each
+pair gives primaries/secondaries. `tone_profiles` maps calm/reactive/volatile
+to `{tripwires:{min,max}}`, initially 0/1–2/3–4 respectively. Calm remains
+zero by its definition. Other ranges fit 0..32, the structural event cap.
+No generated mission can exceed that cap. Counts are policy data, available
+for tuning after the owner reads the dry run. The generator snapshots both
+profiles; validators check the snapshot, not hard-coded initial numbers.
+
+`thread_policy` is `{none_weight, new_weight, continue_weight,
+character_cooldown_missions, person_cooldown_missions}`. Initial proposed
+values are 3, 1, 2, 1 and 2. Weights use the same integer bounds as tones;
+cooldowns are 0..100 completed missions. Section 7 defines the selection.
+These defaults are engineering proposals, not settled owner preferences.
+
+Mission policy has a separate framework-owned row because Missions supports
+CharacterRules v1 games without CampaignSettings. Its messages and revision
+work for those games as well. The campaign rules document continues to own
+game settings and override-category policy. It does not hold another copy of
+mission policy. Guidance text never changes this row. Section 5.1's explicit
+input form contains both effective game policies and this mission policy.
 
 Generated requests name a length and optionally template/theme IDs and a target
 roster. Omitted roster means all ready characters, up to eight. More needs an
@@ -313,6 +375,61 @@ Premade requests save name, version and content digest. At expansion the exact
 premade is loaded. Mark a premade played when its mission begins, including a
 later abandonment. Withdrawal before begin does not consume it.
 
+### 5.1. Read-only dry run
+
+The host CLI provides this authoring command, independent of a running referee.
+
+```text
+tesserae missions dry-run (--module ID | --module-dir DIR) --inputs FILE
+    --seed INTEGER [--length short|medium|long ...] [--count N]
+    [--format text|jsonl]
+
+tesserae missions dry-run --database FILE [--module-dir DIR ...]
+    [--character ID ...] --seed INTEGER
+    [--length short|medium|long ...] [--count N] [--format text|jsonl]
+```
+
+Explicit-input mode loads the selected trusted module and a JSON file with
+exactly `{schema_version:1, state, characters, policies, mission_policy,
+threads}`, the fields of `MissionContext`. The pure input hook supplies its
+compact capabilities/history data. The module and library must validate first.
+
+Campaign mode opens an existing SQLite file read-only, enables `query_only`
+and takes a single read transaction over binding, module state, character
+metadata, effective policy and relevant thread records. It closes that snapshot
+before generating the batch. It must not use a store constructor that creates,
+upgrades or settles records. Schema 10 can be read using default mission policy
+and an empty framework thread list. Schema 11 reads the saved rows. Other
+unsupported schemas fail with a diagnostic and require a separately prepared
+compatible input. WAL-aware reading is required; do not use `immutable=1` on
+an actively written campaign and accidentally ignore its WAL.
+
+`--character` selects the intended ready roster. Omitted means all ready
+characters within the normal roster limit. Resolve the exact stored module
+binding, including external providers; a mismatch refuses. Snapshot game ID,
+revision, schema version and input digest are reported with the output. A
+missing file fails without creating it. No campaign commands, RNG journals,
+policy rows, token files, migrations or mission records are written. Disable
+module bytecode-cache writes during this authoring path and create no output
+files. Pure hooks and generation are the only module functions invoked.
+
+Seed is required and accepts decimal or `0x` hexadecimal in 0..2^64−1. Count
+is 1..100 and defaults to 10. Length flags preserve their supplied order;
+default is short, medium, long. Generate N missions by cycling that list.
+For index i starting at zero, derive its eight-byte seed from the first eight
+bytes of SHA-256 over ASCII `tesserae-missions-dry-run-v1`, a zero byte, the
+big-endian master seed and big-endian 64-bit i. Use the same generator, policy
+profiles, input snapshot and canonical skeleton digest as live requests.
+
+Text output prints every mission section, including hidden tone, bindings,
+truths, clue routes, tripwires, twists and egg slots. Unfilled referee prompts
+are labelled clearly. JSONL prints one complete `{index, seed, snapshot,
+mission, skeleton_digest}` object per mission. Egg identities remain undrawn.
+No model is invoked to fill prose. Errors go to stderr and exit nonzero;
+generation/configuration errors exit 1 and malformed options exit 2. The
+command warns that its stdout contains spoilers. A partial failed batch exits
+nonzero and labels which item failed without substituting a different result.
+
 ## 6. States, proposals and participation
 
 The mission lifecycle is `draft → published → preparing → active → closed`.
@@ -326,17 +443,27 @@ summary, freezes its terms at `offer_revision` and exposes it to players.
 Normal preparation cannot change those terms. An explicit host amendment
 before begin creates a new offer revision, retains the old version in history
 and invalidates affected commitments. A different generated skeleton requires
-a new request. An active contract changes only through a declared twist and
-the affected players' own commitments to revised terms.
+a new request. An active contract can change through a prepared branch or
+negotiated joining terms, with the affected players' own commitments.
 
-`mission.propose` names one published offer and a nonempty roster. Check
+An initial `mission_propose` names one published offer and a nonempty roster. Check
 ownership, ready phase, campaign access, required capabilities and bound
 characters. At most one proposal can be open/preparing for a campaign. The
 proposal stores `{proposal_id, kind, mission_id, revision, offer_revision,
-roster, required_committers, branch_id, state}`. Kind is initial, join or
+roster, required_committers, branch_id, terms, state}`. Kind is initial, join or
 terms_change.
 Roster entries are `{character_id, participant_id}` built by the host.
 State is open, ready, preparing, started or cancelled.
+`terms` maps each affected character ID to `{text, effects}`, with the normal
+validated effect references. Initial terms derive from the published summary.
+Compare a new proposal with each existing member's accepted terms to determine
+whose commitment is required. The game validates its effects against those
+promises. A new participant's share cannot reduce an existing share silently.
+For a join or terms_change, the mission must be active. Join character_ids
+names the new members; the host builds the proposed roster from them and the
+existing members. Terms_change names affected existing members and retains
+the roster. Negotiated terms are the per-character map above. A prepared
+branch may instead supply those terms and any changed objective IDs.
 
 Commitment and withdrawal authenticate the player and freeze the selected
 ready character exactly as character play does. A commitment names the
@@ -382,13 +509,20 @@ participation and campaign-access-dependent reveal rights.
 
 For an active join, the referee proposes adding ready characters with explicit
 terms. Only their own commitments apply the join. Existing members keep their
-terms. A prepared branch that changes those terms uses a terms_change proposal
-and their commitments as well. A last valid commitment applies a ready join or
+terms. Negotiated join terms can use declared game effects even when no
+prepared twist branch exists. A proposal that changes existing terms includes
+every affected member among its required committers. A prepared branch can
+also propose an alternate assignment. A last valid commitment applies a ready join or
 terms change atomically, including its declared effects and participation rows.
 It does not restart the mission or retroactively credit earlier discoveries.
 The referee can record an established departure with `mission_leave` on the
 departing player's own job actor. Host correction can also end a membership
 with a recorded reason. Departures retain their actual participation history.
+Leaving never cancels the active mission for remaining members, even when the
+remaining roster lacks an original capability. Their achievable outcomes are
+resolved in play. The eligibility check on a proposed join validates the new
+members and any changed terms; it does not use the original initial-roster
+requirements to prohibit an otherwise valid addition to that existing mission.
 
 ## 7. Observations, events and time
 
@@ -416,6 +550,22 @@ Prepared means eligible for condition evaluation. Armed means a timed
 occurrence has a due time. A false condition stays prepared. Avoided or
 expired needs an established closing condition and a reason.
 
+`mission_event` takes `outcome:resolve|avoid|expire`. Resolve checks `when`,
+and an armed occurrence must be due. Avoid checks its declared `stop.condition`
+and applies only `stop.effects`; it is allowed before the due time. Expire
+checks `expiry.condition` and applies only `expiry.effects`. The framework
+stores the checked condition, referee adjudications, chosen outcome and
+effective time in the terminal receipt. Stopping an armed occurrence removes
+it from due selection in that same transaction. It does not run its ordinary
+arrival effects or require a host correction. An irreversible trade cannot
+be undone by claiming a stop it does not declare.
+
+For example, after an alarm is tripped, established departure before the
+keeper's arrival can satisfy its prepared stop condition. The referee submits
+outcome avoid, records departure as its reason, and the scheduled occurrence
+becomes avoided. Any stop effects and this status commit together. An exact
+retry returns that same receipt; a different terminal outcome for it is refused.
+
 Each occurrence has one immutable resolution receipt. Resolving a one-shot
 event again returns that outcome and never reapplies it. Repeatable events
 require the next occurrence number, within the declared maximum. An exclusive
@@ -432,14 +582,46 @@ no separate successful status write before effects have succeeded.
 Before and after every game-state mutation, including host administration and
 mission effects, evaluate the module clock hook. A decreasing tick or changed
 domain while timed records remain outstanding is `mission_clock_changed` and
-the mutation is refused. An explicit operator migration can convert domains
-with a named mapping and preserved old values. Null to a first non-null clock
-is allowed before any timed record is armed.
+the mutation is refused. A domain-conversion command is deferred. A module
+changing tick scale while timed records exist needs a separate reviewed
+migration before deployment; this contract does not invent an operator command
+for it. Null to a first non-null clock is allowed before any timed record is armed.
 
 After a successful advance, query the mission store for due occurrences.
-Return a bounded due-event page and add a compact due count to context. This
-single store integration covers ordinary minutes, seconds and any other
-game-owned advancement. Games need no calls into mission storage themselves.
+Add the following optional sibling field to the normal result envelope in a
+referee or guarded host execution context, preserving the module's result:
+
+```json
+{
+  "version": 1,
+  "type": "result",
+  "request_id": "clock-1",
+  "revision": 12,
+  "result": {"advanced": 5},
+  "missions_due": {
+    "revision": 12,
+    "count": 1,
+    "items": [{"mission_id": "m_0000000000000001", "event_id": "keeper", "occurrence": 1, "due_tick": 120}],
+    "next": null
+  }
+}
+```
+
+The notice is at most 1 KiB and holds as many complete ID/time entries as fit,
+with a cursor for the rest. `mission_due` returns the larger detail pages.
+An ordinary guest execution gets no hidden notice. Determine that audience
+from the original authenticated execution context, never the effect callback's
+internal referee identity. The bridge's act/referee_act wrapper preserves the
+new sibling in its saved step result. Composed replies still obey the existing
+44 KiB limit; opting-in module acceptance checks their maximum normal results
+with the notice. Modules without Missions keep their previous envelopes.
+
+Store the exact sibling in the command's `response_extensions` so replay
+returns the original notice instead of a new due set. A stale cursor can then
+be refreshed with `mission_due`. Add a compact current due count to context.
+This single integration covers ordinary minutes, seconds and other game-owned
+advancement. Games need no calls into mission storage themselves. Newly armed
+already-due successors produce the same notice after their mutation.
 
 Due means `due_tick <= now.tick`. Resolve ordered by `(due_tick, mission_id,
 event_id, occurrence)`. A newly armed successor uses its predecessor's
@@ -465,25 +647,82 @@ must leave a valid assignment for this active mission's other unresolved
 slots. Mark the entry met in the same transaction as revealing its first
 layer and any automatic effects. No candidate is pre-drawn for a hidden slot.
 
-Use the host random source for the weighted draw and journal its result.
+Use the host random source for a uniform draw and journal its result.
 Only `{library_id, egg_id}` determines met status across entry versions.
 Inspection, refresh and repeated discovery return saved layers without draws.
 Examining another layer requires its declared action. Found items are granted
 only after the player's established action through the appropriate effect.
 An undiscovered slot consumes no egg.
 
-A personal thread stores its owning character, person source ID, relationship
-facts, restrictions and an open/closed state. Missions link to that ID with
-their outcomes. Never embed a growing list of whole missions into a thread.
-Future generation receives eligible open thread summaries and may continue
-one. A restriction newly recorded in the campaign applies before a future
-binding or refinement. Previously established events remain in history.
+### Thread lifecycle and aspirations
+
+A thread has kind person or aspiration, an owning character, a stable source
+ID from `inputs()`, a summary, restrictions and state open or closed. A person
+source names established history; an aspiration source names an already-agreed
+player goal. Source text and provenance stay in the module's character data.
+The framework records which missions pursue it and their established outcomes.
+It cannot replace a player's goal or invent a relationship through a thread.
+
+Generation filters candidates by the intended characters, permitted bindings,
+disclosure and `thread_policy` cooldowns. Then it draws none, new or continue
+using the policy's weights among eligible choices. If history is disabled or
+there are no compatible candidates, use none and record why. A template that
+requires a thread still fails when none is available. For new or continue,
+choose an eligible character uniformly and then a compatible source/thread
+uniformly in stable ID order. One selection is made per mission.
+
+New picks an eligible source with no thread yet. A closed source thread is
+reopened explicitly when its story is to continue. Continue picks an open
+thread from the captured framework summaries and carries its latest established
+progress into the mission. The selected character becomes a bound-character
+requirement. Person bindings also carry their stakeholder-role restrictions.
+An aspiration can shape an objective, clue or reward without requiring a
+history person. Essential objectives still obey the normal count and evidence
+rules. Library entries declare which kind of thread they can use.
+
+Cooldowns count other closed missions since the last started mission that
+used that character/person, excluding that last-used mission itself. A source
+currently used by an active mission is not reused for another offer. Admission
+rechecks current compatibility, but generation uses its saved candidate/input
+snapshot. Requesting, inspecting or withdrawing an unplayed offer consumes no
+cooldown. Starting a mission records its selected source and thread use.
+
+Begin creates a selected new thread or links a selected existing one. It does
+so atomically with mission start. The referee also has `mission_thread` for
+explicit maintenance outside the generator. Its action is open, progress,
+close or reopen, with these exact additional fields:
+
+- Open: `{character_id, kind, source_id, reason}`. The source must be present
+  in a fresh hook result for that character. Return an existing matching open
+  thread idempotently rather than creating a duplicate.
+- Progress: `{thread_id, mission_id, note, reason}`. Mission ID can be null
+  for an established development outside a mission. The note is at most 1 KiB.
+  Save an immutable receipt and update the compact latest progress summary.
+- Close: `{thread_id, outcome, reason}`. Outcome is fulfilled, abandoned or
+  dormant. Fulfilled needs the source's declared completion condition or the
+  owner's established statement; subjective goals are not fulfilled merely
+  because the referee prefers that ending. Abandoned here describes an
+  established decision about the personal thread, not party abandonment.
+- Reopen: `{thread_id, reason}`. Revalidate source and current restrictions
+  before reopening the same history. It does not clear prior outcomes or use.
+
+Every operation is journaled and replay-safe. Mission closure links its outcome
+and source progress without automatically declaring a long-term goal finished.
+Thread receipts and mission links are paged history. Keep only a bounded latest
+summary in a thread row. Updated campaign boundaries constrain future generation
+and refinement while previous established events remain in history.
 
 ## 8. Closure and reveal
 
-Close is allowed when all primaries are terminal or the party has actually
-abandoned the mission. Record the choice of each affected player when
-abandonment commits their character. Resolve or validly lapse every earlier
+Close is allowed when all primaries are terminal. A mission with no members
+after their own recorded departures may also close as abandoned, as the design
+states. **OPEN-1:** voluntary abandonment while members remain needs an owner
+decision about authority. The options are a player-owned abandonment proposal
+requiring the affected members' commitments, or a referee operation recording
+their established agreement. This contract does not choose between them.
+The abandoned objective transition and `mission_close` with active members
+remain unsettled to that extent; a reason string alone does not select a rule.
+Resolve or validly lapse every earlier
 due occurrence first. Apply any prepared completion/abandonment effects in
 one batch with the closure receipt.
 
@@ -505,6 +744,10 @@ withhold its definition and any connected secret that would reveal its
 unresolved future effect. Show only the count of continuing consequences.
 Those entries can become visible after the corresponding occurrence resolves.
 Cross-mission thread preparation remains outside this mission's reveal.
+For a found egg, the proposed reveal includes its unexamined layers as well as
+the examined ones, subject to the same continuing-consequence and future-thread
+redactions. This is a reviewable default for found-egg details. Undiscovered
+slots still reveal only their count.
 
 Any participant recorded during actual play may read the reveal while their
 campaign access remains valid. This includes an earlier departing player.
@@ -516,20 +759,24 @@ visibility. Historical ownership and audiences survive later character transfer.
 Campaign schema 11 adds these tables. Text JSON columns hold canonical JSON.
 Foreign keys point to existing characters/participants where appropriate.
 Historical memberships keep their IDs if a character is archived.
+It also adds `commands.response_extensions TEXT NOT NULL DEFAULT '{}'` and
+the corresponding optional `CommandRecord.response_extensions` field. Only
+host-defined result extensions are allowed there. Existing command results
+and replay content retain their original values.
 
 | Table | Columns and uniqueness |
 |---|---|
 | `mission_policy` | One row: revision, document. |
 | `missions` | mission_id PK; state, origin, binding, offer_revision, preparation_revision, data, created_revision, updated_revision. |
-| `mission_proposals` | proposal_id PK; kind, mission_id, revision, offer_revision, state, roster, required_committers, branch_id. One open/preparing proposal per campaign. |
+| `mission_proposals` | proposal_id PK; kind, mission_id, revision, offer_revision, state, roster, required_committers, branch_id nullable, terms. One open/preparing proposal per campaign. |
 | `mission_commitments` | proposal_id, proposal_revision, character_id, participant_id, state, receipt_id. Unique first three columns. |
-| `mission_members` | mission_id, character_id, participant_id, joined_revision, left_revision, reason. Unique mission_id/character_id/joined_revision. |
+| `mission_members` | mission_id, character_id, participant_id, joined_revision, left_revision, accepted_terms, reason. Unique mission_id/character_id/joined_revision. Terms changes retain the old values in an immutable receipt. |
 | `mission_observations` | mission_id, clue_id, level_id, character_id, participant_id, observed_at, source, receipt_id. Unique mission_id/clue_id/level_id/character_id/participant_id. Improvised clue IDs occupy a separate namespace. |
 | `mission_visits` | mission_id, place_id, character_id, occurrence, game_time, receipt_id. |
 | `mission_events` | mission_id, event_id, occurrence, state, scope, consequence_id, domain, due_tick, definition, receipt_id, revision. Unique first three columns; consequence_id unique when present. |
-| `mission_receipts` | receipt_id PK; mission_id nullable for policy, operation, author, revision, input, outcome, game_time. Immutable. |
+| `mission_receipts` | receipt_id PK; mission_id nullable for policy/thread maintenance, thread_id nullable, operation, author, revision, input, outcome, game_time. Immutable. |
 | `mission_checklist` | kind, library_id, entry_id, mission_id, receipt_id. Unique kind/library_id/entry_id. Kind is egg or premade. |
-| `mission_threads` | thread_id PK; character_id, person_id, state, data, revision. |
+| `mission_threads` | thread_id PK; kind, character_id, source_id, state, data, revision. At most one open row per kind/character/source. Latest summary is bounded; full progress lives in receipts and links. |
 | `mission_thread_links` | thread_id, mission_id, outcome_receipt. Unique thread_id/mission_id. |
 
 Index open offers, current proposals, active memberships and events by
@@ -670,7 +917,7 @@ module command names or shell execution permission.
 | `mission_request` | `length` or `premade_id`, optional `template_id`, `theme_id`, `character_ids` | Referee preparation. Exactly one origin selector. |
 | `mission_refine` | `mission_id`, `target`, `expected_record_revision`, `summary`, `answers` | Referee; target summary or preparation. Exactly the relevant summary or answers field. Answers map prompt IDs to their validated values. |
 | `mission_publish` | `mission_id`, `expected_record_revision` | Referee freezes a valid draft offer. |
-| `mission_propose` | `mission_id`, `kind`, `character_ids`, optional `branch_id`, `proposal_id`, `proposal_revision` | Referee creates/revises an initial, join or terms_change proposal. Last two fields occur together on revision. Branch is required for terms_change. |
+| `mission_propose` | `mission_id`, `kind`, `character_ids`, optional `branch_id`, `terms`, `proposal_id`, `proposal_revision` | Referee creates/revises an initial, join or terms_change proposal. Last two fields occur together on revision. Terms are required for a negotiated join/change; branch may instead reference a prepared alternate assignment. |
 | `mission_commit` | `proposal_id`, `proposal_revision` | Job sender's frozen ready character. |
 | `mission_withdraw` | `proposal_id`, `proposal_revision` | Job sender's frozen ready character, before the proposal applies. Initial proposals remain withdrawable through preparation. |
 | `mission_leave` | `mission_id`, `reason` | Job sender's own active membership. |
@@ -679,10 +926,11 @@ module command names or shell execution permission.
 | `mission_visit` | `mission_id`, `place_id`, `character_ids`, `reason` | Referee records established arrival. |
 | `mission_observe` | `mission_id`, `clue_id`, `level_id`, `character_ids`, `reason` | Referee records observation/sharing. Improvised clues additionally supply their observation and provenance. |
 | `mission_objective` | `mission_id`, `objective_id`, `status`, `evidence`, `reason` | Referee resolves a supported objective outcome. |
-| `mission_event` | `mission_id`, `event_id`, `occurrence`, `adjudications`, `reason` | Referee resolves one eligible occurrence. |
+| `mission_event` | `mission_id`, `event_id`, `occurrence`, `outcome`, `adjudications`, `reason` | Referee resolves, avoids or expires an occurrence against its declared when/stop/expiry condition. A stop may occur before its due time. |
 | `mission_open_egg` | `mission_id`, `slot_id`, `character_ids`, `reason` | Referee records established discovery. |
 | `mission_egg_layer` | `mission_id`, `slot_id`, `layer_id`, `character_ids`, `reason` | Referee reveals an established subsequent examination. |
-| `mission_close` | `mission_id`, `outcome`, `reason` | Referee; outcome completed or abandoned with recorded player decisions. |
+| `mission_close` | `mission_id`, `outcome`, `reason` | Referee; outcome completed, or abandoned with no members. Authority for voluntary abandonment with members remains OPEN-1. |
+| `mission_thread` | `action`, `reason`, and the action-specific fields in section 7 | Referee opens, records progress, closes or reopens a person/aspiration thread from an established source. |
 | `mission_list` | optional `states`, `after` | Sender's normal projected list. |
 | `mission_inspect` | `mission_id`, `section`, optional `after` | Referee-only bounded private read. Section is summary, objectives, people, places, facts, clues, obstacles, events, eggs, prompts, receipts or threads. |
 | `mission_due` | optional `after` | Referee-only ordered due page across the campaign, including closed missions' carried events. |
@@ -760,8 +1008,9 @@ This contract does not settle the separate text-composer/location redesign.
 
 ## 13. Schema upgrade and adoption
 
-Upgrade campaign schema 10 to 11 in one transaction that adds the tables and
-indexes. Preserve all existing rows and module state. The registry remains
+Upgrade campaign schema 10 to 11 in one transaction that adds the tables,
+indexes and command response-extension column. Preserve all existing row values
+and module state; older commands receive an empty extension object. The registry remains
 schema 2. Existing supported older campaigns follow their current upgrade path
 through schema 10, then this additive step. Validate runtime binding before
 committing an upgrade, as the store currently does.
@@ -787,7 +1036,9 @@ specific handoff and checks against its actual pins.
 ## 14. MS-1 review and downstream acceptance
 
 This contract is complete when owner and independent review resolve its
-proposed API, lifecycle, bounds and message choices. It needs no live AI run.
+proposed API, lifecycle, bounds and message choices, including OPEN-1. The
+abandonment question remains open for the owner; this revision does not settle
+it by adding an implicit referee or player authority. It needs no live AI run.
 Later slices demonstrate the following cases using original game fixtures.
 
 1. An opting-out module retains behavior through schema upgrade. Upgrades
@@ -797,8 +1048,10 @@ Later slices demonstrate the following cases using original game fixtures.
 3. Generated and named premade missions use the same runtime. A played premade
    stays used after abandonment and restart. Withdrawn preparation consumes none.
 4. Offer inspection and refresh produce no randomness, commitments or game time.
-   A dry-run command prints complete generated missions from explicit test inputs
-   and seed, with a bound count, while writing no campaign database.
+   The specified dry run prints full skeletons and spoilers from explicit inputs
+   and from schema-10/11 campaign snapshots opened read-only. Source rows and
+   journals match before/after, a missing file creates nothing, fixed seed and
+   input reproduce the batch, and no model or effect handler runs.
 5. Required capabilities and personal-history restrictions constrain the actual
    roster. Preparation withdrawal and terms changes invalidate relevant consent.
    Unrelated character activity preserves commitments. Revoked/archived/transferred
@@ -811,10 +1064,14 @@ Later slices demonstrate the following cases using original game fixtures.
    branches require the affected players' own consent.
 8. One event's effects, receipts, checklist changes and status remain atomic
    through rejected effects, budget failure, duplicate requests, restart and
-   concurrent mutations. Expected failures draw nothing.
+   concurrent mutations. Expected failures draw nothing. An established stop
+   before a consequence is due records avoided and only its stop effects;
+   later clock advancement never fires the cancelled ordinary effects.
 9. A long advance catches due chains in effective-time order through minute,
    sub-minute and game-defined clock mutations. It cannot skip an earlier event
    by completing an objective. Domain changes with outstanding events refuse.
+   Due notices use the documented result sibling, survive exact replay, and
+   never appear in an unauthorized guest's response.
 10. Discovery selects an eligible unseen egg and preserves compatible choices
     for remaining slots. Opening again or revealing a closed mission draws none.
     Object receipt follows the established action. Disabled/exhausted catalogs
@@ -829,6 +1086,19 @@ Later slices demonstrate the following cases using original game fixtures.
     Busy rejection, reconnect and exact retry preserve actor and audience rules.
     Maximum legal preparation and due sets fit bounded reads and composed host
     and guest job contexts without silently cutting records.
+14. Alter length/tone profile data within the fixed outer bounds, generate new
+    offers, and observe the selected ranges. Older offers retain their snapshot.
+    Invalid ranges refuse before generation. No validator hard-codes the initial
+    per-tone or per-length counts.
+15. New person and aspiration sources create threads, established progress is
+    journaled, close/reopen preserves history, and a future mission can select
+    continuation. The policy's character/person cooldowns constrain selection.
+    Unplayed offers consume none and no unchosen player goal is invented.
+16. Late joining applies only the required players' commitments and preserves
+    old terms, objectives, events and discoveries. A player's departure keeps
+    the remaining mission active even if its original requirements no longer
+    hold. Test the owner-chosen collective-abandonment rule after OPEN-1 is
+    settled; no implementation should infer its answer from a reason string.
 
 MS-2 owns generation and library validation. MS-3 owns the lifecycle, tables,
 tools and context. MS-4 owns observation/event/clock behavior, eggs, threads and
