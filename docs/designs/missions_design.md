@@ -72,10 +72,12 @@ Implementation defaults in this draft, not owner decisions: one active
 mission per campaign; at most five open offers; equal tone weights; the
 tripwire counts per tone; every size bound; that an offer states what a
 roster must be able to do instead of naming a fixed roster; that a
-consequence ends with its mission unless its entry says it outlasts it; and
-the rules for threads' boundaries. The owner intends to read about
-ten generated missions before settling weights and counts, so the first
-delivery includes a way to produce them without touching a campaign.
+consequence ends with its mission unless its entry says it outlasts it;
+that carried consequences are kept durably without a count limit, with
+bounded views, rather than reserving capacity when a mission starts; and the
+rules for threads' boundaries. The owner intends to read about ten generated
+missions before settling weights and counts, so the first delivery includes
+a way to produce them without touching a campaign.
 
 ## Vocabulary
 
@@ -368,7 +370,11 @@ the party abandons it. Close first settles what is outstanding:
 - A consequence that outlasts the mission is carried into the campaign: it
   stays on the game's clock, appears in the referee's context when due, and
   is resolved then, whatever mission is running. It may attach to a thread.
-  The number carried at once is bounded.
+  Every carried consequence has a due time, so each one eventually resolves
+  or lapses. Carried consequences are durable records with no limit on
+  their number: closing never fails for want of room and never drops one
+  that was declared. Only what is shown at once is bounded: the referee's
+  context names those due, and the rest are read in pages.
 - Abandoning a mission follows the same rules; an entry can say what
   abandonment itself sets off.
 
@@ -387,8 +393,9 @@ records, not inside the module's state: offers, the active mission,
 commitments, observations, event resolutions, carried consequences, the egg
 and premade checklists, threads and closed missions. A module's state limits
 therefore do not bound them, and an upgrade of existing campaign files is
-needed. Every list is bounded by the preparation or by a fixed count, so a long
-mission cannot fill up and be unable to finish. The command and step
+needed. A mission's own lists are bounded by its preparation or by a fixed
+count, and carried consequences are durable with bounded views, so no
+record limit can leave a mission unable to finish. The command and step
 journals keep full history.
 
 ## Authority and visibility
@@ -462,7 +469,8 @@ All tests use Python fixtures or a scripted referee. No model runs.
   once played.
 - A calm mission completes by its direct route with nothing happening. In a
   reactive one, one branch of a prepared decision starts a consequence on
-  the game's clock and the other does not. Nothing is in motion at the start.
+  the game's clock and the other does not. No consequence is in motion at
+  the start; a disclosed deadline that is a term of the job may be.
 - A fact a primary needs has two independent routes, one needing no roll.
 - A player can commit only their own character; the mission waits for the
   whole roster. A roster missing a required capability, or the character a
@@ -480,6 +488,11 @@ All tests use Python fixtures or a scripted referee. No model runs.
 - A mission cannot close over an overdue event. A consequence scheduled for
   later lapses with a record, or is carried and resolves during a later
   mission. A chain crossed by one long wait resolves in due-time order.
+- With many consequences already carried from earlier missions, an active
+  mission arms several more that outlast it, closes, and the host restarts:
+  every declared consequence is still recorded and scheduled, none was
+  dropped, the close succeeded, and the referee's context stays within its
+  bounds with the rest readable in pages.
 - Offers and player views contain no spoilers; the host sees everything.
 - Existing campaign files upgrade with their contents intact. A module
   without the capability behaves as before.
