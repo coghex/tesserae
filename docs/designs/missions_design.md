@@ -2,9 +2,14 @@
 
 Status: **rough draft for refinement**, 2026-11-12. It records the owner's
 direction and a first proposal for how the framework could carry it. Nothing
-here is a contract yet, no tracker or issues exist, and no runtime behavior
-is changed by this document. Public baseline:
+here changes runtime behavior. Public baseline:
 `d76deddb94cccedfb7c59b62808359d8f1e77577`.
+
+The [MS-1 contract proposal](missions_contract.md), under
+[#199](https://github.com/coghex/tesserae/issues/199), specifies the proposed
+hooks, records, tools, messages and migration for the next delivery slices.
+The [delivery roadmap](missions_delivery.md) links public tracker #202, private
+integration tracker #203 and their dependency-ordered children.
 
 It would extend the [referee contract](referee_contract.md), the
 [character contract](character_contract.md) and the
@@ -61,8 +66,13 @@ The owner has agreed:
   players. For eggs it shows how many were found, with the found ones'
   details, and only a count of slots that went unfound. Everyone who
   actually took part keeps access to the reveal while they keep access to
-  the campaign, including a participant who left before the end.
+  the campaign, including a participant who left before the end. Found eggs
+  reveal all layers, including unexamined ones, subject to continuing-story
+  and unresolved-consequence redactions.
 - **Commitment.** Each player commits their own character.
+- **Collective abandonment.** Every active player confirms abandonment through
+  the proposal mechanism. They can confirm conversationally through the referee.
+  Individual departure remains that player's action.
 - **Joining in progress.** A character can join a mission that is already
   under way, by their player's own commitment to stated terms. This is part
   of the first delivery.
@@ -283,6 +293,12 @@ and a replacement is a new offer with fresh commitments.
 Offers not chosen are withdrawn when a mission starts. The roster need not
 include every character.
 
+The referee can cancel an unapplied proposal with a reason; the host can also
+cancel through a guarded correction. Cancellation releases the proposal slot
+and retains its history. Cancelling initial preparation withdraws that unstarted
+mission without consuming a premade; cancelling an active-change proposal
+leaves current membership and accepted terms intact.
+
 ### Joining and leaving a mission in progress
 
 A character can join a mission that has already started. The referee
@@ -395,7 +411,11 @@ job involves them.
 ## Close and reveal
 
 A mission can close when every primary objective has a terminal status or
-the party abandons it. Close first settles what is outstanding:
+the party abandons it. The host also has a previewed, confirmed administrative
+close for a stuck active mission, recorded as a host override to abandoned,
+with its reason. It does not claim player agreement, complete objectives or
+grant completion rewards. Empty-mission closure also permits memberships ended
+by an audited host correction. All closure paths first settle what is outstanding:
 
 - An event that is already **overdue** must be resolved, or lapsed with a
   recorded reason, before the mission can close.

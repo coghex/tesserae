@@ -1,5 +1,9 @@
 # Protocol, version 1
 
+The [MS-1 missions contract proposal](designs/missions_contract.md) specifies
+optional mission messages and a `missions_due` result extension for opting-in
+modules. Those additions await implementation under #199.
+
 This is the host/client message contract. Commands come from
 [issue #3](https://github.com/coghex/tesserae/issues/3) (HOST-2 in the
 [server delivery design](designs/foreground_server_design.md)), and the

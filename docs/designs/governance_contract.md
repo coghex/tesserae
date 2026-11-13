@@ -1,5 +1,9 @@
 # M2-4 governance contract (GOV-1)
 
+The [MS-1 missions contract proposal](missions_contract.md) specifies mission
+policy, host inspection/corrections and additive campaign schema 11. Those
+changes are proposed under #199 and await implementation.
+
 Status: specification for [#132](https://github.com/coghex/tesserae/issues/132)
 under tracker [#131](https://github.com/coghex/tesserae/issues/131), written
 before any implementation. It turns the

@@ -1,5 +1,9 @@
 # M1-6 referee contract (REF-1)
 
+The [MS-1 missions contract proposal](missions_contract.md) specifies additional
+framework bridge tools, scoped reads and the mission context block for modules
+that opt in. Those additions are proposed under #199 and await implementation.
+
 Status: specification for [#64](https://github.com/coghex/tesserae/issues/64)
 under tracker [#63](https://github.com/coghex/tesserae/issues/63). Implemented
 so far: the store (section 5, with the step journal of section 6 and the reply
